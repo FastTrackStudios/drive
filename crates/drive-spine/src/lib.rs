@@ -11,6 +11,7 @@ pub mod comments;
 pub mod history;
 pub mod kinds;
 pub mod schema;
+pub mod tags;
 
 use loro::{LoroDoc, LoroMap, LoroMovableList, LoroValue, ValueOrContainer};
 
