@@ -148,6 +148,11 @@ pub async fn to_org_ids(
         .collect();
     for id in &ids {
         let to = new_id(org, id, spaces);
+        if to.starts_with('/') {
+            // A registry with no space name (made by a since-fixed bug): nothing in it.
+            store.delete(id).await.map_err(|e| e.to_string())?;
+            continue;
+        }
         store.rename(id, &to).await.map_err(|e| e.to_string())?;
         if id == "drive:spine" {
             respine(store, &to, "meals", "season").await?;

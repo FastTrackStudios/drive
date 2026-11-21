@@ -293,10 +293,15 @@ impl Rooms {
                         .map(|(id, r)| (id.clone(), r.peers.len() as u32))
                         .collect()
                 };
+                // `*/studio:` lists that prefix in every org.
+                let matches = |id: &str| match prefix.strip_prefix("*/") {
+                    Some(rest) => id.split_once('/').is_some_and(|(_, r)| r.starts_with(rest)),
+                    None => id.starts_with(&prefix),
+                };
                 let mut docs: Vec<DocInfo> = match self.store.list().await {
                     Ok(list) => list
                         .into_iter()
-                        .filter(|(id, _)| id.starts_with(&prefix))
+                        .filter(|(id, _)| matches(id))
                         .map(|(id, bytes)| DocInfo {
                             peers: open.get(&id).copied().unwrap_or(0),
                             id,
@@ -306,7 +311,7 @@ impl Rooms {
                     Err(_) => Vec::new(),
                 };
                 for (id, peers) in open {
-                    if id.starts_with(&prefix) && !docs.iter().any(|d| d.id == id) {
+                    if matches(&id) && !docs.iter().any(|d| d.id == id) {
                         docs.push(DocInfo {
                             id,
                             peers,

@@ -320,3 +320,24 @@ h2.sec { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter
 .sharelink a.s1 { color: var(--accent); font-size: 12.5px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .sharelink .primary { height: 32px; padding: 0 12px; border-radius: 8px; font-size: 13px; }
 .sharelink .x { color: var(--ink-3); width: 28px; height: 28px; border-radius: 7px; }
+
+/* All orgs */
+.orgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 14px; }
+.orgcard { display: flex; flex-direction: column; gap: 6px; padding: 14px; background: var(--surface); border: 1px solid #1d1d22; border-radius: 14px; }
+.orgcard.here { border-color: rgba(45,212,191,.45); }
+.orghead { display: flex; align-items: center; gap: 8px; }
+.orghead b { font-size: 17px; flex: 1; }
+.orghead .primary { height: 30px; padding: 0 12px; border-radius: 8px; font-size: 13px; }
+.orgcard .s1 { color: var(--ink-3); font-size: 13px; }
+.orgproj { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: 8px; text-align: left; font-size: 14px; }
+.orgproj:hover { background: var(--surface-2); }
+.orgproj img { width: 22px; height: 22px; }
+.orgproj .snote { margin-left: auto; color: var(--ink-3); font-size: 11.5px; }
+.approw { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border-radius: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+.approw img { width: 26px; height: 26px; }
+.approw b { min-width: 80px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.orgchip { cursor: pointer; }
+.orgchip:hover { background: var(--rule); color: var(--ink); }
+.orgpicks { display: flex; gap: 4px 16px; flex-wrap: wrap; margin-bottom: 6px; }
+.note { color: #f5d68a; font-size: 14px; }

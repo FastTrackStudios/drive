@@ -47,6 +47,7 @@ async fn orgs(rooms: &Rooms, default: &str) -> serde_json::Value {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(id, _)| drive_proto::org_of(&id).map(str::to_string))
+        .filter(|o| !o.is_empty())
         .collect();
     if !default.is_empty() {
         orgs.push(default.to_string());
@@ -133,6 +134,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .route("/protection", get(catalog::protection))
                 .route("/at-risk", get(catalog::at_risk))
                 .route("/stats", get(catalog::stats))
+                .route("/shared", get(catalog::shared))
                 .route("/fetch/{space}/{location}", get(catalog::fetch))
                 .route("/s/{space}/{token}", get(share::page))
                 .route("/s/{space}/{token}/file", get(share::file))

@@ -43,6 +43,8 @@ pub enum Place {
     AtRisk(String),
     /// A project: its parts, wherever they are, and its documents.
     Project(String),
+    /// Every org you are in, at a glance.
+    AllOrgs,
     Protection,
     Devices,
     Inbox,
@@ -77,6 +79,9 @@ pub struct Nav {
     pub sidebar: Signal<bool>,
     pub inspector: Signal<bool>,
     pub debug: Signal<bool>,
+    /// Another org whose project (shared with this one) is being viewed;
+    /// `None`: this org.
+    pub within: Signal<Option<String>>,
 }
 
 impl Nav {
@@ -92,6 +97,7 @@ impl Nav {
             sidebar: Signal::new(false),
             inspector: Signal::new(true),
             debug: Signal::new(false),
+            within: Signal::new(None),
         }
     }
 
@@ -105,6 +111,19 @@ impl Nav {
         self.selected.set(None);
         self.query.set(String::new());
         self.sidebar.set(false);
+    }
+
+    /// Go somewhere in this org (the sidebar: leaves any other org's project).
+    pub fn go_home(mut self, p: Place) {
+        self.go(p);
+        self.within.set(None);
+    }
+
+    /// Go somewhere in another org (a project it shared with this one);
+    /// moving around inside it (its parts, their folders) stays there.
+    pub fn go_in(mut self, org: &str, p: Place) {
+        self.go(p);
+        self.within.set(Some(org.to_string()));
     }
 
     fn step(mut self, forward: bool) {
@@ -406,6 +425,8 @@ pub fn Browser() -> Element {
 #[component]
 fn Shell(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -> Element {
     let nav = use_nav();
+    // A project another org shared is shown in its own org's registry.
+    let view = (nav.within)().unwrap_or_else(|| space.clone());
     let open = (nav.sidebar)();
     let has_sel = (nav.selected)().is_some();
     let shell = format!(
@@ -421,10 +442,10 @@ fn Shell(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -> 
             div { class: "main",
                 Toolbar {}
                 div { class: "content",
-                    Content { space: space.clone() }
+                    Content { key: "{view}", space: view.clone() }
                 }
             }
-            Inspector { space: space.clone() }
+            Inspector { key: "{view}", space: view.clone() }
         }
     }
 }
@@ -457,7 +478,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
         rsx! {
             button {
                 class: if on { "side on" } else { "side" },
-                onclick: move |_| nav.go(p.clone()),
+                onclick: move |_| nav.go_home(p.clone()),
                 img { class: "sicon", src: icon(&ic), alt: "" }
                 span { class: "slabel", "{label}" }
                 if let Some((live, note)) = extra {
@@ -477,22 +498,31 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                 if spaces.len() > 1 {
                     select {
                         class: "spacepick",
-                        onchange: move |e| on_space.call(e.value()),
+                        onchange: move |e| {
+                            if e.value() == "*" {
+                                nav.go_home(Place::AllOrgs);
+                            } else {
+                                on_space.call(e.value());
+                            }
+                        },
                         for sp in spaces.iter() {
-                            option { key: "{sp}", value: "{sp}", selected: *sp == space, "{sp}" }
+                            option { key: "{sp}", value: "{sp}", selected: *sp == space && place != Place::AllOrgs, "{sp}" }
                         }
+                        option { value: "*", selected: place == Place::AllOrgs, "All orgs" }
                     }
                 }
             }
             nav { class: "places",
                 {item(Place::Overview, "Overview".into(), "Globe".into(), None)}
                 {item(Place::Drive(None), if space.is_empty() { "Drive".into() } else { space.clone() }, "Home".into(), None)}
+                {item(Place::AllOrgs, "All orgs".into(), "Devices".into(), None)}
                 h3 { "Projects" }
                 for p in projects.iter() {
                     Fragment { key: "{p.id}",
                         {item(Place::Project(p.id.clone()), p.name.clone(), project_icon(&p.kind).into(), None)}
                     }
                 }
+                SharedWithUs { org: space.clone() }
                 input {
                     class: "sidenew",
                     placeholder: "+ New project",
@@ -506,7 +536,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                                 let id = reg.edit(|d| drive_files::projects::add_project(d, &name, "Project").ok());
                                 new_project.set(String::new());
                                 if let Some(id) = id {
-                                    nav.go(Place::Project(id));
+                                    nav.go_home(Place::Project(id));
                                 }
                             }
                         }
@@ -532,7 +562,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                                             button {
                                                 key: "{l.id}",
                                                 class: if on { "side sub on" } else { "side sub" },
-                                                onclick: move |_| nav.go(p.clone()),
+                                                onclick: move |_| nav.go_home(p.clone()),
                                                 img { class: "sicon", src: icon(ic), alt: "" }
                                                 span { class: "slabel", "{l.name}" }
                                             }
@@ -567,7 +597,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                                             button {
                                                 key: "{l.id}",
                                                 class: if on { "side sub on" } else { "side sub" },
-                                                onclick: move |_| nav.go(p.clone()),
+                                                onclick: move |_| nav.go_home(p.clone()),
                                                 img { class: "sicon", src: icon("LocationReplica"), alt: "" }
                                                 span { class: "slabel", "{l.name}" }
                                             }
@@ -621,6 +651,7 @@ fn title_of(p: &Place) -> &'static str {
         Place::App(_) => "App",
         Place::AtRisk(_) => "At risk",
         Place::Project(_) => "Project",
+        Place::AllOrgs => "All orgs",
         Place::Protection => "Protection",
         Place::Devices => "Devices & storage",
         Place::Inbox => "Inbox",
@@ -753,6 +784,9 @@ fn Content(space: String) -> Element {
         },
         Place::Project(id) => rsx! {
             crate::projects::ProjectView { space, id }
+        },
+        Place::AllOrgs => rsx! {
+            crate::orgs::AllOrgs { here: space }
         },
         Place::Protection => rsx! {
             crate::catalog::Protection { space }
@@ -1536,6 +1570,43 @@ fn TreeCopies(
                 }
             }
             p { class: "hint", "That device fetches it and keeps it, even when it is short on room." }
+        }
+    }
+}
+
+/// Projects other orgs have shared with this one.
+#[component]
+fn SharedWithUs(org: String) -> Element {
+    let nav = use_nav();
+    let o = org.clone();
+    let shared = use_resource(use_reactive!(|o| async move {
+        get(format!("/shared?org={}", enc(&o)))
+            .await
+            .and_then(|v| v["shared"].as_array().cloned())
+            .unwrap_or_default()
+    }));
+    let list = shared().unwrap_or_default();
+    let within = (nav.within)();
+    let place = (nav.place)();
+    rsx! {
+        for x in list {
+            {
+                let owner = s(&x, "org");
+                let p = &x["project"];
+                let (id, name, kind) = (s(p, "id"), s(p, "name"), s(p, "kind"));
+                let on = within.as_deref() == Some(owner.as_str()) && place == Place::Project(id.clone());
+                rsx! {
+                    button {
+                        key: "{owner}/{id}",
+                        class: if on { "side on" } else { "side" },
+                        title: "Shared by {owner}",
+                        onclick: move |_| nav.go_in(&owner, Place::Project(id.clone())),
+                        img { class: "sicon", src: icon(project_icon(&kind)), alt: "" }
+                        span { class: "slabel", "{name}" }
+                        span { class: "snote", "{s(&x, \"org\")}" }
+                    }
+                }
+            }
         }
     }
 }

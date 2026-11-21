@@ -230,11 +230,15 @@ fn pump(ctx: DriveCtx, mut rx: drive_client::EventStream) {
                 Event::Docs { prefix, docs } => {
                     let sig = ctx.lists.borrow().get(&prefix).copied();
                     if let Some(mut s) = sig {
-                        // Ids within this org, as the app named them.
+                        // Ids within this org, as the app named them (a
+                        // list of every org keeps them whole).
+                        let everywhere = prefix.starts_with("*/");
                         let docs = docs
                             .into_iter()
                             .map(|mut d| {
-                                d.id = drive_proto::unqualify(&ctx.org, &d.id).to_string();
+                                if !everywhere {
+                                    d.id = drive_proto::unqualify(&ctx.org, &d.id).to_string();
+                                }
                                 d
                             })
                             .collect();
@@ -354,6 +358,18 @@ pub fn use_doc(id: impl Into<String>) -> Doc {
 pub fn use_docs(prefix: impl Into<String>) -> Signal<Vec<DocInfo>> {
     let ctx = use_drive();
     let prefix: String = ctx.qualify(&prefix.into());
+    list_docs(ctx, prefix)
+}
+
+/// The documents under a prefix in every org the node keeps, with full ids
+/// (`fasttrackaudio/studio:song:x`), for "All orgs" views. `use_doc`
+/// opens any of them as it is.
+pub fn use_docs_everywhere(prefix: impl Into<String>) -> Signal<Vec<DocInfo>> {
+    let ctx = use_drive();
+    list_docs(ctx, format!("*/{}", prefix.into()))
+}
+
+fn list_docs(ctx: DriveCtx, prefix: String) -> Signal<Vec<DocInfo>> {
     let sig = use_hook(|| {
         *ctx.lists
             .borrow_mut()

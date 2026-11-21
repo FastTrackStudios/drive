@@ -31,6 +31,9 @@ pub struct Project {
     pub parts: Vec<Part>,
     /// App documents in it (`studio:song:amazing-grace`).
     pub docs: Vec<String>,
+    /// Other orgs it is shared with (their slugs): their members see it,
+    /// its parts and documents. It still belongs to its own org.
+    pub shared_with: Vec<String>,
 }
 
 /// A folder of a project, on whichever computer (or storage) has it.
@@ -150,6 +153,17 @@ pub fn link_doc(doc: &LoroDoc, project: &str, doc_id: &str, on: bool) -> loro::L
     Ok(())
 }
 
+/// Share a project with another org (or stop).
+pub fn share_with_org(doc: &LoroDoc, project: &str, org: &str, on: bool) -> loro::LoroResult<()> {
+    let with = project_map(doc, project)?.ensure_mergeable_map("shared_with")?;
+    if on {
+        with.insert(org, true)?;
+    } else if with.get(org).is_some() {
+        with.delete(org)?;
+    }
+    Ok(())
+}
+
 pub fn projects(doc: &LoroDoc) -> Vec<Project> {
     let map = doc.get_map("projects");
     let mut out: Vec<Project> = map
@@ -179,6 +193,10 @@ pub fn projects(doc: &LoroDoc) -> Vec<Project> {
                 .map(|d| d.keys().map(|k| k.to_string()).collect())
                 .unwrap_or_default();
             docs.sort();
+            let mut shared_with: Vec<String> = child(&m, "shared_with")
+                .map(|d| d.keys().map(|k| k.to_string()).collect())
+                .unwrap_or_default();
+            shared_with.sort();
             Project {
                 id: s(&m, "id"),
                 name: s(&m, "name"),
@@ -186,6 +204,7 @@ pub fn projects(doc: &LoroDoc) -> Vec<Project> {
                 created: n(&m, "created"),
                 parts,
                 docs,
+                shared_with,
             }
         })
         .filter(|p| !p.id.is_empty())
@@ -463,5 +482,15 @@ mod tests {
         assert!(part.contains("Song A/Mixes/v3.wav"));
         assert!(!part.contains("Song A/Mixes2/v3.wav"));
         assert_eq!(part.relative("Song A/Mixes/sub/v3.wav"), "sub/v3.wav");
+    }
+
+    #[test]
+    fn projects_shared_with_other_orgs() {
+        let d = LoroDoc::new();
+        let p = add_project(&d, "Recital", "MusicRecording").unwrap();
+        share_with_org(&d, &p, "cbu", true).unwrap();
+        share_with_org(&d, &p, "tombrooksmusic", true).unwrap();
+        share_with_org(&d, &p, "cbu", false).unwrap();
+        assert_eq!(projects(&d)[0].shared_with, ["tombrooksmusic"]);
     }
 }

@@ -372,3 +372,36 @@ pub async fn fetch(
         Err(s) => s.into_response(),
     }
 }
+
+/// `?org=`: projects other orgs have shared with this one, with the org
+/// that owns each.
+pub async fn shared(
+    State(c): State<Catalog>,
+    Query(p): Q,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let to = q(&p, "org").to_string();
+    let orgs: Vec<String> = c
+        .rooms
+        .store
+        .list()
+        .await
+        .map_err(fail)?
+        .into_iter()
+        .filter_map(|(id, _)| id.strip_suffix("/drive:space").map(str::to_string))
+        .filter(|o| *o != to)
+        .collect();
+    let mut out = Vec::new();
+    for org in orgs {
+        let projects = c
+            .rooms
+            .read(
+                &drive_files::space_doc(&org),
+                drive_files::projects::projects,
+            )
+            .await;
+        for pr in projects.into_iter().filter(|x| x.shared_with.contains(&to)) {
+            out.push(serde_json::json!({ "org": org, "project": pr }));
+        }
+    }
+    Ok(Json(serde_json::json!({ "shared": out })))
+}

@@ -194,6 +194,8 @@ pub fn ProjectView(space: String, id: String) -> Element {
             p { class: "hint",
                 "Parts stay on the computers that have them. A part marked available is copied to the node by its computer, so the client mixes can be shared while it is off; charts and documents are kept available wherever they are."
             }
+            h2 { class: "sec", "Shared with orgs" }
+            SharedWith { reg: reg.clone(), owner: space.clone(), project: pid.clone(), with: p.shared_with.clone() }
             h2 { class: "sec", "Share" }
             ShareLinks { reg: reg.clone(), space: space.clone(), project: pid.clone() }
             h2 { class: "sec", "Documents" }
@@ -373,6 +375,61 @@ fn ShareLinks(reg: Doc, space: String, project: String) -> Element {
         }
         p { class: "hint",
             "Files kept available come from the fast storage (R2) or this node; the rest come from the storage server or the computer that has them, when it is on. Nothing is uploaded ahead of time."
+        }
+    }
+}
+
+/// Which other orgs see this project. It stays this org's; their members
+/// see its parts, documents and share links.
+#[component]
+fn SharedWith(reg: Doc, owner: String, project: String, with: Vec<String>) -> Element {
+    let nav = use_nav();
+    let orgs = use_resource(|| async {
+        crate::browser::get("/orgs".to_string())
+            .await
+            .and_then(|v| v["orgs"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|o| o.as_str().map(str::to_string))
+            .collect::<Vec<String>>()
+    });
+    let mut others: Vec<String> = orgs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|o| *o != owner)
+        .collect();
+    for w in &with {
+        if !others.contains(w) {
+            others.push(w.clone());
+        }
+    }
+    let visiting = (nav.within)().is_some();
+    rsx! {
+        if visiting {
+            p { class: "note", "Shared with you by {owner}. It belongs to {owner}." }
+        }
+        div { class: "orgpicks",
+            for o in others {
+                {
+                    let on = with.contains(&o);
+                    let (reg, pid, org) = (reg.clone(), project.clone(), o.clone());
+                    rsx! {
+                        label { key: "{o}", class: "pin",
+                            input {
+                                r#type: "checkbox",
+                                checked: on,
+                                onchange: move |e: FormEvent| {
+                                    let v = e.checked();
+                                    reg.edit(|d| {
+                                        let _ = proj::share_with_org(d, &pid, &org, v);
+                                    });
+                                },
+                            }
+                            span { "{o}" }
+                        }
+                    }
+                }
+            }
         }
     }
 }

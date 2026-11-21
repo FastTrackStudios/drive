@@ -7,6 +7,7 @@ mod browser;
 mod catalog;
 mod files;
 mod notes;
+mod orgs;
 mod projects;
 
 use dioxus::prelude::*;
