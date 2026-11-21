@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod backup;
+pub mod browse;
 pub mod catalog;
 pub mod migrate;
 pub mod rooms;
@@ -268,6 +269,15 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
             50,
         ));
     }
+    let browse_routes = browse::Routes {
+        rooms: rooms.clone(),
+        sc: sidecar_store.clone(),
+        seen: Arc::new(
+            browse::Seen::open(data)
+                .await
+                .expect("the browse cache opens"),
+        ),
+    };
     let sidecar_routes = sidecars::Routes {
         sc: sidecar_store,
         rooms: rooms.clone(),
@@ -298,6 +308,27 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .layer(axum::middleware::from_fn_with_state(rooms.clone(), guard))
                 .layer(axum::extract::DefaultBodyLimit::max(512 << 20))
                 .with_state(catalog.clone()),
+        )
+        // Every computer's disks, live and read-only (docs/browse.md):
+        // members of the device's own org only.
+        .merge(
+            Router::new()
+                .route("/browse/{space}/{device}/roots", get(browse::roots))
+                .route("/browse/{space}/{device}/list", get(browse::list))
+                .route("/browse/{space}/{device}/file", get(browse::file))
+                .route(
+                    "/browse/{space}/{device}/sidecar/{kind}",
+                    get(browse::sidecar),
+                )
+                .route(
+                    "/browse/{space}/{device}/index",
+                    axum::routing::post(browse::index),
+                )
+                .layer(axum::middleware::from_fn_with_state(
+                    rooms.clone(),
+                    browse::guard,
+                ))
+                .with_state(browse_routes),
         )
         // Share links carry their own permission (the token).
         .merge(
@@ -423,7 +454,7 @@ fn with_accept_ranges(mut r: axum::response::Response) -> axum::response::Respon
 /// The first range of a `Range` header (`bytes=0-99`, `bytes=100-`,
 /// `bytes=-500`) over `len` bytes, as inclusive offsets; `None` when it
 /// cannot be served.
-fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
+pub(crate) fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
     let spec = header
         .trim()
         .strip_prefix("bytes=")?

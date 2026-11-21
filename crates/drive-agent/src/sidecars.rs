@@ -219,6 +219,43 @@ impl Agent {
         Ok(key)
     }
 
+    /// Sidecars of a file browsed on this device's disks (not in a
+    /// location; already resolved and confined by `browse`): made here,
+    /// put on the node; the answer is its content key. The file is only
+    /// read.
+    pub async fn browse_sidecars(&self, path: PathBuf, kinds: &[String]) -> Result<String, String> {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut kinds: Vec<Kind> = kinds.iter().filter_map(|k| Kind::parse(k)).collect();
+        let fits = kinds_for(&name);
+        kinds.retain(|k| fits.contains(k));
+        if kinds.is_empty() {
+            return Err("no generator: nothing derives that from this kind of file".into());
+        }
+        let p2 = path.clone();
+        let (size, sampled) = tokio::task::spawn_blocking(move || {
+            (
+                std::fs::metadata(&p2).map(|m| m.len()),
+                drive_files::hash::sampled(&p2),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let job = Job {
+            path,
+            name,
+            key: sampled_key(&sampled.map_err(|e| e.to_string())?),
+            size: size.map_err(|e| e.to_string())?,
+            kinds,
+            temp: false,
+        };
+        let key = job.key.clone();
+        self.run_job(job).await?;
+        Ok(key)
+    }
+
     /// Which of `keys` × `kinds` the node lacks.
     async fn missing(
         &self,

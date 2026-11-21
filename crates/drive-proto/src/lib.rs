@@ -101,6 +101,11 @@ pub enum ToNode {
         req: u64,
         result: Result<String, String>,
     },
+    /// The answer to [`ToClient::Browse`].
+    Browsed {
+        req: u64,
+        result: Result<Browsed, String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -146,6 +151,117 @@ pub enum ToClient {
         kinds: Vec<String>,
         force: bool,
     },
+    /// To an agent: a look at this device's disks, live and read-only
+    /// (docs/browse.md); answer with [`ToNode::Browsed`]. An agent that
+    /// does not know this message skips it (the node times out).
+    Browse { req: u64, ask: Browse },
+}
+
+/// What the node asks of a device's disks. Every path is relative to a
+/// `root`: the mount point of one of the device's volumes, the system
+/// root `/`, or the home folder, exactly as [`Browsed::Roots`] names it.
+/// The agent refuses anything that resolves (through `..` or symlinks)
+/// outside that root, and never writes under it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Browse {
+    /// The roots that can be browsed now.
+    Roots,
+    /// A folder's entries, folders first then by name, a page at a time
+    /// (`limit` at most [`LIST_MAX`]); `hidden`: dot files and system
+    /// folders too.
+    List {
+        root: String,
+        path: String,
+        offset: u32,
+        limit: u32,
+        hidden: bool,
+    },
+    /// Up to `len` bytes (at most [`READ_MAX`]) of a file from `start`;
+    /// `len` 0: only its size and time.
+    Read {
+        root: String,
+        path: String,
+        start: u64,
+        len: u32,
+    },
+    /// The file's content key (`drive-sidecars`' sampled key).
+    Key { root: String, path: String },
+    /// Make these sidecars of the file and put them on the node; the
+    /// answer is its content key ([`Browsed::Key`]).
+    Sidecars {
+        root: String,
+        path: String,
+        kinds: Vec<String>,
+        force: bool,
+    },
+    /// Make this folder a location (indexed in place, as `drive-agent
+    /// location add` does); the answer is the location's id.
+    Index {
+        root: String,
+        path: String,
+        name: String,
+    },
+}
+
+/// The most entries one [`Browse::List`] answers with.
+pub const LIST_MAX: u32 = 2000;
+/// The most bytes one [`Browse::Read`] answers with.
+pub const READ_MAX: u32 = 4 << 20;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Browsed {
+    Roots(Vec<Root>),
+    Listing(Listing),
+    Chunk(Chunk),
+    /// A content key, or a new location's id.
+    Key(String),
+}
+
+/// Something a device lets be browsed: a volume, `/`, or the home folder.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Root {
+    /// What [`Browse`] requests name it by (its path on the device).
+    pub mount: String,
+    /// What to call it (`dev-drive`, `Home`, `System`).
+    pub name: String,
+    pub fs: String,
+    pub total: u64,
+    pub free: u64,
+    pub removable: bool,
+    pub home: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub dir: bool,
+    /// Bytes (0 for a folder).
+    pub size: u64,
+    /// Modified, in ms since 1970.
+    pub mtime: i64,
+    /// A symbolic link (shown as what it points at, when that is inside
+    /// the root).
+    pub link: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Listing {
+    pub entries: Vec<DirEntry>,
+    /// How many entries the folder has (shown ones), of which `entries`
+    /// is the page from `offset`.
+    pub total: u32,
+    pub offset: u32,
+    /// How many were left out as hidden.
+    pub hidden: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Chunk {
+    /// The whole file's size and time.
+    pub size: u64,
+    pub mtime: i64,
+    pub start: u64,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -198,5 +314,85 @@ mod tests {
             force: false,
         };
         assert_eq!(decode::<ToClient>(&encode(&m)).unwrap(), m);
+        let m = ToClient::Browse {
+            req: 5,
+            ask: Browse::List {
+                root: "/Volumes/dev-drive".into(),
+                path: "Songs".into(),
+                offset: 0,
+                limit: 200,
+                hidden: false,
+            },
+        };
+        assert_eq!(decode::<ToClient>(&encode(&m)).unwrap(), m);
+        let m = ToNode::Browsed {
+            req: 5,
+            result: Ok(Browsed::Chunk(Chunk {
+                size: 10,
+                mtime: 1,
+                start: 2,
+                bytes: vec![1, 2, 3],
+            })),
+        };
+        assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
+    }
+
+    /// An agent from before browsing decodes every message it knew, and
+    /// fails (and so skips) only the new ones: no version bump needed.
+    #[test]
+    fn new_messages_leave_old_ones_alone() {
+        // The old ToClient, as it was: the same variants in the same order.
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        enum OldToClient {
+            Welcome {
+                peer: Peer,
+            },
+            Synced {
+                doc: DocId,
+                bytes: Vec<u8>,
+                version_vector: Vec<u8>,
+            },
+            Update {
+                doc: DocId,
+                bytes: Vec<u8>,
+            },
+            Presence {
+                doc: DocId,
+                peer: Peer,
+                name: String,
+                json: Option<String>,
+            },
+            Docs {
+                prefix: String,
+                docs: Vec<DocInfo>,
+            },
+            Error {
+                message: String,
+            },
+            Fetch {
+                req: u64,
+                location: String,
+                path: String,
+            },
+            Sidecars {
+                req: u64,
+                location: String,
+                path: String,
+                kinds: Vec<String>,
+                force: bool,
+            },
+        }
+        let fetch = encode(&ToClient::Fetch {
+            req: 1,
+            location: "l".into(),
+            path: "p".into(),
+        });
+        assert!(decode::<OldToClient>(&fetch).is_ok());
+        let browse = encode(&ToClient::Browse {
+            req: 2,
+            ask: Browse::Roots,
+        });
+        assert!(decode::<OldToClient>(&browse).is_err());
     }
 }

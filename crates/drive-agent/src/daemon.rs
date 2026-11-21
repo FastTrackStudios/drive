@@ -135,6 +135,25 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                         a.drive.fetched(req, r);
                     });
                 }
+                Ok(Event::Browse { req, ask }) => {
+                    let a = a.clone();
+                    tokio::spawn(async move {
+                        let index = matches!(ask, drive_proto::Browse::Index { .. });
+                        let r = a.answer_browse(ask).await;
+                        let added = match (&r, index) {
+                            (Ok(drive_proto::Browsed::Key(id)), true) => Some(id.clone()),
+                            _ => None,
+                        };
+                        a.drive.browsed(req, r);
+                        // A folder made a location from a browser: index it now
+                        // (the full pass every ten minutes keeps it after).
+                        if let Some(loc) = added.and_then(|id| a.my_locations().into_iter().find(|l| l.id == id))
+                            && let Err(e) = a.index_location(&loc).await
+                        {
+                            tracing::warn!(location.name = %loc.name, error = %e, "a new location did not index");
+                        }
+                    });
+                }
                 Ok(Event::Online(true)) => {
                     a.announce();
                 }

@@ -18,4 +18,7 @@ tracing = "0.1"
 [dev-dependencies]
 tempfile = "3"
 drive-node = { path = "../drive-node" }
+drive-files = { path = "../drive-files" }
 axum = "0.8"
+reqwest = { version = "0.12", default-features = false }
+serde_json.workspace = true

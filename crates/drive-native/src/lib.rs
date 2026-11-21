@@ -56,6 +56,12 @@ pub enum Event {
         kinds: Vec<String>,
         force: bool,
     },
+    /// The node asks to look at this device's disks (read-only); answer
+    /// with [`Drive::browsed`].
+    Browse {
+        req: u64,
+        ask: drive_proto::Browse,
+    },
 }
 
 struct OpenDoc {
@@ -244,6 +250,11 @@ impl Drive {
     /// Answer a [`Event::Fetch`]: the blob's hash on the node, or why not.
     pub fn fetched(&self, req: u64, result: Result<String, String>) {
         self.send(ToNode::Fetched { req, result });
+    }
+
+    /// Answer a [`Event::Browse`].
+    pub fn browsed(&self, req: u64, result: Result<drive_proto::Browsed, String>) {
+        self.send(ToNode::Browsed { req, result });
     }
 
     /// Who else has a document open, with their presence: (peer, name, json).
@@ -495,6 +506,9 @@ impl Drive {
                     kinds,
                     force,
                 });
+            }
+            ToClient::Browse { req, ask } => {
+                let _ = self.0.events.send(Event::Browse { req, ask });
             }
             ToClient::Error { message } if message == "sign in" => {
                 tracing::warn!(drive.error = %message, "the node asks this device to sign in: run `drive-agent sign-in`")
