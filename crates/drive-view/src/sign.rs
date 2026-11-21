@@ -47,3 +47,24 @@ pub fn sign(pdf: Vec<u8>, p12: &[u8], password: &str, req: &SignRequest, unix_se
     };
     pdfcraft_sign::sign(&doc, &id, &opts).map_err(|e| e.to_string())
 }
+
+#[cfg(all(test, feature = "pdf"))]
+mod tests {
+    use super::*;
+
+    /// Opt-in (no key belongs in the repo): `DRIVE_VIEW_TEST_P12` names a
+    /// throwaway PKCS #12 file with the password `test`, e.g.
+    /// `openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=Test -keyout k.pem -out c.pem -days 2`
+    /// then `openssl pkcs12 -export -inkey k.pem -in c.pem -out t.p12 -passout pass:test`.
+    #[test]
+    fn signs_with_a_digital_id() {
+        let Ok(path) = std::env::var("DRIVE_VIEW_TEST_P12") else { return };
+        let p12 = std::fs::read(path).expect("the test ID reads");
+        let req = SignRequest { reason: Some("Approved".into()), ..Default::default() };
+        let signed = sign(crate::pdf::tests::hello(), &p12, "test", &req, 1_795_000_000).expect("signs");
+        let doc = Document::open(Arc::new(signed.clone())).expect("still a PDF");
+        assert!(pdfcraft_sign::has_signatures(&doc), "the signed file has a signature");
+        assert!(crate::pdf::PdfDoc::open(signed).is_ok());
+        assert!(sign(crate::pdf::tests::hello(), &p12, "wrong", &req, 0).is_err());
+    }
+}
