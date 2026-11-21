@@ -1,0 +1,19 @@
+[package]
+name = "drive-native"
+description = "Drive's client for native programs (the agent, servers, tools): live documents over a websocket, local copies on disk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drive-proto.workspace = true
+loro.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio-tungstenite = "0.30"
+futures-util = { version = "0.3", features = ["sink"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+drive-node = { path = "../drive-node" }
+axum = "0.8"

@@ -1,0 +1,91 @@
+# Files, devices and storage
+
+How Drive becomes a Dropbox: your devices registered to you, storage you
+add (a folder, a disk, a bucket), and every file visible in the computer's
+own file browser, whether or not its bytes are on this machine, with its
+sync state shown. Written 2026-11-21.
+
+## The pieces
+
+| Piece | What it is |
+|---|---|
+| **Space** | Whose files: a person's or an org's. One file tree per space. |
+| **Device** | A computer, phone or server, with its own key. Registered to a space by pairing. |
+| **Storage** | Somewhere blobs live, reached through OpenDAL: a folder on a device, a NAS, S3, R2, B2, WebDAV, SFTP, … Registered to a space; run by one device (the one holding its credentials). |
+| **File tree** | One Loro document per space (`drive:files:<space>`): a movable tree of folders and files. A file entry holds its name, size, times, MIME type and its content's BLAKE3 hash, never its bytes. |
+| **Blob** | A file's bytes, named by their BLAKE3 hash, kept in one or more storages (`blobs/ab/cd/<hash>`). Same bytes, one blob, wherever they come from. |
+| **Agent** | `drive-agent`, the program on each computer: keeps the device's cache, moves blobs to and from storage, and shows the tree to the operating system. |
+
+## Registering a device
+
+1. The first device creates the space: it makes its key and becomes the
+   space's first device.
+2. Another device asks to join: the agent (or app) shows a short **pairing
+   code**; on a device already in the space you enter it (or scan its QR
+   code). The node matches the two and the new device's key is added to
+   the space's **device registry** (`drive:devices:<space>`), signed by the
+   device that approved it.
+3. Each device records there: its name, kind (laptop, phone, server, NAS),
+   OS, its roles (client, always-on, storage) and when it was last seen.
+   Online status is live presence.
+
+With accounts (later), signing in replaces the code: the account vouches
+for the new device's key.
+
+## Registering storage
+
+- A storage is an **OpenDAL operator**: a scheme (`fs`, `s3`, `webdav`,
+  `sftp`, `b2`, `gcs`, …) and its options.
+- **Credentials never sync.** The registry (`drive:storage:<space>`) holds
+  only what others may see: name, scheme, where (bucket, root, host),
+  which device runs it, its capacity and usage. The keys stay in that
+  device's own config.
+- **Who can reach it:** a storage on a device's disk is reached through
+  that device (its agent serves the blobs); a cloud bucket is reached by
+  the device holding its keys, which hands others short-lived signed URLs
+  where the service has them.
+- **Placement rules** say what goes where: "every blob to the NAS and to
+  R2", "this folder only to the NAS", "the last 30 days on the laptop".
+
+## Bytes: hashing and moving
+
+- **Hash:** BLAKE3. A sampled hash (size + first, middle and last 64 KiB)
+  finds likely duplicates fast; the full hash, checked before anything is
+  trusted, reused or deleted, is the blob's name (Spacedrive's method).
+- **Upload:** a new or changed file is hashed, its blob written to the
+  placement's storages (skipped where the hash already exists), then its
+  entry in the tree updated with the new hash: the tree change is the
+  commit point.
+- **Download:** on open (or pin), the agent fetches the blob from the
+  nearest storage that has it, checks the hash, and keeps it in its cache.
+- Large media later move in verified chunks (BLAKE3/Bao, `iroh-blobs`).
+
+## Sync states (what the file browser shows)
+
+| State | Meaning |
+|---|---|
+| **Cloud only** | In the tree; its bytes are not on this device. Opening it downloads it. |
+| **Downloading** | Being fetched. |
+| **Local** | Its bytes are in this device's cache (may be evicted when space is short). |
+| **Pinned** | Always kept here ("Make available offline"). |
+| **Uploading** | Changed here; its blob is going to storage. |
+| **Synced** | Its blob is in at least one storage the placement asks for. |
+| **Conflict** | Two devices changed it at once: both versions kept, one renamed. |
+
+## Showing the tree to the operating system
+
+| Platform | Integration | Status in the file browser |
+|---|---|---|
+| **Linux** | A FUSE file system (`fuser`) mounted at `~/Drive`: every file listed; bytes fetched on first read | Extended attributes (`user.drive.state`), `drive-agent status`, and file-manager extensions (Nautilus, Dolphin) for emblems |
+| **macOS** | A File Provider extension (`NSFileProviderReplicatedExtension`, as iCloud Drive and Dropbox use) in a small Swift app around the Rust agent | Finder's own cloud and download badges, "Download now", "Remove download" |
+| **Windows** | The Cloud Files API (placeholders and hydration; the `cloud-filter` crate) | Explorer's own status column and overlay icons |
+| **Anywhere** | A WebDAV server in the agent: mountable from Finder, Files on iOS, Windows, Linux | None (a plain network drive) |
+
+## Prototype scope
+
+The Linux path first (this is where it can be tried today), with every
+piece above it shared by all platforms: a native client, the file tree
+and blob store, device pairing, storage registration with OpenDAL (local
+folders and S3-compatible), the agent mounting `~/Drive` with on-demand
+download and pinning, states as extended attributes and a CLI, and the
+Drive app's Files, Devices and Storage views showing the same states live.
