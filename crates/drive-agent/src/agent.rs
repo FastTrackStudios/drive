@@ -130,7 +130,7 @@ pub struct Agent {
     pub spine: LoroDoc,
     pub files_id: String,
     pub space_id: String,
-    stores: Vec<(String, BlobStore)>,
+    pub(crate) stores: Vec<(String, BlobStore)>,
     pub http: reqwest::Client,
     busy: Mutex<HashSet<(String, State)>>,
 }

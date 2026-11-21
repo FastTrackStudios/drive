@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 drive-proto.workspace = true
 drive-files = { path = "../drive-files" }
+drive-spine.workspace = true
+zip = { version = "5", default-features = false }
 loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true

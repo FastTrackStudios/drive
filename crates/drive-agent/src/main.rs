@@ -26,6 +26,7 @@
 //! drive-agent [--dir DIR] role storage-server|workstation   # keep everything, or the work at hand
 //! drive-agent [--dir DIR] active [add|rm PATH]          # folders this device is working on
 //! drive-agent [--dir DIR] place                         # one placement pass now
+//! drive-agent [--dir DIR] storage public STORAGE URL|off # files kept available go there (R2), links point at URL
 //! drive-agent [--dir DIR] available                     # put what should be available on the node now
 //!
 //! Protection (3-2-1 and the like):
@@ -613,8 +614,11 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         "available" => {
             let a = start(dir).await?;
             let n = a.make_available().await;
+            let p = a.publish_available().await;
             settle(&a).await;
-            out(format!("{n} files put on the node"));
+            out(format!(
+                "{n} files put on the node, {p} published to public storage"
+            ));
         }
         "place" => {
             let a = start(dir).await?;
@@ -632,6 +636,26 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     String::new()
                 }
             ));
+        }
+        "storage" if args.get(1).map(String::as_str) == Some("public") => {
+            let usage = "storage public STORAGE URL|off";
+            let who = args.get(2).ok_or(usage)?;
+            let url = args.get(3).ok_or(usage)?;
+            let a = start(dir).await?;
+            let id = space::storages(&a.space)
+                .into_iter()
+                .find(|s| s.name == *who || s.id == *who)
+                .map(|s| s.id)
+                .ok_or(format!("no storage {who}"))?;
+            let url = if url == "off" { "" } else { url.as_str() };
+            space::set_public(&a.space, &id, url).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            out(if url.is_empty() {
+                format!("{who} no longer serves available files")
+            } else {
+                format!("{who} serves available files at {url}")
+            });
         }
         "site" => {
             let who = args.get(1).ok_or("site DEVICE_OR_STORAGE SITE")?;

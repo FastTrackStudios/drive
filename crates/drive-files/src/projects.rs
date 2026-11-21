@@ -251,6 +251,114 @@ pub fn available(doc: &LoroDoc, location: &str) -> std::collections::HashMap<Str
         .unwrap_or_default()
 }
 
+/// Every file kept available, in every location: (location, path, record).
+pub fn all_available(doc: &LoroDoc) -> Vec<(String, String, Available)> {
+    let map = doc.get_map("available");
+    let mut out = Vec::new();
+    for loc in map.keys() {
+        for (path, a) in available(doc, &loc) {
+            out.push((loc.to_string(), path, a));
+        }
+    }
+    out
+}
+
+/// A link that lets anyone holding it see and download a project's files
+/// (all of them, or only some kinds: "all the audio"). The files come from
+/// whichever computer has them and is on, through the node; nothing is
+/// copied anywhere first.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Share {
+    /// The secret in the link (a random UUID).
+    pub token: String,
+    pub project: String,
+    /// Only these kinds (`audio`, and the kinds under it); empty: everything.
+    pub kinds: Vec<String>,
+    pub created: i64,
+    /// Who made it (a device or person name), for the list of links.
+    pub by: String,
+}
+
+/// Make a share link for a project (the token comes from the caller, who
+/// has a good random source: the browser's `crypto.randomUUID()`).
+pub fn add_share(
+    doc: &LoroDoc,
+    token: &str,
+    project: &str,
+    kinds: &[String],
+    by: &str,
+) -> loro::LoroResult<()> {
+    let m = doc.get_map("shares").ensure_mergeable_map(token)?;
+    m.insert("token", token)?;
+    m.insert("project", project)?;
+    m.insert("kinds", kinds.join(" "))?;
+    m.insert("created", crate::now_ms())?;
+    m.insert("by", by)?;
+    Ok(())
+}
+
+pub fn remove_share(doc: &LoroDoc, token: &str) -> loro::LoroResult<()> {
+    doc.get_map("shares").delete(token)
+}
+
+fn share_of(m: &LoroMap) -> Share {
+    Share {
+        token: s(m, "token"),
+        project: s(m, "project"),
+        kinds: s(m, "kinds")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+        created: n(m, "created"),
+        by: s(m, "by"),
+    }
+}
+
+/// The share with this token, if it exists (and its project still does).
+pub fn share(doc: &LoroDoc, token: &str) -> Option<Share> {
+    if token.len() < 16 {
+        return None;
+    }
+    let sh = child(&doc.get_map("shares"), token)
+        .map(|m| share_of(&m))
+        .filter(|x| x.token == token)?;
+    projects(doc)
+        .iter()
+        .any(|p| p.id == sh.project)
+        .then_some(sh)
+}
+
+/// A project's share links, newest first.
+pub fn shares(doc: &LoroDoc, project: &str) -> Vec<Share> {
+    let map = doc.get_map("shares");
+    let mut out: Vec<Share> = map
+        .keys()
+        .filter_map(|k| child(&map, &k))
+        .map(|m| share_of(&m))
+        .filter(|x| x.project == project)
+        .collect();
+    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out
+}
+
+impl Part {
+    /// Whether a path of its location is inside this part.
+    pub fn contains(&self, path: &str) -> bool {
+        self.path.is_empty() || path == self.path || path.starts_with(&format!("{}/", self.path))
+    }
+
+    /// A path of its location, relative to the part (`Mixes/v3.wav`).
+    pub fn relative<'a>(&self, path: &'a str) -> &'a str {
+        if self.path.is_empty() {
+            path
+        } else {
+            path.strip_prefix(&self.path)
+                .unwrap_or(path)
+                .trim_start_matches('/')
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +436,32 @@ mod tests {
         );
         set_available(&d, "engineer-projects", "Amazing Grace/Mixes/v3.wav", None).unwrap();
         assert!(available(&d, "engineer-projects").is_empty());
+    }
+
+    #[test]
+    fn share_links() {
+        let d = LoroDoc::new();
+        let p = add_project(&d, "Song A", "MusicRecording").unwrap();
+        let token = "0b6f6a4e-5d1c-4c8e-9d7e-2a3b4c5d6e7f";
+        add_share(&d, token, &p, &["audio".to_string()], "THEBATTLESHIP").unwrap();
+        assert_eq!(share(&d, token).unwrap().kinds, ["audio"]);
+        assert!(share(&d, "short").is_none());
+        assert!(share(&d, "0b6f6a4e-5d1c-4c8e-9d7e-000000000000").is_none());
+        assert_eq!(shares(&d, &p).len(), 1);
+
+        // A share dies with its project.
+        remove_project(&d, &p).unwrap();
+        assert!(share(&d, token).is_none());
+
+        let part = Part {
+            id: "x".into(),
+            label: "Mixes".into(),
+            location: "l".into(),
+            path: "Song A/Mixes".into(),
+            available: false,
+        };
+        assert!(part.contains("Song A/Mixes/v3.wav"));
+        assert!(!part.contains("Song A/Mixes2/v3.wav"));
+        assert_eq!(part.relative("Song A/Mixes/sub/v3.wav"), "sub/v3.wav");
     }
 }

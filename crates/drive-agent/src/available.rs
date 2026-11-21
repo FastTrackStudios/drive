@@ -71,4 +71,53 @@ impl Agent {
         }
         put
     }
+
+    /// Copy every available file into the public storages this device runs
+    /// (the R2 bucket), so share links can send people straight there.
+    /// Returns how many went up.
+    pub async fn publish_available(&self) -> usize {
+        let public = space::public(&self.space);
+        let mut hashes: Vec<String> = projects::all_available(&self.space)
+            .into_iter()
+            .map(|(_, _, a)| a.hash)
+            .filter(|h| !h.is_empty())
+            .collect();
+        hashes.sort();
+        hashes.dedup();
+        let mut put = 0;
+        for (sid, store) in self
+            .stores
+            .iter()
+            .filter(|(sid, _)| public.contains_key(sid))
+        {
+            for h in &hashes {
+                if space::holders(&self.space, h)
+                    .iter()
+                    .any(|(who, _)| who == sid)
+                {
+                    continue;
+                }
+                let bytes = match self.fetch_bytes(h).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(storage.id = %sid, error = %e, "an available file could not be read to publish");
+                        continue;
+                    }
+                };
+                match store.put_checked(h, bytes).await {
+                    Ok(()) => {
+                        let _ = space::set_held(&self.space, sid, h, Some("stored"));
+                        put += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!(storage.id = %sid, error = %e, "a public storage refused a file")
+                    }
+                }
+            }
+        }
+        if put > 0 {
+            self.commit_space();
+        }
+        put
+    }
 }

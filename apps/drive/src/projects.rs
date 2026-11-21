@@ -194,6 +194,8 @@ pub fn ProjectView(space: String, id: String) -> Element {
             p { class: "hint",
                 "Parts stay on the computers that have them. A part marked available is copied to the node by its computer, so the client mixes can be shared while it is off; charts and documents are kept available wherever they are."
             }
+            h2 { class: "sec", "Share" }
+            ShareLinks { reg: reg.clone(), space: space.clone(), project: pid.clone() }
             h2 { class: "sec", "Documents" }
             if doc_items.is_empty() {
                 p { class: "empty", "No documents yet. Pick a song in Apps › Studio and tick this project." }
@@ -300,6 +302,77 @@ pub fn DocProjects(reg: Doc, doc_id: String) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// A project's share links: anyone holding one sees its files and can
+/// download them, each from the fastest place that has it.
+#[component]
+fn ShareLinks(reg: Doc, space: String, project: String) -> Element {
+    let ctx = drive_dioxus::use_drive();
+    let r = reg.loro();
+    let links = proj::shares(&r, &project);
+    let origin = js_sys::eval("location.origin")
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    let make = {
+        let (reg, project) = (reg.clone(), project.clone());
+        move |kinds: Vec<String>| {
+            let token = js_sys::eval("crypto.randomUUID()")
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            if token.len() < 16 {
+                return;
+            }
+            let by = ctx.me.peek().name.clone();
+            reg.edit(|d| {
+                let _ = proj::add_share(d, &token, &project, &kinds, &by);
+            });
+        }
+    };
+    let (all, audio) = (make.clone(), make);
+    rsx! {
+        div { class: "actions sharebar",
+            button { class: "primary ghost", onclick: move |_| all(Vec::new()), "Share all files" }
+            button { class: "primary ghost", onclick: move |_| audio(vec!["audio".to_string()]), "Share the audio" }
+        }
+        for l in links {
+            {
+                let url = format!("{origin}/s/{}/{}", space, l.token);
+                let what = if l.kinds.is_empty() { "All files".to_string() } else { format!("Only {}", l.kinds.join(", ")) };
+                let (reg, token, u) = (reg.clone(), l.token.clone(), url.clone());
+                rsx! {
+                    div { key: "{l.token}", class: "sharelink",
+                        div { class: "pmain",
+                            b { "{what}" }
+                            a { class: "s1", href: "{url}", target: "_blank", "{url}" }
+                        }
+                        button {
+                            class: "primary ghost",
+                            onclick: move |_| {
+                                let _ = js_sys::eval(&format!("navigator.clipboard.writeText({})", serde_json::Value::String(u.clone())));
+                            },
+                            "Copy"
+                        }
+                        button {
+                            class: "x",
+                            title: "Take this link back: it stops working at once",
+                            onclick: move |_| {
+                                reg.edit(|d| {
+                                    let _ = proj::remove_share(d, &token);
+                                });
+                            },
+                            "✕"
+                        }
+                    }
+                }
+            }
+        }
+        p { class: "hint",
+            "Files kept available come from the fast storage (R2) or this node; the rest come from the storage server or the computer that has them, when it is on. Nothing is uploaded ahead of time."
         }
     }
 }

@@ -303,6 +303,34 @@ impl Store {
         Ok(out)
     }
 
+    /// Every file of a location under a folder (`""`: all of it), by path.
+    pub async fn under(
+        &self,
+        space: &str,
+        location: &str,
+        prefix: &str,
+    ) -> turso::Result<Vec<Found>> {
+        let prefix = prefix.trim_matches('/');
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
+                 WHERE space = ?1 AND location = ?2 AND dir = 0 \
+                 AND (?3 = '' OR substr(path, 1, length(?3) + 1) = ?3 || '/') ORDER BY path",
+                vec![
+                    Value::Text(space.into()),
+                    Value::Text(location.into()),
+                    Value::Text(prefix.into()),
+                ],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(Self::found(&row)?);
+        }
+        Ok(out)
+    }
+
     /// Every indexed file in a space, for copies and protection.
     pub async fn files(&self, space: &str) -> turso::Result<Vec<drive_files::protect::FileRow>> {
         let conn = self.conn.lock().await;

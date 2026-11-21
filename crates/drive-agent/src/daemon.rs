@@ -146,6 +146,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     last_place = now;
                     a.place().await;
                     a.make_available().await;
+                    a.publish_available().await;
                 }
                 if now.duration_since(last_view) > Duration::from_secs(30) {
                     last_view = now;

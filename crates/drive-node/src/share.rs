@@ -1,0 +1,525 @@
+//! Share links: `/s/{space}/{token}` shows a project's files (or only some
+//! kinds of them, "all the audio") to anyone holding the link, and lets
+//! them download one file or everything as one zip.
+//!
+//! Where a file comes from, fastest first:
+//! 1. kept available and in a public storage (the R2 bucket): a redirect
+//!    there;
+//! 2. kept available on the node: from the node;
+//! 3. a storage server that has a copy and is on (Starcommand);
+//! 4. the computer that holds the part, if it is on;
+//! 5. any other computer with a copy that is on.
+//!
+//! Nothing is uploaded ahead of time: what is not kept available travels
+//! from the computer that has it, through the node, when it is asked for.
+
+use std::collections::HashMap;
+use std::io::Write;
+
+use axum::body::Body;
+use axum::extract::{Path as UrlPath, Query, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use drive_files::placement::Role;
+use drive_files::projects::{self, Available, Part, Project, Share};
+use drive_files::space;
+use drive_spine::kinds::Kinds;
+
+use crate::catalog::Catalog;
+use crate::store::Found;
+
+/// A share, resolved: its project, and every file it offers.
+struct Resolved {
+    share: Share,
+    project: Project,
+    files: Vec<(Part, Found)>,
+    /// location id → (its device, its name, its device's name).
+    locations: HashMap<String, (String, String, String)>,
+    /// location id → path → its record, for files kept available.
+    available: HashMap<String, HashMap<String, Available>>,
+    /// storage id → public URL.
+    public: HashMap<String, String>,
+    /// Devices whose agent is connected.
+    online: Vec<String>,
+    /// Storage-server devices.
+    servers: Vec<String>,
+    /// blob hash → its holders, for files kept available.
+    holders: HashMap<String, Vec<String>>,
+}
+
+async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, StatusCode> {
+    let doc = drive_files::space_doc(space_id);
+    let (share, all, locations, devices, public, available, holders) = c
+        .rooms
+        .read(&doc, |d| {
+            let locations = space::locations(d);
+            let available: HashMap<String, HashMap<String, Available>> = locations
+                .iter()
+                .map(|l| (l.id.clone(), projects::available(d, &l.id)))
+                .collect();
+            let holders: HashMap<String, Vec<String>> = available
+                .values()
+                .flat_map(|m| m.values())
+                .map(|a| {
+                    (
+                        a.hash.clone(),
+                        space::holders(d, &a.hash)
+                            .into_iter()
+                            .map(|(w, _)| w)
+                            .collect(),
+                    )
+                })
+                .collect();
+            (
+                projects::share(d, token),
+                projects::projects(d),
+                locations,
+                space::devices(d),
+                space::public(d),
+                available,
+                holders,
+            )
+        })
+        .await;
+    let Some(share) = share else {
+        tracing::warn!(share.space = %space_id, "a share link that does not exist was asked for");
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let project = all
+        .into_iter()
+        .find(|p| p.id == share.project)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let kinds = c.rooms.read(drive_spine::SPINE, Kinds::load).await;
+    let allowed: Vec<String> = share
+        .kinds
+        .iter()
+        .flat_map(|k| kinds.family(k).into_iter().map(|x| x.id.clone()))
+        .collect();
+    // A file inside two parts (Mixes inside the song's folder) is listed
+    // once, under the most specific part.
+    let mut parts: Vec<&Part> = project.parts.iter().collect();
+    parts.sort_by_key(|p| std::cmp::Reverse(p.path.len()));
+    let mut seen = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    for part in parts {
+        let found = c
+            .rooms
+            .store
+            .under(space_id, &part.location, &part.path)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "a share's files could not be listed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        for f in found {
+            if (allowed.is_empty() || allowed.contains(&kinds.of_file(&f.name, false).id))
+                && seen.insert((f.location.clone(), f.path.clone()))
+            {
+                files.push((part.clone(), f));
+            }
+        }
+    }
+    let names: HashMap<&str, &str> = devices
+        .iter()
+        .map(|d| (d.id.as_str(), d.name.as_str()))
+        .collect();
+    Ok(Resolved {
+        share,
+        project,
+        files,
+        locations: locations
+            .iter()
+            .map(|l| {
+                (
+                    l.id.clone(),
+                    (
+                        l.device.clone(),
+                        l.name.clone(),
+                        names.get(l.device.as_str()).unwrap_or(&"").to_string(),
+                    ),
+                )
+            })
+            .collect(),
+        available,
+        public,
+        online: c.rooms.agents_online(space_id).await,
+        servers: devices
+            .iter()
+            .filter(|d| Role::of(&d.roles) == Role::StorageServer)
+            .map(|d| d.id.clone())
+            .collect(),
+        holders,
+    })
+}
+
+impl Resolved {
+    fn kept(&self, part: &Part, f: &Found) -> Option<&Available> {
+        self.available
+            .get(&part.location)?
+            .get(&f.path)
+            .filter(|a| a.size == f.size && a.mtime == f.mtime)
+    }
+
+    /// Where a kept-available file is in a public storage, if it is.
+    fn public_url(&self, a: &Available) -> Option<String> {
+        let held = self.holders.get(&a.hash)?;
+        self.public
+            .iter()
+            .find(|(sid, _)| held.contains(sid))
+            .map(|(_, url)| format!("{url}/{}", drive_files::blob::key(&a.hash)))
+    }
+
+    fn on(&self, location: &str) -> bool {
+        self.locations
+            .get(location)
+            .is_some_and(|(dev, _, _)| self.online.contains(dev))
+    }
+
+    /// Whether a file can be had now: kept available, or some computer
+    /// with a copy (its own, a storage server's mirror, …) is on.
+    async fn reachable(&self, c: &Catalog, space_id: &str, part: &Part, f: &Found) -> bool {
+        if self.kept(part, f).is_some() || self.on(&part.location) {
+            return true;
+        }
+        if f.sampled.is_empty() {
+            return false;
+        }
+        c.rooms
+            .store
+            .copies(space_id, &f.sampled, f.size)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|x| self.on(&x.location))
+    }
+
+    fn find(&self, part_id: &str, path: &str) -> Option<&(Part, Found)> {
+        self.files
+            .iter()
+            .find(|(p, f)| p.id == part_id && f.path == path)
+    }
+}
+
+/// Bring a file's bytes to the node from the best online source; its hash.
+async fn bring(
+    c: &Catalog,
+    space_id: &str,
+    r: &Resolved,
+    part: &Part,
+    f: &Found,
+) -> Result<String, &'static str> {
+    if let Some(a) = r.kept(part, f) {
+        if c.blobs.has(&a.hash).await.unwrap_or(false) {
+            return Ok(a.hash.clone());
+        }
+    }
+    // Every location holding the same content, storage servers first, then
+    // the part's own, then the rest; only those whose device is on.
+    let mut sources: Vec<(u8, String, String)> = Vec::new();
+    if !f.sampled.is_empty() {
+        for copy in c
+            .rooms
+            .store
+            .copies(space_id, &f.sampled, f.size)
+            .await
+            .unwrap_or_default()
+        {
+            let Some((dev, _, _)) = r.locations.get(&copy.location) else {
+                continue;
+            };
+            if !r.online.contains(dev) {
+                continue;
+            }
+            let rank = if r.servers.contains(dev) {
+                0
+            } else if copy.location == part.location {
+                1
+            } else {
+                2
+            };
+            sources.push((rank, copy.location, copy.path));
+        }
+    }
+    if sources.is_empty()
+        && r.locations
+            .get(&part.location)
+            .is_some_and(|(d, _, _)| r.online.contains(d))
+    {
+        sources.push((1, part.location.clone(), f.path.clone()));
+    }
+    sources.sort();
+    for (_, loc, path) in sources {
+        if let Ok(h) = c.rooms.fetch(space_id, &loc, &path).await {
+            return Ok(h);
+        }
+    }
+    Err("every computer that has this file is off")
+}
+
+/// `/s/{space}/{token}`: the share's page.
+pub async fn page(
+    UrlPath((space_id, token)): UrlPath<(String, String)>,
+    State(c): State<Catalog>,
+) -> Response {
+    let r = match resolve(&c, &space_id, &token).await {
+        Ok(r) => r,
+        Err(s) => {
+            return (
+                s,
+                Html(shell(
+                    "Not found",
+                    "<p class=empty>This link does not exist, or was taken back.</p>",
+                )),
+            )
+                .into_response();
+        }
+    };
+    let base = format!("/s/{}/{}", enc(&space_id), enc(&token));
+    let total: i64 = r.files.iter().map(|(_, f)| f.size).sum();
+    let mut ok_files = std::collections::HashSet::new();
+    for (p, f) in &r.files {
+        if r.reachable(&c, &space_id, p, f).await {
+            ok_files.insert((p.id.clone(), f.path.clone()));
+        }
+    }
+    let reach = ok_files.len();
+    let what = if r.share.kinds.is_empty() {
+        "files".to_string()
+    } else {
+        format!("{} files", r.share.kinds.join(", "))
+    };
+    let mut body = format!(
+        "<header><h1>{}</h1><p>{} {} · {}</p><a class=all href=\"{base}/zip\">Download all</a></header>",
+        esc(&r.project.name),
+        r.files.len(),
+        esc(&what),
+        human(total.max(0) as u64)
+    );
+    if reach < r.files.len() {
+        body.push_str(&format!(
+            "<p class=note>{} of them are on a computer that is off right now; the zip leaves them out (and says which).</p>",
+            r.files.len() - reach
+        ));
+    }
+    for part in &r.project.parts {
+        let mine: Vec<&(Part, Found)> = r.files.iter().filter(|(p, _)| p.id == part.id).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let from = r
+            .locations
+            .get(&part.location)
+            .map_or(String::new(), |(_, _, dev)| dev.clone());
+        body.push_str(&format!(
+            "<h2>{} <span>{}</span></h2><ul>",
+            esc(&part.label),
+            esc(&from)
+        ));
+        for (p, f) in mine {
+            let ok = ok_files.contains(&(p.id.clone(), f.path.clone()));
+            let href = format!("{base}/file?part={}&path={}", enc(&p.id), enc(&f.path));
+            let fast = r.kept(p, f).is_some();
+            body.push_str(&format!(
+                "<li class=\"{}\">{}<span class=size>{}</span>{}</li>",
+                if ok { "" } else { "off" },
+                if ok {
+                    format!("<a href=\"{href}\">{}</a>", esc(p.relative(&f.path)))
+                } else {
+                    esc(p.relative(&f.path))
+                },
+                human(f.size.max(0) as u64),
+                if fast {
+                    "<span class=tag>ready</span>"
+                } else if ok {
+                    ""
+                } else {
+                    "<span class=tag>computer off</span>"
+                }
+            ));
+        }
+        body.push_str("</ul>");
+    }
+    Html(shell(&r.project.name, &body)).into_response()
+}
+
+/// `/s/{space}/{token}/file?part=&path=`: one file of the share.
+pub async fn file(
+    UrlPath((space_id, token)): UrlPath<(String, String)>,
+    State(c): State<Catalog>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let r = match resolve(&c, &space_id, &token).await {
+        Ok(r) => r,
+        Err(s) => return s.into_response(),
+    };
+    let (part_id, path) = (
+        q.get("part").map_or("", String::as_str),
+        q.get("path").map_or("", String::as_str),
+    );
+    let Some((part, f)) = r.find(part_id, path) else {
+        tracing::warn!(share.space = %space_id, "a file outside a share was asked for");
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Some(url) = r.kept(part, f).and_then(|a| r.public_url(a)) {
+        return Redirect::temporary(&url).into_response();
+    }
+    match bring(&c, &space_id, &r, part, f).await {
+        Ok(hash) => {
+            let mut query = HashMap::new();
+            query.insert("name".to_string(), f.name.clone());
+            match crate::get_blob(UrlPath(hash), Query(query), State(c.blobs.clone())).await {
+                Ok(resp) => resp,
+                Err(s) => s.into_response(),
+            }
+        }
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+    }
+}
+
+/// A `Write` that hands its bytes to the response body.
+struct Pipe(tokio::sync::mpsc::Sender<Result<Vec<u8>, std::io::Error>>);
+
+impl Write for Pipe {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.blocking_send(Ok(buf.to_vec())).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the download was cancelled")
+        })?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `/s/{space}/{token}/zip`: everything reachable, as one zip, streamed as
+/// each file arrives (stored, not compressed: audio does not shrink).
+pub async fn zip(
+    UrlPath((space_id, token)): UrlPath<(String, String)>,
+    State(c): State<Catalog>,
+) -> Response {
+    let r = match resolve(&c, &space_id, &token).await {
+        Ok(r) => r,
+        Err(s) => return s.into_response(),
+    };
+    let name = format!(
+        "{}.zip",
+        r.project.name.replace(['/', '\\', '"', '\r', '\n'], "_")
+    );
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(8);
+    let (file_tx, file_rx) = std::sync::mpsc::sync_channel::<(String, Vec<u8>)>(1);
+
+    // Writer: a blocking task, one entry per file that arrives.
+    tokio::task::spawn_blocking(move || {
+        let mut z = zip::ZipWriter::new_stream(Pipe(body_tx));
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .large_file(true);
+        for (entry, bytes) in file_rx {
+            if z.start_file(entry, opts).is_err() || z.write_all(&bytes).is_err() {
+                return;
+            }
+        }
+        let _ = z.finish();
+    });
+
+    // Reader: bring each file from wherever it is, in order.
+    tokio::spawn(async move {
+        let mut missing = Vec::new();
+        for (part, f) in &r.files {
+            let entry = format!("{}/{}", part.label, part.relative(&f.path));
+            let bytes = match bring(&c, &space_id, &r, part, f).await {
+                Ok(h) => c.blobs.get(&h).await.ok(),
+                Err(_) => None,
+            };
+            match bytes {
+                Some(b) => {
+                    if file_tx.send((entry, b)).is_err() {
+                        return;
+                    }
+                }
+                None => missing.push(entry),
+            }
+        }
+        if !missing.is_empty() {
+            let note = format!(
+                "These files are on a computer that was off when this zip was made. Download again later for them.\n\n{}\n",
+                missing.join("\n")
+            );
+            let _ = file_tx.send(("MISSING.txt".into(), note.into_bytes()));
+        }
+    });
+
+    let mut resp = Response::new(Body::from_stream(tokio_stream_from(body_rx)));
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    resp
+}
+
+fn tokio_stream_from(
+    mut rx: tokio::sync::mpsc::Receiver<Result<Vec<u8>, std::io::Error>>,
+) -> impl futures::Stream<Item = Result<Vec<u8>, std::io::Error>> {
+    futures::stream::poll_fn(move |cx| rx.poll_recv(cx))
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn enc(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn human(n: u64) -> String {
+    match n {
+        0..1024 => format!("{n} B"),
+        1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.0),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", n as f64 / 1_048_576.0),
+        _ => format!("{:.2} GB", n as f64 / 1_073_741_824.0),
+    }
+}
+
+fn shell(title: &str, body: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width, initial-scale=1\">\
+         <title>{}</title><style>{CSS}</style></head><body><main>{body}<footer>Shared with Drive</footer></main></body></html>",
+        esc(title)
+    )
+}
+
+const CSS: &str = "\
+:root{color-scheme:dark}*{box-sizing:border-box}\
+body{margin:0;background:#000;color:#f4f4f5;font:15px/1.45 -apple-system,system-ui,sans-serif}\
+main{max-width:760px;margin:0 auto;padding:28px 18px 60px}\
+header{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin-bottom:18px}\
+h1{margin:0;font-size:28px;letter-spacing:-.02em;flex-basis:100%}\
+header p{margin:0;color:#a1a1aa;flex:1}\
+a.all{background:#f4f4f5;color:#000;text-decoration:none;font-weight:650;padding:10px 16px;border-radius:12px}\
+.note{color:#f5d68a;font-size:14px}\
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#8b8b94;margin:24px 2px 8px}\
+h2 span{text-transform:none;letter-spacing:0;font-weight:500;margin-left:6px}\
+ul{list-style:none;margin:0;padding:0;background:#141417;border:1px solid #1d1d22;border-radius:14px}\
+li{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid #1d1d22}\
+li:first-child{border-top:0}\
+li a{color:#2dd4bf;text-decoration:none;font-weight:600;flex:1;min-width:0;overflow-wrap:anywhere}\
+li.off{color:#8b8b94}li.off{flex:1}\
+.size{color:#8b8b94;font-size:13px;margin-left:auto;white-space:nowrap}\
+.tag{font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:9px;background:#1f1f23;color:#a1a1aa;white-space:nowrap}\
+footer{margin-top:40px;color:#52525b;font-size:12px;text-align:center}";

@@ -4,6 +4,7 @@
 
 pub mod catalog;
 pub mod rooms;
+pub mod share;
 pub mod store;
 
 use std::path::{Path, PathBuf};
@@ -59,6 +60,9 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
                 .route("/at-risk", get(catalog::at_risk))
                 .route("/stats", get(catalog::stats))
                 .route("/fetch/{space}/{location}", get(catalog::fetch))
+                .route("/s/{space}/{token}", get(share::page))
+                .route("/s/{space}/{token}/file", get(share::file))
+                .route("/s/{space}/{token}/zip", get(share::zip))
                 .layer(axum::extract::DefaultBodyLimit::max(512 << 20))
                 .with_state(catalog),
         )

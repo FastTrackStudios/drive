@@ -264,6 +264,36 @@ pub fn storages(doc: &LoroDoc) -> Vec<Storage> {
     out
 }
 
+/// A storage that serves what is kept available to anyone, fast: an R2
+/// (or S3) bucket with a public URL. Agents that run it copy every
+/// available file into it, and share links send people straight there.
+/// `url` is the bucket's public base (`https://media.example.com`); a blob
+/// is at `{url}/{blob::key(hash)}`. Empty: no longer public.
+pub fn set_public(doc: &LoroDoc, storage: &str, url: &str) -> loro::LoroResult<()> {
+    let m = doc.get_map("public");
+    if url.is_empty() {
+        if m.get(storage).is_some() {
+            m.delete(storage)?;
+        }
+        Ok(())
+    } else {
+        m.insert(storage, url.trim_end_matches('/'))
+    }
+}
+
+/// Public storages: storage id → public base URL.
+pub fn public(doc: &LoroDoc) -> std::collections::HashMap<String, String> {
+    let m = doc.get_map("public");
+    m.keys()
+        .filter_map(|k| match m.get(&k) {
+            Some(ValueOrContainer::Value(LoroValue::String(v))) => {
+                Some((k.to_string(), v.to_string()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn remove_storage(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
     doc.get_map("storages").delete(id)
 }
