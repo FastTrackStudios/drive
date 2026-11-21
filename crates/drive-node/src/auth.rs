@@ -153,14 +153,45 @@ impl Auth {
     }
 }
 
-/// The `Bearer` token of a request, if any.
+/// The token of a request: its `Bearer`, or the `drive_token` cookie the
+/// browser apps set (plain links, a download, carry no header).
 pub fn bearer(headers: &HeaderMap) -> Option<String> {
-    headers
+    let from_header = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+        .map(|t| t.trim().to_string());
+    let from_cookie = || {
+        headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find_map(|c| {
+                c.split(';').find_map(|kv| {
+                    let (k, v) = kv.trim().split_once('=')?;
+                    (k == "drive_token").then(|| percent(v))
+                })
+            })
+    };
+    from_header.or_else(from_cookie).filter(|t| !t.is_empty())
+}
+
+fn percent(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 3 <= b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Whether a request comes from this computer itself: from loopback, not
@@ -189,6 +220,19 @@ pub fn is_local(addr: Option<SocketAddr>, headers: &HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_token_from_the_header_or_the_cookie() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "cookie",
+            "theme=dark; drive_token=abc%2Edef".parse().unwrap(),
+        );
+        assert_eq!(bearer(&h).as_deref(), Some("abc.def"));
+        h.insert("authorization", "Bearer xyz".parse().unwrap());
+        assert_eq!(bearer(&h).as_deref(), Some("xyz"));
+        assert_eq!(bearer(&HeaderMap::new()), None);
+    }
 
     #[test]
     fn local_means_this_computer_not_a_proxy() {

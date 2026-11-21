@@ -21,8 +21,20 @@ pub fn DevicesPage(space: String) -> Element {
             }
         };
     }
+    let ctx = use_drive();
+    let out = ctx.clone();
     rsx! {
         div { class: "pane",
+            if ctx.signed_in {
+                h2 { class: "sec", "Account" }
+                div { class: "device",
+                    div { class: "dmain",
+                        b { if ctx.who.is_empty() { "Signed in" } else { "{ctx.who}" } }
+                        span { class: "s1", "Signed in for every app on this address · org {ctx.org}" }
+                    }
+                    button { class: "primary ghost", onclick: move |_| out.sign_out(), "Sign out" }
+                }
+            }
             h2 { class: "sec", "Devices" }
             Devices { space: space.clone() }
             h2 { class: "sec", "Storage" }

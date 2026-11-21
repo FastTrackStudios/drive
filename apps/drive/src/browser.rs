@@ -278,7 +278,11 @@ fn tree_item(
 // ── helpers ─────────────────────────────────────────────────────────────
 
 pub async fn get(url: String) -> Option<Value> {
-    let r = gloo_net::http::Request::get(&url).send().await.ok()?;
+    let mut req = gloo_net::http::Request::get(&url);
+    if let Some(b) = drive_dioxus::auth::bearer() {
+        req = req.header("authorization", &b);
+    }
+    let r = req.send().await.ok()?;
     if !r.ok() {
         return None;
     }
@@ -1008,7 +1012,11 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
                     };
                     let hash = drive_files::hash::of_bytes(&bytes);
                     let body = js_sys::Uint8Array::from(bytes.as_ref());
-                    let sent = gloo_net::http::Request::put(&format!("/blobs/{hash}")).body(body);
+                    let mut put = gloo_net::http::Request::put(&format!("/blobs/{hash}"));
+                    if let Some(b) = drive_dioxus::auth::bearer() {
+                        put = put.header("authorization", &b);
+                    }
+                    let sent = put.body(body);
                     match sent {
                         Ok(req) => match req.send().await {
                             Ok(r) if r.ok() => {

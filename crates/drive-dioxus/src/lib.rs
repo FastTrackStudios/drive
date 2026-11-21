@@ -31,8 +31,8 @@ pub use drive_client::{Drive, Event, Me, Status, loro};
 pub use drive_proto::{DocInfo, Peer};
 use futures_util::StreamExt;
 use serde::Serialize;
-use wasm_bindgen::JsCast;
 
+pub mod auth;
 pub mod text;
 pub mod ui;
 
@@ -58,6 +58,10 @@ pub struct DriveCtx {
     pub drive: Drive,
     /// The org every document opened here belongs to.
     pub org: String,
+    /// Who is signed in (their email), when the node has an issuer.
+    pub who: String,
+    /// Signed in through the issuer (the node asks for it).
+    pub signed_in: bool,
     pub status: Signal<Status>,
     pub me: Signal<Me>,
     docs: Rc<RefCell<HashMap<String, DocSignals>>>,
@@ -88,6 +92,14 @@ impl DriveCtx {
         }
         if let Some(w) = web_sys::window() {
             let _ = w.location().set_search("");
+            let _ = w.location().reload();
+        }
+    }
+
+    /// Sign out of every app on this address.
+    pub fn sign_out(&self) {
+        auth::sign_out();
+        if let Some(w) = web_sys::window() {
             let _ = w.location().reload();
         }
     }
@@ -130,61 +142,192 @@ fn known_org() -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// The node's default org (`/orgs`).
-async fn default_org() -> Option<String> {
-    let w = web_sys::window()?;
-    let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(w.fetch_with_str("/orgs"))
-        .await
-        .ok()?
-        .dyn_into()
-        .ok()?;
-    let text = wasm_bindgen_futures::JsFuture::from(resp.text().ok()?)
-        .await
-        .ok()?
-        .as_string()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["default"]
+/// What the provider is doing before the apps can run.
+#[derive(Clone, Debug, PartialEq)]
+enum Boot {
+    Loading,
+    /// The node needs a sign-in: through this issuer.
+    SignIn(auth::Issuer),
+    Failed(String),
+    Ready {
+        org: String,
+        token: Option<String>,
+        who: String,
+        issuer: bool,
+    },
+}
+
+/// Where the provider starts: finish a sign-in coming back from the
+/// issuer, refresh the token, ask the node who this is and which orgs they
+/// are in, and pick the org.
+async fn boot() -> Boot {
+    if auth::is_callback() {
+        return match auth::finish().await {
+            Ok(()) => Boot::Loading, // going back to where the sign-in began
+            Err(e) => Boot::Failed(e),
+        };
+    }
+    let token = auth::fresh_token(60_000.0).await;
+    let bearer = token.as_ref().map(|t| format!("Bearer {t}"));
+    let headers: Vec<(&str, &str)> = bearer
+        .iter()
+        .map(|b| ("authorization", b.as_str()))
+        .collect();
+    let Some((_, v)) = auth::fetch("GET", "/orgs", &headers, None).await else {
+        return Boot::Failed("the node did not answer".into());
+    };
+    let issuer: Option<auth::Issuer> = serde_json::from_value(v["auth"].clone()).ok();
+    if v["signed_in"] == serde_json::Value::Bool(false) {
+        return match issuer {
+            Some(i) => Boot::SignIn(i),
+            None => Boot::Failed("the node refused this browser".into()),
+        };
+    }
+    let orgs: Vec<String> = v["orgs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|o| o.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let default = v["default"]
         .as_str()
         .map(str::to_string)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+    // The org asked for (or last used), when this person is in it.
+    let org = known_org()
+        .filter(|o| orgs.is_empty() || orgs.contains(o))
+        .or(default)
+        .or_else(|| orgs.first().cloned())
+        .unwrap_or_else(|| "home".to_string());
+    if let Some(s) = local() {
+        let _ = s.set_item(ORG_KEY, &org);
+    }
+    Boot::Ready {
+        org,
+        token: if issuer.is_some() { token } else { None },
+        who: v["who"].as_str().unwrap_or_default().to_string(),
+        issuer: issuer.is_some(),
+    }
 }
 
 /// Connects to the Drive node this page was served from, and provides it,
-/// once the org is known (at once, unless this browser never chose one).
+/// once the org is known; signs in first when the node asks for it.
 #[component]
 pub fn DriveProvider(children: Element) -> Element {
-    let mut org = use_signal(known_org);
+    let mut state = use_signal(|| Boot::Loading);
     use_future(move || async move {
-        if org.peek().is_none() {
-            let o = default_org().await.unwrap_or_else(|| "home".to_string());
-            if let Some(s) = local() {
-                let _ = s.set_item(ORG_KEY, &o);
-            }
-            org.set(Some(o));
-        }
+        let b = boot().await;
+        state.set(b);
     });
-    match org() {
-        Some(o) => rsx! {
-            Connected { key: "{o}", org: o, {children} }
+    match state() {
+        Boot::Ready {
+            org,
+            token,
+            who,
+            issuer,
+        } => rsx! {
+            Connected { key: "{org}", org, token, who, issuer, {children} }
         },
-        None => rsx! {},
+        Boot::SignIn(i) => rsx! {
+            SignInScreen { issuer: i }
+        },
+        Boot::Failed(why) => rsx! {
+            BootMessage { why }
+        },
+        Boot::Loading => rsx! {},
+    }
+}
+
+const CARD: &str = "min-height:100vh;display:grid;place-items:center;background:#000;color:#f4f4f5;font:15px/1.5 -apple-system,system-ui,sans-serif;padding:24px;";
+const PANEL: &str = "max-width:360px;width:100%;display:flex;flex-direction:column;gap:12px;padding:28px;background:#141417;border:1px solid #2b2b31;border-radius:18px;text-align:center;";
+const BUTTON: &str = "height:44px;border-radius:12px;border:0;background:#f4f4f5;color:#000;font-weight:650;font-size:15px;cursor:pointer;";
+
+#[component]
+fn SignInScreen(issuer: auth::Issuer) -> Element {
+    let host = issuer
+        .issuer
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string();
+    rsx! {
+        div { style: CARD,
+            div { style: PANEL,
+                b { style: "font-size:22px;letter-spacing:-0.02em;", "Sign in" }
+                span { style: "color:#a1a1aa;font-size:14px;",
+                    "This Drive is for its orgs' members. Sign in with your account at {host}."
+                }
+                button { style: BUTTON, onclick: move |_| auth::begin(&issuer), "Continue" }
+            }
+        }
     }
 }
 
 #[component]
-fn Connected(org: String, children: Element) -> Element {
-    use_context_provider(|| {
-        let (drive, rx) = Drive::connect(None);
+fn BootMessage(why: String) -> Element {
+    rsx! {
+        div { style: CARD,
+            div { style: PANEL,
+                b { style: "font-size:18px;", "Could not open Drive" }
+                span { style: "color:#a1a1aa;font-size:14px;", "{why}" }
+                button {
+                    style: BUTTON,
+                    onclick: move |_| {
+                        if let Some(w) = web_sys::window() {
+                            let _ = w.location().set_href("/");
+                        }
+                    },
+                    "Try again"
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn Connected(
+    org: String,
+    token: Option<String>,
+    who: String,
+    issuer: bool,
+    children: Element,
+) -> Element {
+    let ctx = use_context_provider(|| {
+        let (drive, rx) = Drive::connect_with(None, token.clone());
         let ctx = DriveCtx {
             status: Signal::new(drive.status()),
             me: Signal::new(drive.me()),
             drive,
             org: org.clone(),
+            who: who.clone(),
+            signed_in: issuer,
             docs: Rc::new(RefCell::new(HashMap::new())),
             lists: Rc::new(RefCell::new(HashMap::new())),
         };
         pump(ctx.clone(), rx);
         ctx
+    });
+    // Keep the token fresh: a new one reconnects with it; a refused
+    // refresh (signed out at the issuer) asks for a sign-in again.
+    use_future(move || {
+        let ctx = ctx.clone();
+        async move {
+            if !ctx.signed_in {
+                return;
+            }
+            loop {
+                drive_client::sleep(60_000).await;
+                match auth::fresh_token(5.0 * 60_000.0).await {
+                    Some(t) => ctx.drive.set_token(Some(t)),
+                    None => {
+                        if let Some(w) = web_sys::window() {
+                            let _ = w.location().reload();
+                        }
+                    }
+                }
+            }
+        }
     });
     rsx! {
         {children}

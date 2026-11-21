@@ -117,6 +117,14 @@ impl Drive {
     /// Connect to the node at `url` (`wss://host/sync`); `None` connects to
     /// the page's own host. Returns the client and its event stream.
     pub fn connect(url: Option<String>) -> (Drive, mpsc::UnboundedReceiver<Event>) {
+        Drive::connect_with(url, None)
+    }
+
+    /// [`Drive::connect`], signed in from the first handshake on.
+    pub fn connect_with(
+        url: Option<String>,
+        token: Option<String>,
+    ) -> (Drive, mpsc::UnboundedReceiver<Event>) {
         let url = url.unwrap_or_else(|| {
             let loc = web_sys::window().expect("a window").location();
             let proto = if loc.protocol().unwrap_or_default() == "https:" {
@@ -143,7 +151,7 @@ impl Drive {
             docs: RefCell::new(HashMap::new()),
             events: tx,
             retry_ms: Cell::new(500),
-            token: RefCell::new(None),
+            token: RefCell::new(token),
         }));
         drive.save_me();
         drop_old_copies();
