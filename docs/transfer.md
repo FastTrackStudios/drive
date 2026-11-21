@@ -114,7 +114,7 @@ The agent's endpoint key is `transfer/iroh.key` in its folder, the node's
 `data/iroh.key`; the agent's blob store (outboards, the list of what was
 hashed) is `transfer/` in its folder.
 
-## Measured (THEBATTLESHIP, 2026-11-21)
+## Measured (a workstation, 2026-11-21)
 
 A scratch node and agent on the same machine (a direct connection over
 loopback), release builds, the files in the page cache. A 2-hour WAV
@@ -157,11 +157,13 @@ tailnet when possible, through the relay otherwise.
 
 ## Next
 
-- Our own relay (`iroh-relay`) on the VPS, and its URL in every agent's
-  config and the node's flags.
-- Devices fetching from each other directly (a laptop opening a file on
-  the NAS) with the same fetcher, not through the node.
+- Our own relay (`iroh-relay`), and its URL in every agent's config and
+  the node's flags (#35).
 - Smaller binaries: iroh without metrics and portmapper, if iroh-blobs
-  lets its iroh features be trimmed.
-- The tree's own blobs (files uploaded into the space) over iroh-blobs
-  too, and storage servers' mirrors fetched by range.
+  lets its iroh features be trimmed (#36).
+- Devices fetching from each other directly (a laptop opening a file on
+  the NAS), storage servers' mirrors by range, and the tree's own blobs
+  over iroh-blobs too (#37).
+- Re-hashing a file served under a stale hash, compacting the list of
+  hashed files, hashing media ahead of the first ask, streaming whole
+  kept blobs (#38).
