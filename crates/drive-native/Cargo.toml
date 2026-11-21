@@ -9,7 +9,8 @@ license.workspace = true
 drive-proto.workspace = true
 loro.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
-tokio-tungstenite = "0.30"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tracing = "0.1"
 

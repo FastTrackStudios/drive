@@ -280,6 +280,9 @@ impl Drive {
     async fn run(self, url: String) {
         let mut wait = 500u64;
         loop {
+            // wss:// to a node behind TLS (the tailnet, a domain): rustls
+            // has two crypto backends compiled in here, so name one.
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             match tokio_tungstenite::connect_async(url.as_str()).await {
                 Ok((ws, _)) => {
                     wait = 500;
