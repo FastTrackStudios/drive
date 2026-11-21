@@ -39,6 +39,12 @@ pub enum Src {
     },
     /// An app's document.
     Doc { id: String, peers: u32 },
+    /// A file or folder on a computer's disk, browsed live.
+    Browse {
+        device: String,
+        root: String,
+        path: String,
+    },
 }
 
 /// A file, folder or document, as the browser shows it.
@@ -68,6 +74,7 @@ impl Item {
             Src::Tree { id, .. } => format!("t{id}"),
             Src::Index { location, path, .. } => format!("i{location}/{path}"),
             Src::Doc { id, .. } => format!("d{id}"),
+            Src::Browse { device, root, path } => format!("b{device}:{root}/{path}"),
         }
     }
 }
@@ -297,6 +304,9 @@ pub fn Content(space: String) -> Element {
         Place::Location { loc, path } => rsx! {
             LocationFolder { space, loc, path }
         },
+        Place::Volume { device, root, path } => rsx! {
+            crate::browse::VolumeFolder { key: "{device}{root}/{path}", space, device, root, path }
+        },
         Place::Kind(kind) => rsx! {
             KindView { space, kind }
         },
@@ -484,12 +494,17 @@ fn folder_place(i: &Item) -> Option<Place> {
             loc: location.clone(),
             path: path.clone(),
         }),
+        Src::Browse { device, root, path } if i.dir => Some(Place::Volume {
+            device: device.clone(),
+            root: root.clone(),
+            path: path.clone(),
+        }),
         _ => None,
     }
 }
 
 fn copies_label(i: &Item) -> Option<(String, &'static str)> {
-    if i.dir || matches!(i.src, Src::Doc { .. }) {
+    if i.dir || matches!(i.src, Src::Doc { .. } | Src::Browse { .. }) {
         return None;
     }
     if let Some(k) = &i.kept {
@@ -508,6 +523,30 @@ fn copies_label(i: &Item) -> Option<(String, &'static str)> {
         1 => ("1 copy".into(), "warn"),
         n => (format!("{n} copies"), "ok"),
     })
+}
+
+#[component]
+pub fn Crumbs(parts: Vec<(String, Option<Place>)>) -> Element {
+    let nav = use_nav();
+    rsx! {
+        div { class: "crumbs",
+            for (i , (name , p)) in parts.into_iter().enumerate() {
+                Fragment { key: "{i}",
+                    if i > 0 {
+                        span { class: "sep", "›" }
+                    }
+                    match p {
+                        Some(p) => rsx! {
+                            button { onclick: move |_| nav.go(p.clone()), "{name}" }
+                        },
+                        None => rsx! {
+                            span { class: "crumbtext", "{name}" }
+                        },
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The space's synced tree at a folder: upload here, make folders.
@@ -887,6 +926,7 @@ pub fn Inspector(space: String) -> Element {
                 },
                 _ => rsx! {},
             }
+            crate::browse::InspectorActions { key: "{item.key()}", space: space.clone(), item: item.clone() }
             crate::tags::ItemTags { key: "{item.key()}", space: space.clone(), item: item.clone() }
             if !item.dir {
                 ItemComments { item: item.clone(), download: download.clone() }
@@ -924,6 +964,9 @@ pub fn file_url(item: &Item, space: &str) -> Option<String> {
                 .then(|| format!("/fetch/{}/{}?path={}", enc(space), enc(location), enc(path))),
         },
         Src::Doc { .. } => None,
+        Src::Browse { device, root, path } => item
+            .online
+            .then(|| crate::browse::file_url(space, device, root, path, &item.name)),
     }
 }
 
@@ -958,6 +1001,9 @@ pub fn sidecar_url(item: &Item, space: &str, kind: drive_sidecars::Kind) -> Opti
             }
             Some(u)
         }
+        Src::Browse { device, root, path } => Some(crate::browse::sidecar_url(
+            space, device, root, path, item, kind,
+        )),
         _ => None,
     }
 }
@@ -1443,6 +1489,8 @@ fn ItemComments(item: Item, download: Option<String>) -> Element {
             drive_spine::comments::Target::Doc(id.clone()),
             String::new(),
         ),
+        // A browsed file has no lasting place to pin comments to.
+        Src::Browse { .. } => return rsx! {},
     };
     let family = if item.kind.parent.is_empty() {
         item.kind.id.clone()

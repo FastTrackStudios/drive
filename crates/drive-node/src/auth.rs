@@ -67,6 +67,13 @@ impl Auth {
         }
     }
 
+    /// Take `token` as `p`'s for a minute without asking the issuer (tests).
+    #[doc(hidden)]
+    pub async fn remember(&self, token: &str, p: Principal) {
+        let key: [u8; 32] = *blake3::hash(token.as_bytes()).as_bytes();
+        self.cache.lock().await.insert(key, (Instant::now(), p));
+    }
+
     /// Who this is: `None` when the node needs a sign-in and has none (or
     /// a token the issuer refuses).
     pub async fn principal(&self, token: Option<&str>, local: bool) -> Option<Principal> {

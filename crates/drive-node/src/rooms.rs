@@ -36,6 +36,8 @@ pub struct Rooms {
     agents: Mutex<HashMap<(String, String), (Peer, Outbox)>>,
     /// Fetches waiting for an agent's answer.
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
+    /// Browse requests waiting for an agent's answer.
+    browsing: Mutex<HashMap<u64, oneshot::Sender<Result<drive_proto::Browsed, String>>>>,
     next_req: AtomicU64,
     /// Who may read and write what (the issuer's orgs).
     pub auth: crate::auth::Auth,
@@ -63,6 +65,7 @@ impl Rooms {
             next_peer: AtomicU64::new(1),
             agents: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            browsing: Mutex::new(HashMap::new()),
             next_req: AtomicU64::new(1),
         }
     }
@@ -144,6 +147,47 @@ impl Rooms {
             .filter(|(s, _)| s == space)
             .map(|(_, d)| d.clone())
             .collect()
+    }
+
+    /// Whether `device`'s agent is connected in `space`.
+    pub async fn agent_online(&self, space: &str, device: &str) -> bool {
+        self.agents
+            .lock()
+            .await
+            .contains_key(&(space.to_string(), device.to_string()))
+    }
+
+    /// Ask `device`'s agent to look at its disks (docs/browse.md), and wait
+    /// up to `wait` for its answer.
+    pub async fn browse(
+        &self,
+        space: &str,
+        device: &str,
+        ask: drive_proto::Browse,
+        wait: Duration,
+    ) -> Result<drive_proto::Browsed, FetchError> {
+        let outbox = self
+            .agents
+            .lock()
+            .await
+            .get(&(space.to_string(), device.to_string()))
+            .map(|(_, o)| o.clone())
+            .ok_or_else(|| FetchError::Offline(device.to_string()))?;
+        let req = self.next_req.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.browsing.lock().await.insert(req, tx);
+        if outbox.send(ToClient::Browse { req, ask }).is_err() {
+            self.browsing.lock().await.remove(&req);
+            return Err(FetchError::Offline(device.to_string()));
+        }
+        let answer = tokio::time::timeout(wait, rx).await;
+        self.browsing.lock().await.remove(&req);
+        match answer {
+            Ok(Ok(Ok(b))) => Ok(b),
+            Ok(Ok(Err(why))) => Err(FetchError::Refused(why)),
+            Ok(Err(_)) => Err(FetchError::Offline(device.to_string())),
+            Err(_) => Err(FetchError::Timeout),
+        }
     }
 
     /// Ask the device that owns `location` to put `path` on the node;
@@ -391,6 +435,11 @@ impl Rooms {
             }
             ToNode::Fetched { req, result } => {
                 if let Some(tx) = self.pending.lock().await.remove(&req) {
+                    let _ = tx.send(result);
+                }
+            }
+            ToNode::Browsed { req, result } => {
+                if let Some(tx) = self.browsing.lock().await.remove(&req) {
                     let _ = tx.send(result);
                 }
             }

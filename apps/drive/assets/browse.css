@@ -1,0 +1,16 @@
+/* Browsing every computer's disks (src/browse.rs). */
+.side.vol { height: auto; min-height: 28px; padding-top: 4px; padding-bottom: 4px; }
+.side.vol .vmain { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.side.vol .slabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vbar { display: block; height: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; width: 100%; max-width: 120px; }
+.vbar .vfill { display: block; height: 100%; background: var(--ink-3); border-radius: 2px; }
+.vbar.full .vfill { background: #f0c24b; }
+.hidetoggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 13px; cursor: pointer; user-select: none; }
+.hidetoggle input { accent-color: var(--ink-2); }
+.more { display: flex; justify-content: center; padding: 14px 0 24px; }
+.ihint { color: var(--ink-3); font-size: 13px; margin: 4px 0 8px; }
+.actions .primary:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 760px) {
+  .viewhead .actions { width: 100%; gap: 8px; }
+  .viewhead .actions .primary { height: 32px; padding: 0 12px; font-size: 13px; }
+}

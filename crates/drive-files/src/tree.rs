@@ -335,6 +335,9 @@ mod tests {
         let gone = create_file(&a, None, "mix.wav").unwrap();
         set_content(&a, gone, 9, &"b".repeat(64)).unwrap();
         assert!(trash(&a, gone).unwrap());
-        assert_eq!(resolve(&a, "Trash/mix.wav").unwrap().unwrap().hash, "b".repeat(64));
+        assert_eq!(
+            resolve(&a, "Trash/mix.wav").unwrap().unwrap().hash,
+            "b".repeat(64)
+        );
     }
 }

@@ -231,7 +231,7 @@ pub fn title_of(p: &Place) -> &'static str {
     match p {
         Place::Overview => "Overview",
         Place::Drive(_) => "Drive",
-        Place::Location { .. } => "Computers",
+        Place::Location { .. } | Place::Volume { .. } => "Computers",
         Place::Kind(_) => "Kind",
         Place::App(_) => "App",
         Place::AtRisk(_) => "At risk",
@@ -374,6 +374,7 @@ pub fn browsable(p: &Place) -> bool {
         p,
         Place::Drive(_)
             | Place::Location { .. }
+            | Place::Volume { .. }
             | Place::Kind(_)
             | Place::App(_)
             | Place::AtRisk(_)
@@ -726,6 +727,7 @@ fn DriveSidebar(space: String, spaces: Vec<String>, on_space: EventHandler<Strin
                                             depth: 1,
                                         }
                                     }
+                                    crate::browse::DeviceVolumes { space: space.clone(), device: d.id.clone(), live: up.contains(&d.id) }
                                 }
                             }
                         }

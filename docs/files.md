@@ -151,6 +151,10 @@ Voyager while it is off.
   `cached`, `remote` or `offline`; `user.drive.copies` lists every location
   holding the same content.
 
+- **Browsing** (docs/browse.md): any folder of any disk of a computer
+  that is on, live and read-only, without indexing it; "Index this
+  folder" makes it a location.
+
 ## Copies and protection (built, 2026-11-21)
 
 - **Copies** are found by content (sampled hash + size) across every

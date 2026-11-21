@@ -506,7 +506,7 @@ impl Sidecars {
     }
 
     /// The lock that keeps one producer per content at a time.
-    fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
+    pub(crate) fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().expect("locks");
         locks.retain(|_, l| Arc::strong_count(l) > 1);
         locks.entry(key.to_string()).or_default().clone()
@@ -592,11 +592,11 @@ pub struct Routes {
 
 type Q = Query<HashMap<String, String>>;
 
-fn state(status: StatusCode, s: &str, why: &str) -> Response {
+pub(crate) fn state(status: StatusCode, s: &str, why: &str) -> Response {
     (status, Json(serde_json::json!({ "state": s, "why": why }))).into_response()
 }
 
-async fn serve(sc: &Sidecars, row: &Row) -> Response {
+pub(crate) async fn serve(sc: &Sidecars, row: &Row) -> Response {
     let Ok(bytes) = sc.blobs.get(&row.blob).await else {
         return state(StatusCode::NOT_FOUND, "missing", "its blob is gone");
     };

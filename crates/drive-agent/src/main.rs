@@ -62,6 +62,7 @@
 
 mod agent;
 mod available;
+mod browse;
 #[cfg(feature = "mount")]
 mod computers;
 mod daemon;
@@ -556,7 +557,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             let raw = args.get(3).ok_or("location add NAME PATH")?.clone();
             let a = start(dir).await?;
             let me = a.device_id();
-            let (path, volume, storage) = match flag(args, "--storage") {
+            let loc = match flag(args, "--storage") {
                 Some(sname) => {
                     let own = a
                         .cfg
@@ -567,29 +568,25 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                         .find(|s| s.name == sname || s.id == sname)
                         .cloned();
                     let own = own.ok_or(format!("this device runs no storage {sname}"))?;
-                    (raw.trim_matches('/').to_string(), String::new(), own.id)
+                    let loc = space::Location {
+                        id: space::new_id(),
+                        name: name.clone(),
+                        device: me,
+                        path: raw.trim_matches('/').to_string(),
+                        volume: String::new(),
+                        storage: own.id,
+                        mirror_of: String::new(),
+                        index: String::new(),
+                        files: 0,
+                        bytes: 0,
+                        built: 0,
+                    };
+                    space::add_location(&a.space, &loc).map_err(|e| e.to_string())?;
+                    a.commit_space();
+                    loc
                 }
-                None => {
-                    let p = std::fs::canonicalize(&raw).map_err(|e| format!("{raw}: {e}"))?;
-                    let vol = places::volume_of(&p);
-                    (p.to_string_lossy().into_owned(), vol, String::new())
-                }
+                None => a.add_location(&name, std::path::Path::new(&raw))?,
             };
-            let loc = space::Location {
-                id: space::new_id(),
-                name: name.clone(),
-                device: me,
-                path,
-                volume,
-                storage,
-                mirror_of: String::new(),
-                index: String::new(),
-                files: 0,
-                bytes: 0,
-                built: 0,
-            };
-            space::add_location(&a.space, &loc).map_err(|e| e.to_string())?;
-            a.commit_space();
             let st = a.index_location(&loc).await?;
             settle(&a).await;
             out(format!(

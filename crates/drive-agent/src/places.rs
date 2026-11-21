@@ -88,6 +88,37 @@ impl Agent {
         self.commit_space();
     }
 
+    /// Make a folder on this device a location (registered now, indexed
+    /// by the caller or the service's next pass). Refused when it already
+    /// is one.
+    pub fn add_location(&self, name: &str, folder: &Path) -> Result<Location, String> {
+        let p = std::fs::canonicalize(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        let path = p.to_string_lossy().into_owned();
+        if let Some(l) = self
+            .my_locations()
+            .into_iter()
+            .find(|l| l.storage.is_empty() && l.path == path)
+        {
+            return Err(format!("already a location: {}", l.name));
+        }
+        let loc = Location {
+            id: space::new_id(),
+            name: name.to_string(),
+            device: self.device_id(),
+            volume: volume_of(&p),
+            path,
+            storage: String::new(),
+            mirror_of: String::new(),
+            index: String::new(),
+            files: 0,
+            bytes: 0,
+            built: 0,
+        };
+        space::add_location(&self.space, &loc).map_err(|e| e.to_string())?;
+        self.commit_space();
+        Ok(loc)
+    }
+
     /// This device's own locations.
     pub fn my_locations(&self) -> Vec<Location> {
         let me = self.device_id();

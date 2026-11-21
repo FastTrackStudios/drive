@@ -24,6 +24,12 @@ pub enum Place {
         loc: String,
         path: String,
     },
+    /// A folder on a computer's disk, browsed live (`crate::browse`).
+    Volume {
+        device: String,
+        root: String,
+        path: String,
+    },
     /// Every file of a kind, on every computer.
     Kind(String),
     /// An app's documents.
