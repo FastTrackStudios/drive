@@ -19,6 +19,7 @@ tracing = "0.1"
 tempfile = "3"
 drive-node = { path = "../drive-node" }
 drive-files = { path = "../drive-files" }
+drive-transfer = { path = "../drive-transfer" }
 axum = "0.8"
 reqwest = { version = "0.12", default-features = false }
 serde_json.workspace = true

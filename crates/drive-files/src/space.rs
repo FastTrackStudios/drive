@@ -11,7 +11,9 @@
 //! - `volumes`: each device's disks;
 //! - `sites`: device or storage id → where it physically is (`home`,
 //!   `studio`, `cloud`), for offsite copies;
-//! - `policies`: protection rules (3-2-1 and the like) over locations.
+//! - `policies`: protection rules (3-2-1 and the like) over locations;
+//! - `nodes`: the iroh endpoint ids of the nodes that keep the space (a
+//!   device's own endpoint is `iroh` in its `devices` entry).
 //!
 //! Prototype note: approval is recorded, not yet signed with device keys.
 
@@ -131,6 +133,55 @@ pub fn devices(doc: &LoroDoc) -> Vec<Device> {
         .collect();
     out.sort_by_key(|d| d.added);
     out
+}
+
+/// A device's iroh endpoint (docs/transfer.md): its endpoint id, and its
+/// address as it last said it (relay and direct addresses, JSON), next to
+/// its entry in `devices`. Only devices with one serve files over iroh;
+/// the others (agents from before) keep the node's `/fetch` path.
+pub fn set_endpoint(doc: &LoroDoc, device: &str, id: &str, addr: &str) -> loro::LoroResult<()> {
+    let m = doc.get_map("devices").ensure_mergeable_map(device)?;
+    if s(&m, "iroh") != id {
+        m.insert("iroh", id)?;
+    }
+    if s(&m, "iroh_addr") != addr {
+        m.insert("iroh_addr", addr)?;
+    }
+    Ok(())
+}
+
+/// Device id → (endpoint id, address JSON), for devices that have one.
+pub fn endpoints(doc: &LoroDoc) -> std::collections::HashMap<String, (String, String)> {
+    let map = doc.get_map("devices");
+    map.keys()
+        .filter_map(|k| {
+            let m = child(&map, &k)?;
+            let id = s(&m, "iroh");
+            (!id.is_empty()).then(|| (k.to_string(), (id, s(&m, "iroh_addr"))))
+        })
+        .collect()
+}
+
+/// A node that keeps this space, by its iroh endpoint id (`nodes`: id →
+/// when it last said so): devices let it fetch their files.
+pub fn set_node_endpoint(doc: &LoroDoc, id: &str, at: i64) -> loro::LoroResult<()> {
+    doc.get_map("nodes").insert(id, at)
+}
+
+pub fn node_endpoints(doc: &LoroDoc) -> Vec<String> {
+    let mut out: Vec<String> = doc.get_map("nodes").keys().map(|k| k.to_string()).collect();
+    out.sort();
+    out
+}
+
+/// Every endpoint id the space's devices and nodes have: who an agent
+/// lets fetch its files.
+pub fn allowed_endpoints(doc: &LoroDoc) -> std::collections::HashSet<String> {
+    endpoints(doc)
+        .into_values()
+        .map(|(id, _)| id)
+        .chain(node_endpoints(doc))
+        .collect()
 }
 
 /// Replace a device's roles (`storage-server`, `workstation`, `client`).
@@ -639,6 +690,22 @@ mod tests {
         );
         set_held(&d, "second", &h, None).unwrap();
         assert_eq!(holders(&d, &h).len(), 1);
+    }
+
+    #[test]
+    fn endpoints_beside_devices_and_nodes() {
+        let d = LoroDoc::new();
+        add_device(&d, &dev("old")).unwrap();
+        add_device(&d, &dev("new")).unwrap();
+        set_endpoint(&d, "new", "e1", "{}").unwrap();
+        set_node_endpoint(&d, "n1", 5).unwrap();
+        let e = endpoints(&d);
+        assert_eq!(e.len(), 1, "a device without one is left out");
+        assert_eq!(e["new"], ("e1".to_string(), "{}".to_string()));
+        // The device entry itself reads as before.
+        assert_eq!(devices(&d).len(), 2);
+        let allowed = allowed_endpoints(&d);
+        assert!(allowed.contains("e1") && allowed.contains("n1") && allowed.len() == 2);
     }
 
     #[test]

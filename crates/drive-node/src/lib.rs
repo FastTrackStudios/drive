@@ -13,6 +13,7 @@ pub mod share;
 pub mod sidecars;
 pub mod sites;
 pub mod store;
+pub mod transfer;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,6 +48,11 @@ pub struct Options {
     /// Make missing sidecars of the files the node keeps in the background
     /// (on by default; `--no-backfill` turns it off).
     pub no_backfill: bool,
+    /// How the node's iroh endpoint reaches devices (docs/transfer.md):
+    /// our own relay, or none at all (`--iroh-local`); `--no-iroh` runs
+    /// none and fetches every file the old way.
+    pub iroh: drive_transfer::Settings,
+    pub no_iroh: bool,
 }
 
 type Remote = Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>;
@@ -237,6 +243,24 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         }
     }
     let rooms = Arc::new(Rooms::new(store, auth::Auth::new(opts.issuer.clone())));
+    if !opts.no_iroh {
+        match transfer::Transfer::start(data, &opts.iroh).await {
+            Ok(t) => {
+                let _ = rooms.transfer.set(Arc::new(t));
+                let r = rooms.clone();
+                tokio::spawn(async move {
+                    for (id, _) in r.store.list().await.unwrap_or_default() {
+                        if let Some(space) = id.strip_suffix("/drive:space") {
+                            transfer::publish(&r, space).await;
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "no iroh endpoint: files come from devices the old way")
+            }
+        }
+    }
     tokio::spawn(rooms.clone().flush_loop());
     tokio::spawn(backup::daily(
         rooms.clone(),
@@ -409,7 +433,7 @@ async fn sync(
 
 /// [`get_blob`] answering a `Range: bytes=…` request with just those bytes
 /// (`206`), so a player can seek in a video or a long recording.
-async fn get_blob_ranged(
+pub(crate) async fn get_blob_ranged(
     path: UrlPath<String>,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
     headers: axum::http::HeaderMap,

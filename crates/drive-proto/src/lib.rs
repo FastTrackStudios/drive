@@ -201,6 +201,14 @@ pub enum Browse {
         path: String,
         name: String,
     },
+    /// Serve this file over iroh (docs/transfer.md): hash it if needed
+    /// (once per size and time) and answer with [`Browsed::Provided`]. Sent
+    /// only to devices whose registry entry has an iroh endpoint; an agent
+    /// from before never sees it.
+    Provide { root: String, path: String },
+    /// The same for a file of one of the device's locations (`path`
+    /// relative to the location's folder).
+    ProvideLocation { location: String, path: String },
 }
 
 /// The most entries one [`Browse::List`] answers with.
@@ -215,6 +223,20 @@ pub enum Browsed {
     Chunk(Chunk),
     /// A content key, or a new location's id.
     Key(String),
+    Provided(Provided),
+}
+
+/// A file a device serves over iroh: fetch it from `endpoint` by `hash`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Provided {
+    /// Its full BLAKE3 hash (hex): also its blob name on the node.
+    pub hash: String,
+    pub size: u64,
+    /// Modified, in ms since 1970.
+    pub mtime: i64,
+    /// The device's iroh endpoint address now (JSON: id, relay, direct
+    /// addresses).
+    pub endpoint: String,
 }
 
 /// Something a device lets be browsed: a volume, `/`, or the home folder.
@@ -394,5 +416,65 @@ mod tests {
             ask: Browse::Roots,
         });
         assert!(decode::<OldToClient>(&browse).is_err());
+    }
+
+    /// Provide is a new Browse at the end: the browse messages an agent
+    /// from before knew decode as they did.
+    #[test]
+    fn provide_leaves_browsing_alone() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[allow(dead_code)]
+        enum OldBrowse {
+            Roots,
+            List {
+                root: String,
+                path: String,
+                offset: u32,
+                limit: u32,
+                hidden: bool,
+            },
+            Read {
+                root: String,
+                path: String,
+                start: u64,
+                len: u32,
+            },
+            Key {
+                root: String,
+                path: String,
+            },
+            Sidecars {
+                root: String,
+                path: String,
+                kinds: Vec<String>,
+                force: bool,
+            },
+            Index {
+                root: String,
+                path: String,
+                name: String,
+            },
+        }
+        let list = encode(&Browse::Index {
+            root: "/".into(),
+            path: "a".into(),
+            name: "A".into(),
+        });
+        assert!(decode::<OldBrowse>(&list).is_ok());
+        let provide = encode(&Browse::Provide {
+            root: "/".into(),
+            path: "a".into(),
+        });
+        assert!(decode::<OldBrowse>(&provide).is_err());
+        let m = ToNode::Browsed {
+            req: 9,
+            result: Ok(Browsed::Provided(Provided {
+                hash: "ab".repeat(32),
+                size: 3,
+                mtime: 4,
+                endpoint: "{}".into(),
+            })),
+        };
+        assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
     }
 }

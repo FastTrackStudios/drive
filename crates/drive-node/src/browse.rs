@@ -364,6 +364,26 @@ pub async fn file(
         return answer(StatusCode::NOT_FOUND, "missing", "no such device");
     };
     let (root, path) = (q(&p, "root").to_string(), q(&p, "path").to_string());
+    // Over iroh when the device serves files that way (docs/transfer.md):
+    // the ranges asked for, verified, streamed as they come.
+    let ask = Browse::Provide {
+        root: root.clone(),
+        path: path.clone(),
+    };
+    match crate::transfer::provide(&s.rooms, &space, &device, ask).await {
+        Ok(Some((got, src))) => {
+            if let Some(t) = s.rooms.transfer.get() {
+                let name = match q(&p, "name") {
+                    "" => path_name(&path).to_string(),
+                    n => n.to_string(),
+                };
+                let reply = crate::transfer::Reply { name, cache: None };
+                return crate::transfer::respond(t, &got, src, &headers, reply);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return failed(e, &dname, &space, &device),
+    }
     let stat = Browse::Read {
         root: root.clone(),
         path: path.clone(),

@@ -41,6 +41,9 @@ pub struct Rooms {
     next_req: AtomicU64,
     /// Who may read and write what (the issuer's orgs).
     pub auth: crate::auth::Auth,
+    /// The node's iroh endpoint for files from devices (docs/transfer.md),
+    /// when it runs one.
+    pub transfer: std::sync::OnceLock<Arc<crate::transfer::Transfer>>,
 }
 
 /// Why a file could not be fetched from its device.
@@ -67,6 +70,7 @@ impl Rooms {
             pending: Mutex::new(HashMap::new()),
             browsing: Mutex::new(HashMap::new()),
             next_req: AtomicU64::new(1),
+            transfer: std::sync::OnceLock::new(),
         }
     }
 
@@ -431,7 +435,10 @@ impl Rooms {
                 self.agents
                     .lock()
                     .await
-                    .insert((space, device), (peer, out.clone()));
+                    .insert((space.clone(), device), (peer, out.clone()));
+                // Its device lets this node fetch its files once the
+                // registry names the node's endpoint.
+                crate::transfer::publish(self, &space).await;
             }
             ToNode::Fetched { req, result } => {
                 if let Some(tx) = self.pending.lock().await.remove(&req) {

@@ -356,37 +356,77 @@ pub async fn fetch(
     UrlPath((space_id, location)): UrlPath<(String, String)>,
     State(c): State<Catalog>,
     Query(p): Q,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let path = q(&p, "path");
-    let hash = match c.rooms.fetch(&space_id, &location, path).await {
-        Ok(h) => h,
-        Err(FetchError::NoLocation) => {
-            return (StatusCode::NOT_FOUND, "no such location").into_response();
-        }
-        Err(FetchError::Offline(_)) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the device that has this file is offline",
-            )
-                .into_response();
-        }
-        Err(FetchError::Timeout) => {
-            return (StatusCode::GATEWAY_TIMEOUT, "its device did not answer").into_response();
-        }
-        Err(FetchError::Refused(why)) => {
-            tracing::warn!(fetch.location = %location, fetch.why = %why, "a device refused a fetch");
-            return (StatusCode::NOT_FOUND, why).into_response();
-        }
-    };
     let name = match q(&p, "name") {
         "" => path.rsplit('/').next().unwrap_or("file").to_string(),
         n => n.to_string(),
     };
+    // Over iroh when its device serves files that way (docs/transfer.md):
+    // the ranges asked for, streamed as they come.
+    if let Some(device) = crate::transfer::location_device(&c.rooms, &space_id, &location).await {
+        let ask = drive_proto::Browse::ProvideLocation {
+            location: location.clone(),
+            path: path.to_string(),
+        };
+        match crate::transfer::provide(&c.rooms, &space_id, &device, ask).await {
+            Ok(Some((got, src))) => {
+                if c.blobs.has(&got.hash).await.unwrap_or(false) {
+                    let mut query = HashMap::new();
+                    query.insert("name".to_string(), name);
+                    return match crate::get_blob_ranged(
+                        UrlPath(got.hash),
+                        Query(query),
+                        headers,
+                        State(c.blobs),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(s) => s.into_response(),
+                    };
+                }
+                let Some(t) = c.rooms.transfer.get() else {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                };
+                let reply = crate::transfer::Reply {
+                    name,
+                    cache: Some(c.blobs.clone()),
+                };
+                return crate::transfer::respond(t, &got, src, &headers, reply);
+            }
+            Ok(None) => {}
+            Err(e) => return fetch_failed(e, &location),
+        }
+    }
+    let hash = match c.rooms.fetch(&space_id, &location, path).await {
+        Ok(h) => h,
+        Err(e) => return fetch_failed(e, &location),
+    };
     let mut query = HashMap::new();
     query.insert("name".to_string(), name);
-    match crate::get_blob(UrlPath(hash), Query(query), State(c.blobs)).await {
+    match crate::get_blob_ranged(UrlPath(hash), Query(query), headers, State(c.blobs)).await {
         Ok(r) => r,
         Err(s) => s.into_response(),
+    }
+}
+
+fn fetch_failed(e: FetchError, location: &str) -> Response {
+    match e {
+        FetchError::NoLocation => (StatusCode::NOT_FOUND, "no such location").into_response(),
+        FetchError::Offline(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the device that has this file is offline",
+        )
+            .into_response(),
+        FetchError::Timeout => {
+            (StatusCode::GATEWAY_TIMEOUT, "its device did not answer").into_response()
+        }
+        FetchError::Refused(why) => {
+            tracing::warn!(fetch.location = %location, fetch.why = %why, "a device refused a fetch");
+            (StatusCode::NOT_FOUND, why).into_response()
+        }
     }
 }
 

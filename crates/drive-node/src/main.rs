@@ -36,12 +36,21 @@ fn args() -> Result<Args, String> {
             a.opts.no_backfill = true;
             continue;
         }
+        if flag == "--no-iroh" {
+            a.opts.no_iroh = true;
+            continue;
+        }
+        if flag == "--iroh-local" {
+            a.opts.iroh.local_only = true;
+            continue;
+        }
         let value = it.next().ok_or(format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--listen" => a.listen = value.parse().map_err(|e| format!("--listen: {e}"))?,
             "--data" => a.data = value.into(),
             "--org" => a.opts.org = Some(value),
             "--issuer" => a.opts.issuer = Some(value),
+            "--relay" => a.opts.iroh.relay = Some(value),
             "--space-org" => {
                 let (space, org) = value
                     .split_once('=')

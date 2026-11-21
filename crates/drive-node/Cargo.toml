@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 drive-proto.workspace = true
 drive-files = { path = "../drive-files" }
+drive-transfer = { path = "../drive-transfer" }
 drive-spine.workspace = true
 drive-view = { workspace = true, features = ["edit"] }
 drive-sidecars = { workspace = true, features = ["produce"] }
