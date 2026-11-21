@@ -19,26 +19,37 @@ pub fn of_file(path: &Path) -> std::io::Result<String> {
     Ok(h.finalize().to_hex().to_string())
 }
 
+/// The byte ranges a sampled hash reads from something `len` long.
+pub fn sample_ranges(len: u64) -> Vec<std::ops::Range<u64>> {
+    if len <= SAMPLE {
+        return vec![0..len];
+    }
+    [0, len / 2, len - SAMPLE].into_iter().map(|at| at..(at + SAMPLE).min(len)).collect()
+}
+
+/// A sampled hash from its ranges' bytes (read anywhere: a disk, a bucket).
+pub fn sampled_of(len: u64, parts: &[&[u8]]) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(&len.to_le_bytes());
+    for p in parts {
+        h.update(p);
+    }
+    h.finalize().to_hex().to_string()
+}
+
 /// A sampled hash: the size, and the first, middle and last 64 KiB. Equal
 /// sampled hashes mean "probably the same"; only the full hash says so.
 pub fn sampled(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
-    let mut h = blake3::Hasher::new();
-    h.update(&len.to_le_bytes());
-    let mut buf = vec![0u8; SAMPLE as usize];
-    for at in [0, len / 2, len.saturating_sub(SAMPLE)] {
-        if at >= len && len > 0 {
-            continue;
-        }
-        f.seek(SeekFrom::Start(at))?;
-        let n = f.read(&mut buf)?;
-        h.update(&buf[..n]);
-        if len <= SAMPLE {
-            break;
-        }
+    let mut parts = Vec::new();
+    for r in sample_ranges(len) {
+        let mut buf = vec![0u8; (r.end - r.start) as usize];
+        f.seek(SeekFrom::Start(r.start))?;
+        f.read_exact(&mut buf)?;
+        parts.push(buf);
     }
-    Ok(h.finalize().to_hex().to_string())
+    Ok(sampled_of(len, &parts.iter().map(Vec::as_slice).collect::<Vec<_>>()))
 }
 
 #[cfg(test)]

@@ -13,6 +13,9 @@ blake3 = "1"
 opendal = { version = "0.59", features = ["services-fs", "services-memory", "services-s3", "services-webdav"], optional = true }
 bytes = "1"
 thiserror = "2"
+ignore = { version = "0.4", optional = true }
+postcard = { workspace = true, optional = true }
+zstd = { version = "0.14", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
@@ -21,7 +24,7 @@ js-sys = "0.3"
 # The blob store and storage configs (OpenDAL); without it, the tree, the
 # registry and hashing (what a browser needs).
 default = ["storage"]
-storage = ["dep:opendal"]
+storage = ["dep:opendal", "dep:ignore", "dep:postcard", "dep:zstd"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

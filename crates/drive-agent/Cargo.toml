@@ -12,8 +12,10 @@ loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 fuser = "0.19"
 libc = "0.2"
+sysinfo = { version = "0.40", default-features = false, features = ["disk"] }
+notify = "9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

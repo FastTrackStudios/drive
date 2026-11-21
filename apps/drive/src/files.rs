@@ -23,6 +23,8 @@ pub fn Spaces(which: &'static str) -> Element {
                     match which {
                         "devices" => "Devices",
                         "storage" => "Storage",
+                        "computers" => "Computers",
+                        "protection" => "Protection",
                         _ => "Files",
                     }
                 }
@@ -49,6 +51,12 @@ pub fn Spaces(which: &'static str) -> Element {
                     },
                     "storage" => rsx! {
                         Storage { key: "{space}", space }
+                    },
+                    "computers" => rsx! {
+                        crate::catalog::Computers { key: "{space}", space }
+                    },
+                    "protection" => rsx! {
+                        crate::catalog::Protection { key: "{space}", space }
                     },
                     _ => rsx! {
                         Files { key: "{space}", space }

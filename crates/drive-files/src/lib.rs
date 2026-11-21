@@ -6,6 +6,9 @@
 //! - [`blob`]: bytes by their BLAKE3 hash, in any storage OpenDAL reaches.
 //! - [`hash`]: BLAKE3, sampled (to find likely duplicates fast) and full
 //!   (a blob's name, checked before anything is trusted).
+//! - [`index`]: a location's index (every file in a folder a device
+//!   keeps, where it is), built by walking it and published as one blob.
+//! - [`protect`]: copies across every index, and policies (3-2-1).
 //! - [`space`]: the space's registry (`drive:space:<space>`): its devices,
 //!   storages, pairing invites, and which device holds which blob.
 //! - [`storage`]: a storage's full configuration, credentials included, as
@@ -14,6 +17,9 @@
 #[cfg(feature = "storage")]
 pub mod blob;
 pub mod hash;
+#[cfg(feature = "storage")]
+pub mod index;
+pub mod protect;
 pub mod space;
 #[cfg(feature = "storage")]
 pub mod storage;

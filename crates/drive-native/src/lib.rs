@@ -32,6 +32,9 @@ pub enum Event {
     Changed(DocId),
     Presence { doc: DocId, peer: Peer, name: String, json: Option<String> },
     Docs { prefix: String, docs: Vec<DocInfo> },
+    /// The node asks this agent for a file in one of its locations; answer
+    /// with [`Drive::fetched`].
+    Fetch { req: u64, location: String, path: String },
 }
 
 struct OpenDoc {
@@ -40,6 +43,8 @@ struct OpenDoc {
     _sub: Subscription,
     synced: watch::Sender<bool>,
     presence: Option<String>,
+    /// Other peers' presence here: peer → (name, json).
+    others: HashMap<Peer, (String, String)>,
 }
 
 struct Inner {
@@ -51,6 +56,8 @@ struct Inner {
     online: watch::Sender<bool>,
     events: broadcast::Sender<Event>,
     save: Notify,
+    /// Set by [`Drive::register_agent`]; sent again on every reconnect.
+    agent: Mutex<Option<(String, String)>>,
 }
 
 /// A connection to a Drive node and the documents open on it.
@@ -77,6 +84,7 @@ impl Drive {
             online: watch::channel(false).0,
             events,
             save: Notify::new(),
+            agent: Mutex::new(None),
         }));
         tokio::spawn(drive.clone().run(url.to_string()));
         tokio::spawn(drive.clone().saver());
@@ -117,7 +125,7 @@ impl Drive {
         let vv = doc.oplog_vv().encode();
         self.0.docs.lock().expect("docs").insert(
             id.to_string(),
-            OpenDoc { doc: doc.clone(), outbox, _sub: sub, synced: watch::channel(false).0, presence: None },
+            OpenDoc { doc: doc.clone(), outbox, _sub: sub, synced: watch::channel(false).0, presence: None, others: HashMap::new() },
         );
         self.send(ToNode::Join { doc: id.to_string(), version_vector: vv });
         doc
@@ -152,6 +160,29 @@ impl Drive {
             d.presence = Some(json.clone());
         }
         self.send(ToNode::Presence { doc: id.to_string(), json });
+    }
+
+    /// Say this connection is `device`'s agent in `space`, so the node may
+    /// ask it for files in its locations ([`Event::Fetch`]).
+    pub fn register_agent(&self, space: &str, device: &str) {
+        *self.0.agent.lock().expect("agent") = Some((space.to_string(), device.to_string()));
+        self.send(ToNode::Agent { space: space.to_string(), device: device.to_string() });
+    }
+
+    /// Answer a [`Event::Fetch`]: the blob's hash on the node, or why not.
+    pub fn fetched(&self, req: u64, result: Result<String, String>) {
+        self.send(ToNode::Fetched { req, result });
+    }
+
+    /// Who else has a document open, with their presence: (peer, name, json).
+    pub fn others(&self, id: &str) -> Vec<(Peer, String, String)> {
+        self.0
+            .docs
+            .lock()
+            .expect("docs")
+            .get(id)
+            .map(|d| d.others.iter().map(|(p, (n, j))| (*p, n.clone(), j.clone())).collect())
+            .unwrap_or_default()
     }
 
     pub fn list(&self, prefix: &str) {
@@ -200,8 +231,9 @@ impl Drive {
             *self.0.tx.lock().expect("tx") = None;
             self.0.online.send_replace(false);
             let _ = self.0.events.send(Event::Online(false));
-            for d in self.0.docs.lock().expect("docs").values() {
+            for d in self.0.docs.lock().expect("docs").values_mut() {
                 d.synced.send_replace(false);
+                d.others.clear();
             }
             tokio::time::sleep(Duration::from_millis(wait)).await;
             wait = (wait * 2).min(8000);
@@ -251,6 +283,10 @@ impl Drive {
                 for j in joins {
                     self.send(j);
                 }
+                let agent = self.0.agent.lock().expect("agent").clone();
+                if let Some((space, device)) = agent {
+                    self.send(ToNode::Agent { space, device });
+                }
             }
             ToClient::Synced { doc: id, bytes, version_vector } => {
                 let (ours, presence) = {
@@ -284,10 +320,19 @@ impl Drive {
                 }
             }
             ToClient::Presence { doc, peer, name, json } => {
+                if let Some(d) = self.0.docs.lock().expect("docs").get_mut(&doc) {
+                    match &json {
+                        Some(j) => d.others.insert(peer, (name.clone(), j.clone())),
+                        None => d.others.remove(&peer),
+                    };
+                }
                 let _ = self.0.events.send(Event::Presence { doc, peer, name, json });
             }
             ToClient::Docs { prefix, docs } => {
                 let _ = self.0.events.send(Event::Docs { prefix, docs });
+            }
+            ToClient::Fetch { req, location, path } => {
+                let _ = self.0.events.send(Event::Fetch { req, location, path });
             }
             ToClient::Error { message } => tracing::warn!(drive.error = %message, "the node refused something"),
         }

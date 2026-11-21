@@ -2,6 +2,7 @@
 //! given (in Turso), passes live edits and presence between the peers that
 //! have a document open, keeps blobs, and serves apps' web builds.
 
+pub mod catalog;
 pub mod rooms;
 pub mod store;
 
@@ -33,10 +34,22 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
         .blobs()
         .expect("the node's blob folder opens");
 
+    let catalog = catalog::Catalog { rooms: rooms.clone(), blobs: blobs.clone() };
     let mut app = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
         .with_state(rooms)
+        .merge(
+            Router::new()
+                .route("/index/{space}/{location}", axum::routing::put(catalog::put_index))
+                .route("/search", get(catalog::search))
+                .route("/list", get(catalog::list))
+                .route("/copies", get(catalog::copies))
+                .route("/protection", get(catalog::protection))
+                .route("/fetch/{space}/{location}", get(catalog::fetch))
+                .layer(axum::extract::DefaultBodyLimit::max(512 << 20))
+                .with_state(catalog),
+        )
         .merge(
             Router::new()
                 .route("/blobs/{hash}", get(get_blob).head(head_blob).put(put_blob))
@@ -66,7 +79,7 @@ async fn sync(ws: WebSocketUpgrade, State(rooms): State<Arc<Rooms>>) -> impl Int
 
 /// A blob's bytes (checked against its hash on the way out); `?name=`
 /// makes it a download of that name.
-async fn get_blob(
+pub(crate) async fn get_blob(
     UrlPath(hash): UrlPath<String>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     State(blobs): State<BlobStore>,

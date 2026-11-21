@@ -2,6 +2,7 @@
 //! every app keeps. It edits only the spine; app documents show as cards
 //! that open their app.
 
+mod catalog;
 mod files;
 mod notes;
 
@@ -26,6 +27,8 @@ enum Tab {
     Files,
     Devices,
     Storage,
+    Computers,
+    Protection,
     Everything,
 }
 
@@ -50,6 +53,8 @@ fn Shell() -> Element {
         (Tab::Files, "Files"),
         (Tab::Devices, "Devices"),
         (Tab::Storage, "Storage"),
+        (Tab::Computers, "Computers"),
+        (Tab::Protection, "Protection"),
         (Tab::Everything, "Everything"),
     ];
     rsx! {
@@ -93,6 +98,12 @@ fn Shell() -> Element {
                     },
                     Tab::Storage => rsx! {
                         files::Spaces { which: "storage" }
+                    },
+                    Tab::Computers => rsx! {
+                        files::Spaces { which: "computers" }
+                    },
+                    Tab::Protection => rsx! {
+                        files::Spaces { which: "protection" }
                     },
                     Tab::Everything => rsx! {
                         Everything {}

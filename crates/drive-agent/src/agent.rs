@@ -121,7 +121,7 @@ pub struct Agent {
     pub files_id: String,
     pub space_id: String,
     stores: Vec<(String, BlobStore)>,
-    http: reqwest::Client,
+    pub http: reqwest::Client,
     busy: Mutex<HashSet<(String, State)>>,
 }
 
@@ -274,7 +274,7 @@ impl Agent {
         Ok(path)
     }
 
-    async fn fetch_bytes(&self, hash: &str) -> Result<Vec<u8>, String> {
+    pub async fn fetch_bytes(&self, hash: &str) -> Result<Vec<u8>, String> {
         for (_, store) in &self.stores {
             if let Ok(b) = store.get(hash).await {
                 return Ok(b);

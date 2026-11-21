@@ -1,0 +1,133 @@
+//! The agent's always-running part: answers the node, keeps its volumes
+//! and locations' indexes current (a watcher, and a full pass now and
+//! then; unchanged files are not read again), and keeps the Computers
+//! view fresh.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+use drive_files::space;
+use drive_native::Event;
+use notify::Watcher;
+use tokio::sync::mpsc;
+
+use crate::agent::Agent;
+use crate::computers::View;
+
+/// Devices whose agent is connected now (from the registry's presence),
+/// this one included.
+pub fn online_devices(a: &Agent) -> HashSet<String> {
+    let mut on: HashSet<String> = a
+        .drive
+        .others(&a.space_id)
+        .into_iter()
+        .filter_map(|(_, _, json)| {
+            serde_json::from_str::<serde_json::Value>(&json).ok()?["data"]["device"].as_str().map(str::to_string)
+        })
+        .collect();
+    on.insert(a.device_id());
+    on
+}
+
+pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
+    let indexes = a.refresh_indexes().await;
+    let devices = space::devices(&a.space).into_iter().map(|d| (d.id, d.name)).collect();
+    let built = View::build(&a.device_id(), devices, space::locations(&a.space), indexes, online_devices(a));
+    *view.write().expect("view") = built;
+}
+
+/// Run until the process stops.
+pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
+    let (space_name, me) = {
+        let c = a.cfg.lock().expect("cfg");
+        (c.space.clone(), c.device_id.clone())
+    };
+    a.drive.register_agent(&space_name, &me);
+    let mut events = a.drive.events();
+    a.report_volumes();
+
+    // Changes under a local location: reindex it a few seconds after they stop.
+    let (changed_tx, mut changed) = mpsc::unbounded_channel::<String>();
+    let mut watchers = Vec::new();
+    for loc in a.my_locations().into_iter().filter(|l| l.storage.is_empty()) {
+        let tx = changed_tx.clone();
+        let id = loc.id.clone();
+        match notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
+            if r.is_ok_and(|e| !e.kind.is_access()) {
+                let _ = tx.send(id.clone());
+            }
+        }) {
+            Ok(mut w) => match w.watch(std::path::Path::new(&loc.path), notify::RecursiveMode::Recursive) {
+                Ok(()) => watchers.push(w),
+                Err(e) => tracing::warn!(location.name = %loc.name, error = %e, "a location cannot be watched; it is rescanned every ten minutes"),
+            },
+            Err(e) => tracing::warn!(error = %e, "no file watcher"),
+        }
+    }
+
+    for loc in a.my_locations() {
+        if let Err(e) = a.index_location(&loc).await {
+            tracing::warn!(location.name = %loc.name, error = %e, "a location did not index");
+        }
+    }
+    refresh_view(&a, &view).await;
+
+    let mut pending: HashMap<String, tokio::time::Instant> = HashMap::new();
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    let mut last_full = tokio::time::Instant::now();
+    let mut last_view = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            ev = events.recv() => match ev {
+                Ok(Event::Fetch { req, location, path }) => {
+                    let a = a.clone();
+                    tokio::spawn(async move {
+                        let r = a.answer_fetch(&location, &path).await;
+                        if let Err(e) = &r {
+                            tracing::warn!(fetch.location = %location, error = %e, "a fetch was refused");
+                        }
+                        a.drive.fetched(req, r);
+                    });
+                }
+                Ok(Event::Online(true)) => {
+                    a.announce();
+                }
+                Ok(Event::Presence { .. }) => {
+                    view.write().expect("view").online = online_devices(&a);
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => break,
+            },
+            Some(id) = changed.recv() => {
+                pending.insert(id, tokio::time::Instant::now() + Duration::from_secs(5));
+            }
+            _ = tick.tick() => {
+                let now = tokio::time::Instant::now();
+                let due: Vec<String> = pending.iter().filter(|(_, t)| **t <= now).map(|(k, _)| k.clone()).collect();
+                for id in due {
+                    pending.remove(&id);
+                    if let Some(loc) = a.my_locations().into_iter().find(|l| l.id == id)
+                        && let Err(e) = a.index_location(&loc).await
+                    {
+                        tracing::warn!(location.name = %loc.name, error = %e, "a location did not reindex");
+                    }
+                }
+                if now.duration_since(last_full) > Duration::from_secs(600) {
+                    last_full = now;
+                    a.report_volumes();
+                    for loc in a.my_locations() {
+                        let _ = a.index_location(&loc).await;
+                    }
+                }
+                if now.duration_since(last_view) > Duration::from_secs(30) {
+                    last_view = now;
+                    a.announce();
+                    refresh_view(&a, &view).await;
+                }
+            }
+        }
+    }
+    drop(watchers);
+}

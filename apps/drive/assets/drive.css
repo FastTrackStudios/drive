@@ -121,3 +121,26 @@ a { color: inherit; }
 .pairing span { color: var(--ink-2); font-size: 13px; }
 code { font: 12.5px/1.5 ui-monospace, monospace; background: #0a0a0c; padding: 6px 8px; border-radius: 6px; color: #c8c8d0; overflow-x: auto; display: block; white-space: pre-wrap; word-break: break-all; }
 .empty code, .hint code { display: inline; padding: 1px 5px; }
+
+/* Computers, protection */
+.computer { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.locrow { display: flex; align-items: center; gap: 10px; padding: 10px 14px 10px 34px; background: var(--surface); border: 1px solid #1d1d22; border-radius: 10px; text-align: left; }
+.locrow:hover { background: var(--surface-2); }
+.locrow .lname { font-weight: 650; color: var(--accent); }
+.locrow .s1 { flex: 1; min-width: 0; color: var(--ink-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumbtext { color: var(--ink-2); font-weight: 600; padding: 2px 6px; }
+.where { flex-basis: 100%; order: 5; color: var(--ink-3); font-size: 12.5px; padding-left: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copies { margin-top: 14px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; }
+.copies h2 { font-size: 16px; margin: 0; }
+.copies .x { margin-left: auto; color: var(--ink-3); width: 26px; height: 26px; }
+.copies .frow { padding: 8px 2px; }
+.policy { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--surface); border: 1px solid #1d1d22; border-radius: 14px; margin-bottom: 12px; }
+.polhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.polhead b { font-size: 18px; }
+.polhead .s1 { color: var(--ink-3); font-size: 13px; }
+.polhead .badge { margin-left: auto; }
+.badge.warn { background: rgba(240,194,75,.14); color: #f5d68a; }
+.meter { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.meter .fill { height: 100%; background: var(--ok); border-radius: 4px; }
+.policy .frow { padding: 7px 2px; border-top: 1px solid #1d1d22; }
+.frow.short .fname { font-weight: 500; color: var(--ink-2); }

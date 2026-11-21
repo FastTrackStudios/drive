@@ -37,6 +37,12 @@ pub enum ToNode {
     Leave { doc: DocId },
     /// Ask which documents the node holds whose id starts with `prefix`.
     List { prefix: String },
+    /// This connection is a device's agent: the node may ask it for files
+    /// in the locations it indexes.
+    Agent { space: String, device: String },
+    /// The answer to [`ToClient::Fetch`]: the file's blob is on the node
+    /// (its BLAKE3 hash), or why not.
+    Fetched { req: u64, result: Result<String, String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +60,9 @@ pub enum ToClient {
     Docs { prefix: String, docs: Vec<DocInfo> },
     /// Something went wrong with a request.
     Error { message: String },
+    /// To an agent: put this file (from one of your locations) on the node
+    /// as a blob, and answer with [`ToNode::Fetched`].
+    Fetch { req: u64, location: String, path: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,5 +94,7 @@ mod tests {
         assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
         let m = ToClient::Presence { doc: "x".into(), peer: 7, name: "Mia".into(), json: None };
         assert_eq!(decode::<ToClient>(&encode(&m)).unwrap(), m);
+        let m = ToNode::Fetched { req: 3, result: Err("offline".into()) };
+        assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
     }
 }

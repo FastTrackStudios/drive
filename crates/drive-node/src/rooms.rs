@@ -11,7 +11,7 @@ use axum::extract::ws::{Message, WebSocket};
 use drive_proto::{DocId, DocInfo, Peer, ToClient, ToNode};
 use futures::{SinkExt, StreamExt};
 use loro::{ExportMode, LoroDoc, VersionVector};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::store::Store;
 
@@ -30,13 +30,83 @@ type Outbox = mpsc::UnboundedSender<ToClient>;
 
 pub struct Rooms {
     rooms: Mutex<HashMap<DocId, Room>>,
-    store: Store,
+    pub store: Store,
     next_peer: AtomicU64,
+    /// Connected agents, by (space, device): their peer and outbox.
+    agents: Mutex<HashMap<(String, String), (Peer, Outbox)>>,
+    /// Fetches waiting for an agent's answer.
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
+    next_req: AtomicU64,
+}
+
+/// Why a file could not be fetched from its device.
+#[derive(Debug)]
+pub enum FetchError {
+    /// No such location in the space.
+    NoLocation,
+    /// The location's device has no agent connected.
+    Offline(String),
+    /// It did not answer in time.
+    Timeout,
+    /// It answered that it could not.
+    Refused(String),
 }
 
 impl Rooms {
     pub fn new(store: Store) -> Rooms {
-        Rooms { rooms: Mutex::new(HashMap::new()), store, next_peer: AtomicU64::new(1) }
+        Rooms {
+            rooms: Mutex::new(HashMap::new()),
+            store,
+            next_peer: AtomicU64::new(1),
+            agents: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            next_req: AtomicU64::new(1),
+        }
+    }
+
+    /// Read a document as the node holds it (loading it if needed).
+    pub async fn read<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
+        let mut rooms = self.rooms.lock().await;
+        let room = self.ensure(&mut rooms, id).await;
+        f(&room.doc)
+    }
+
+    /// Which devices have an agent connected in `space`.
+    pub async fn agents_online(&self, space: &str) -> Vec<String> {
+        self.agents.lock().await.keys().filter(|(s, _)| s == space).map(|(_, d)| d.clone()).collect()
+    }
+
+    /// Ask the device that owns `location` to put `path` on the node;
+    /// returns the blob's hash.
+    pub async fn fetch(&self, space: &str, location: &str, path: &str) -> Result<String, FetchError> {
+        let device = self
+            .read(&drive_files::space_doc(space), |d| {
+                drive_files::space::locations(d).into_iter().find(|l| l.id == location).map(|l| l.device)
+            })
+            .await
+            .ok_or(FetchError::NoLocation)?;
+        let outbox = self
+            .agents
+            .lock()
+            .await
+            .get(&(space.to_string(), device.clone()))
+            .map(|(_, o)| o.clone())
+            .ok_or_else(|| FetchError::Offline(device.clone()))?;
+        let req = self.next_req.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(req, tx);
+        if outbox.send(ToClient::Fetch { req, location: location.into(), path: path.into() }).is_err() {
+            self.pending.lock().await.remove(&req);
+            return Err(FetchError::Offline(device));
+        }
+        let answer = tokio::time::timeout(Duration::from_secs(120), rx).await;
+        self.pending.lock().await.remove(&req);
+        match answer {
+            Ok(Ok(Ok(hash))) => Ok(hash),
+            Ok(Ok(Err(why))) => Err(FetchError::Refused(why)),
+            Ok(Err(_)) => Err(FetchError::Offline(device)),
+            Err(_) => Err(FetchError::Timeout),
+        }
     }
 
     /// The room for a document, loaded from the store the first time.
@@ -145,6 +215,15 @@ impl Rooms {
                     }
                 }
             }
+            ToNode::Agent { space, device } => {
+                tracing::info!(agent.space = %space, agent.device = %device, peer, "an agent connected");
+                self.agents.lock().await.insert((space, device), (peer, out.clone()));
+            }
+            ToNode::Fetched { req, result } => {
+                if let Some(tx) = self.pending.lock().await.remove(&req) {
+                    let _ = tx.send(result);
+                }
+            }
             ToNode::Leave { doc: id } => {
                 self.leave(peer, name, &id).await;
                 joined.remove(&id);
@@ -229,6 +308,7 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
     for id in joined {
         rooms.leave(peer, &name, &id).await;
     }
+    rooms.agents.lock().await.retain(|_, (p, _)| *p != peer);
     drop(out);
     let _ = writer.await;
 }

@@ -118,6 +118,84 @@ service `drive-agent`), a second device paired by code with its own
 storage, a file added there showing as cloud-only here and downloading on
 open, a browser upload appearing in `~/Drive`.
 
+## Every computer's files (built, 2026-11-21)
+
+Spacedrive's idea, on Drive: files stay where they are, and every
+computer's **index** travels, so you can search and browse what is on
+Voyager while it is off.
+
+- **Locations** (`locations` in the registry): a folder a device indexes in
+  place (`drive-agent location add Samples ~/Samples`), or a folder in a
+  storage it runs (`--storage "Garage Deep"`: an S3 bucket, a WebDAV share,
+  walked through OpenDAL, sampled hashes read as byte ranges).
+- **Volumes**: each device's disks (sysinfo), with size and free space;
+  an unplugged drive keeps its last report and its locations' indexes.
+- **The index**: every file and folder, its size, time and sampled BLAKE3
+  hash. Ignore rules: `.gitignore`, `.ignore`, `.driveignore`, hidden
+  files, caches and build output. Re-walks read only new or changed files.
+  Published as one blob (postcard + zstd) and as rows in the node's Turso
+  database. A watcher re-indexes a location a few seconds after it
+  changes; a full pass runs every ten minutes.
+- **Search** (`GET /search`, `drive-agent search`, the app's Computers
+  tab): every device's files at once, each with its device, location,
+  whether that device is online, and how many copies exist.
+- **Fetch** (`GET /fetch/<space>/<location>?path=`): the node asks the
+  owning device's agent, over its existing connection, to put the file on
+  the node, then serves it. Device off: `503`, "the device that has this
+  file is offline".
+- **The Computers folder** (`drive-agent mount ~/Drive --computers
+  ~/Computers`): `Computers/<device>/<location>/…`, read-only, built from
+  the indexes this device keeps a copy of (it lists everything offline).
+  Reading this device's files reads them in place; another computer's are
+  fetched through the node and cached. `user.drive.state` is `here`,
+  `cached`, `remote` or `offline`; `user.drive.copies` lists every location
+  holding the same content.
+
+## Copies and protection (built, 2026-11-21)
+
+- **Copies** are found by content (sampled hash + size) across every
+  index: `drive-agent copies LOCATION PATH`, `GET /copies`, the copies
+  panel in the app.
+- **Sites** (`drive-agent site HOLDER SITE`): where a device or storage
+  physically is (`studio`, `home`, `offsite-vault`).
+- **Policies** (`drive-agent policy add 3-2-1 --scope Samples`): every file
+  in scope should be on at least N **copies** (locations), M **media**
+  (distinct disks or storages: two folders on one disk are one medium),
+  and K **offsite** (media at another site than the file's own). The
+  3-2-1 rule is 3, 2, 1.
+- **The report** (`drive-agent protection`, `GET /protection`, the app's
+  Protection tab): per policy and location, how many files meet it, the
+  bytes at risk, and the largest files that fall short with what they lack.
+- **Backups** (`drive-agent backup LOCATION STORAGE`): copy a location
+  into a storage (skipping what is there), registered and indexed as a
+  location of its own, so its files count as copies. Tried with a real
+  Garage bucket (S3) as the offsite store.
+
+Caveat: copies by sampled hash are likely copies. Two takes of the same
+length that differ only between the samples would look alike; the next
+step confirms a copy with the full hash before the report counts it (and
+before any copy is used in place of another).
+
+## Apps on Drive's catalog
+
+Drive stays the data platform; apps build on its catalog:
+
+- **A sample library catalogue** (an Atlas-style app): reads every
+  device's indexes (`/search`, `/list`, extension filters), keeps its own
+  data in its own Drive documents (`samples:<space>`: tags, BPM, key,
+  favourites, which instrument a sample belongs to, analysis results),
+  and manages big libraries (orchestral, keys) as units: where each
+  library is installed, how many copies, which devices should have it.
+  Drive gives it the files, copies, protection and fetch; the app owns the
+  musical meaning.
+- **iPhone and iPad** are devices too. An iOS agent (the app, with a File
+  Provider extension for the Files app) indexes the app's own containers
+  and the folders the user grants it (security-scoped bookmarks: iOS lets
+  an app see nothing else), reports its free space, and can receive a
+  library: "put this Keys library on the iPad" is a placement the agent
+  carries out by downloading the library's files into its container. Same
+  registry, same index, same protection report.
+
 ## Next
 
 - **File-manager status:** a Nautilus extension (nautilus-python) and a
@@ -130,3 +208,8 @@ open, a browser upload appearing in `~/Drive`.
   instead of whole-blob downloads; eviction when the cache is full;
   placement rules; conflicts (both versions kept); signed device keys.
 - The agent as a fleet service (it runs as a transient user unit now).
+- Confirm copies with the full hash; read an offline file from a
+  confirmed copy on an online device.
+- Placement: "this library on these devices" as a rule the agents carry
+  out, and the protection report suggesting backups that would fix it.
+- The iOS/iPadOS agent and File Provider extension.

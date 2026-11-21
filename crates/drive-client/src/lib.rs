@@ -410,7 +410,7 @@ impl Drive {
                 self.emit(Event::Presence { doc, peer, name, json });
             }
             ToClient::Docs { prefix, docs } => self.emit(Event::Docs { prefix, docs }),
-            ToClient::Error { .. } => {}
+            ToClient::Error { .. } | ToClient::Fetch { .. } => {}
         }
     }
 }

@@ -5,7 +5,13 @@
 //!   and the device that runs it;
 //! - `invites`: pairing code → who made it, when it expires;
 //! - `holdings`: device id → blob hash → `local` or `pinned` (what each
-//!   device keeps), so any app can show where a file's bytes are.
+//!   device keeps), so any app can show where a file's bytes are;
+//! - `locations`: folders devices index in place (on their own disks, or
+//!   in a storage they run), each with its latest index blob;
+//! - `volumes`: each device's disks;
+//! - `sites`: device or storage id → where it physically is (`home`,
+//!   `studio`, `cloud`), for offsite copies;
+//! - `policies`: protection rules (3-2-1 and the like) over locations.
 //!
 //! Prototype note: approval is recorded, not yet signed with device keys.
 
@@ -180,6 +186,211 @@ pub fn storages(doc: &LoroDoc) -> Vec<Storage> {
 
 pub fn remove_storage(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
     doc.get_map("storages").delete(id)
+}
+
+// ── locations ───────────────────────────────────────────────────────────
+
+/// A folder a device indexes in place, and its latest published index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Location {
+    pub id: String,
+    pub name: String,
+    pub device: String,
+    /// Its path on that device.
+    pub path: String,
+    /// The volume (disk) it is on: its mount point.
+    pub volume: String,
+    /// When set, the location is in this storage (an S3 bucket, a WebDAV
+    /// share) and `path` is inside it; `device` runs that storage.
+    pub storage: String,
+    /// The latest index blob's hash (empty until the first walk).
+    pub index: String,
+    pub files: i64,
+    pub bytes: i64,
+    pub built: i64,
+}
+
+pub fn add_location(doc: &LoroDoc, l: &Location) -> loro::LoroResult<()> {
+    let m = doc.get_map("locations").ensure_mergeable_map(&l.id)?;
+    put(
+        &m,
+        &[
+            ("id", &l.id),
+            ("name", &l.name),
+            ("device", &l.device),
+            ("path", &l.path),
+            ("volume", &l.volume),
+            ("storage", &l.storage),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Record a location's new index.
+pub fn set_index(doc: &LoroDoc, location: &str, hash: &str, files: i64, bytes: i64) -> loro::LoroResult<()> {
+    let m = doc.get_map("locations").ensure_mergeable_map(location)?;
+    m.insert("index", hash)?;
+    m.insert("files", files)?;
+    m.insert("bytes", bytes)?;
+    m.insert("built", crate::now_ms())?;
+    Ok(())
+}
+
+pub fn locations(doc: &LoroDoc) -> Vec<Location> {
+    let map = doc.get_map("locations");
+    let mut out: Vec<Location> = map
+        .keys()
+        .filter_map(|k| child(&map, &k))
+        .map(|m| Location {
+            id: s(&m, "id"),
+            name: s(&m, "name"),
+            device: s(&m, "device"),
+            path: s(&m, "path"),
+            volume: s(&m, "volume"),
+            storage: s(&m, "storage"),
+            index: s(&m, "index"),
+            files: n(&m, "files"),
+            bytes: n(&m, "bytes"),
+            built: n(&m, "built"),
+        })
+        .filter(|l| !l.id.is_empty())
+        .collect();
+    out.sort_by(|a, b| (a.device.as_str(), a.name.as_str()).cmp(&(b.device.as_str(), b.name.as_str())));
+    out
+}
+
+pub fn remove_location(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
+    doc.get_map("locations").delete(id)
+}
+
+impl Location {
+    /// The medium its bytes are on: the storage, or the device's disk. Two
+    /// locations on one medium are one copy's worth of safety.
+    pub fn medium(&self) -> String {
+        if self.storage.is_empty() { format!("{}:{}", self.device, self.volume) } else { self.storage.clone() }
+    }
+
+    /// Who holds its bytes, for sites: the storage, or the device.
+    pub fn holder(&self) -> &str {
+        if self.storage.is_empty() { &self.device } else { &self.storage }
+    }
+}
+
+// ── sites ───────────────────────────────────────────────────────────────
+
+/// Say where a device or storage physically is.
+pub fn set_site(doc: &LoroDoc, holder: &str, site: &str) -> loro::LoroResult<()> {
+    doc.get_map("sites").insert(holder, site)
+}
+
+/// Every holder's site (unset holders are absent).
+pub fn sites(doc: &LoroDoc) -> std::collections::HashMap<String, String> {
+    let map = doc.get_map("sites");
+    map.keys()
+        .filter_map(|k| match map.get(&k) {
+            Some(ValueOrContainer::Value(LoroValue::String(v))) => Some((k.to_string(), v.to_string())),
+            _ => None,
+        })
+        .collect()
+}
+
+// ── policies ────────────────────────────────────────────────────────────
+
+/// A protection rule: every file in `scope` (location ids; empty: every
+/// location) should exist on at least `copies` media, `offsite` of them at
+/// another site than the file's own. The 3-2-1 rule is copies 3 (the
+/// original and two more), on 2 media, 1 offsite.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Policy {
+    pub id: String,
+    pub name: String,
+    pub scope: Vec<String>,
+    pub copies: i64,
+    pub media: i64,
+    pub offsite: i64,
+}
+
+pub fn set_policy(doc: &LoroDoc, p: &Policy) -> loro::LoroResult<()> {
+    let m = doc.get_map("policies").ensure_mergeable_map(&p.id)?;
+    put(&m, &[("id", &p.id), ("name", &p.name), ("scope", &p.scope.join(","))])?;
+    m.insert("copies", p.copies)?;
+    m.insert("media", p.media)?;
+    m.insert("offsite", p.offsite)?;
+    Ok(())
+}
+
+pub fn policies(doc: &LoroDoc) -> Vec<Policy> {
+    let map = doc.get_map("policies");
+    let mut out: Vec<Policy> = map
+        .keys()
+        .filter_map(|k| child(&map, &k))
+        .map(|m| Policy {
+            id: s(&m, "id"),
+            name: s(&m, "name"),
+            scope: s(&m, "scope").split(',').filter(|x| !x.is_empty()).map(str::to_string).collect(),
+            copies: n(&m, "copies"),
+            media: n(&m, "media"),
+            offsite: n(&m, "offsite"),
+        })
+        .filter(|p| !p.id.is_empty())
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+pub fn remove_policy(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
+    doc.get_map("policies").delete(id)
+}
+
+// ── volumes ─────────────────────────────────────────────────────────────
+
+/// A disk a device has (its own, or one plugged in).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Volume {
+    pub device: String,
+    pub name: String,
+    pub mount: String,
+    pub fs: String,
+    pub total: i64,
+    pub free: i64,
+    pub removable: bool,
+    /// When its device last saw it mounted.
+    pub seen: i64,
+}
+
+/// A device's disks, as it sees them now; ones no longer mounted stay,
+/// marked by their old `seen` (an unplugged drive keeps its files' index).
+pub fn report_volumes(doc: &LoroDoc, device: &str, vols: &[Volume]) -> loro::LoroResult<()> {
+    let map = doc.get_map("volumes");
+    for v in vols {
+        let m = map.ensure_mergeable_map(&format!("{device}:{}", v.mount))?;
+        put(&m, &[("device", device), ("name", &v.name), ("mount", &v.mount), ("fs", &v.fs)])?;
+        m.insert("total", v.total)?;
+        m.insert("free", v.free)?;
+        m.insert("removable", v.removable)?;
+        m.insert("seen", v.seen)?;
+    }
+    Ok(())
+}
+
+pub fn volumes(doc: &LoroDoc) -> Vec<Volume> {
+    let map = doc.get_map("volumes");
+    let mut out: Vec<Volume> = map
+        .keys()
+        .filter_map(|k| child(&map, &k))
+        .map(|m| Volume {
+            device: s(&m, "device"),
+            name: s(&m, "name"),
+            mount: s(&m, "mount"),
+            fs: s(&m, "fs"),
+            total: n(&m, "total"),
+            free: n(&m, "free"),
+            removable: matches!(m.get("removable"), Some(ValueOrContainer::Value(LoroValue::Bool(true)))),
+            seen: n(&m, "seen"),
+        })
+        .collect();
+    out.sort_by(|a, b| (a.device.as_str(), a.mount.as_str()).cmp(&(b.device.as_str(), b.mount.as_str())));
+    out
 }
 
 // ── holdings ────────────────────────────────────────────────────────────
