@@ -15,7 +15,7 @@
 .dv-btn:hover:not(:disabled) { color: var(--dv-ink); }
 .dv-btn.on { background: var(--dv-surface-2); color: var(--dv-ink); border-color: var(--dv-ink-3); }
 .dv-btn:disabled { opacity: .4; cursor: default; }
-.dv-btn.danger { color: #f87171; }
+.dv-btn.dv-danger { color: #f87171; }
 .dv-find { height: 28px; width: 170px; max-width: 46vw; border-radius: 8px; border: 1px solid var(--dv-rule); background: var(--dv-sheet); padding: 0 9px; outline: none; font-size: 13px; }
 .dv-find:focus { border-color: var(--dv-accent); }
 

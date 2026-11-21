@@ -38,6 +38,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "Window",
     "Document",
     "Element",
+    "DomRect",
     "HtmlElement",
     "HtmlCanvasElement",
     "HtmlImageElement",

@@ -32,7 +32,6 @@ pub fn PdfView(
     let mut page = use_signal(|| 0usize);
     // `None`: fit the width.
     let mut zoom = use_signal(|| None::<f32>);
-    let mut width = use_signal(|| 0.0f64);
     let mut drawn = use_signal(|| None::<Result<(), String>>);
     let mut query = use_signal(String::new);
     let mut hits = use_signal(Vec::<Hit>::new);
@@ -61,7 +60,7 @@ pub fn PdfView(
         let page_id = page_id.clone();
         use_effect(move || {
             let p = page();
-            let _ = (zoom(), width());
+            let _ = zoom();
             let Some(Ok(d)) = doc.read().clone() else { return };
             let Some(holder) = element::<web_sys::HtmlElement>(&page_id) else { return };
             let mut d = d.borrow_mut();
@@ -73,7 +72,10 @@ pub fn PdfView(
                 scale *= (MAX_PIXELS / px).sqrt();
             }
             let r = d.render(p, scale).and_then(|pg| draw(&canvas_id, &pg));
-            drawn.set(Some(r));
+            drop(d);
+            if drawn.peek().as_ref() != Some(&r) {
+                drawn.set(Some(r));
+            }
         });
     }
 
@@ -93,10 +95,14 @@ pub fn PdfView(
             page.set(to);
         }
     };
+    let holder_id = page_id.clone();
     let mut step_zoom = move |up: bool| {
+        // Fitting: the zoom it fits at now.
         let cur = zoom().unwrap_or_else(|| {
-            let w = width();
-            if w > 0.0 { w as f32 / pw } else { 1.0 }
+            element::<web_sys::HtmlElement>(&holder_id)
+                .map(|e| e.client_width() as f32 / pw)
+                .filter(|z| *z > 0.0)
+                .unwrap_or(1.0)
         });
         let next = if up {
             ZOOMS.iter().copied().find(|z| *z > cur + 0.01)
@@ -180,7 +186,15 @@ pub fn PdfView(
             button { class: "dv-btn", title: "Next page", disabled: p + 1 >= pages, onclick: move |_| go(p + 1), "›" }
             if !compact {
                 span { class: "dv-sep" }
-                button { class: "dv-btn", title: "Zoom out", onclick: move |_| step_zoom(false), "−" }
+                button {
+                    class: "dv-btn",
+                    title: "Zoom out",
+                    onclick: {
+                        let mut z = step_zoom.clone();
+                        move |_| z(false)
+                    },
+                    "−"
+                }
                 button { class: if zoom().is_none() { "dv-btn on" } else { "dv-btn" }, title: "Fit the width", onclick: move |_| zoom.set(None), "{zoom_label}" }
                 button { class: "dv-btn", title: "Zoom in", onclick: move |_| step_zoom(true), "+" }
                 span { class: "dv-sep" }
@@ -215,7 +229,7 @@ pub fn PdfView(
                     button { class: "dv-btn", title: "Turn this page right", onclick: move |_| edit(PageEdit::Rotate { pages: vec![p], degrees: 90 }), "⟳" }
                     button { class: "dv-btn", title: "Move this page earlier", disabled: p == 0, onclick: move |_| edit(PageEdit::Move { pages: vec![p], to: p.saturating_sub(1) }), "↑" }
                     button { class: "dv-btn", title: "Move this page later", disabled: p + 1 >= pages, onclick: move |_| edit(PageEdit::Move { pages: vec![p], to: p + 1 }), "↓" }
-                    button { class: "dv-btn danger", title: "Delete this page", disabled: pages < 2, onclick: move |_| edit(PageEdit::Delete { pages: vec![p] }), "Delete page" }
+                    button { class: "dv-btn dv-danger", title: "Delete this page", disabled: pages < 2, onclick: move |_| edit(PageEdit::Delete { pages: vec![p] }), "Delete page" }
                 }
             }
         }
@@ -224,11 +238,6 @@ pub fn PdfView(
         }
         div {
             class: "dv-scroll",
-            onresize: move |e: Event<ResizeData>| {
-                if let Ok(s) = e.get_content_box_size() {
-                    width.set(s.width);
-                }
-            },
             div { id: "{page_id}", class: "dv-page", style: "{page_style}",
                 canvas { id: "{canvas_id}", class: "dv-canvas" }
                 for (on, rects) in here {

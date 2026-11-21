@@ -27,6 +27,22 @@ pub fn Region(
     let mut from = use_signal(|| None::<(f64, f64)>);
     let mut to = use_signal(|| (0.0f64, 0.0f64));
     let mut kept = use_signal(|| None::<[f64; 4]>);
+    // Where a pointer is on the layer: from the page's coordinates and the
+    // layer's box (an event's own offsets are relative to whatever child it
+    // hit, and unreliable for synthetic events).
+    let at = {
+        let id = id.clone();
+        move |e: &PointerEvent| {
+            let c = e.client_coordinates();
+            match super::element::<web_sys::Element>(&id) {
+                Some(el) => {
+                    let r = el.get_bounding_client_rect();
+                    (c.x - r.left(), c.y - r.top())
+                }
+                None => (c.x, c.y),
+            }
+        }
+    };
     let size = {
         let id = id.clone();
         move || {
@@ -54,16 +70,21 @@ pub fn Region(
             div {
                 id: "{id}",
                 class: "dv-pick",
-                onpointerdown: move |e: PointerEvent| {
-                    let p = e.element_coordinates();
-                    from.set(Some((p.x, p.y)));
-                    to.set((p.x, p.y));
-                    kept.set(None);
+                onpointerdown: {
+                    let at = at.clone();
+                    move |e: PointerEvent| {
+                        let p = at(&e);
+                        from.set(Some(p));
+                        to.set(p);
+                        kept.set(None);
+                    }
                 },
-                onpointermove: move |e: PointerEvent| {
-                    if from.peek().is_some() {
-                        let p = e.element_coordinates();
-                        to.set((p.x, p.y));
+                onpointermove: {
+                    let at = at.clone();
+                    move |e: PointerEvent| {
+                        if from.peek().is_some() {
+                            to.set(at(&e));
+                        }
                     }
                 },
                 onpointerleave: move |_| from.set(None),
@@ -72,8 +93,7 @@ pub fn Region(
                     move |e: PointerEvent| {
                         let Some((x0, y0)) = from() else { return };
                         from.set(None);
-                        let p = e.element_coordinates();
-                        let (mut x1, mut y1) = (p.x, p.y);
+                        let (mut x1, mut y1) = at(&e);
                         if (x1 - x0).abs() < CLICK && (y1 - y0).abs() < CLICK {
                             (x1, y1) = (x0, y0);
                         } else {

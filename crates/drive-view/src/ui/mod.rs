@@ -50,23 +50,29 @@ pub fn Viewer(
     };
     let src = Src { url, bearer, size };
     let class = if compact { "dv compact" } else { "dv" };
+    // Another file (or a new version of this one: a new URL) is a new
+    // viewer, not this one's state over other bytes. Keys only take in a
+    // list, hence the list of one.
+    let key = src.url.clone();
     rsx! {
         style { {CSS} }
-        div { class: "{class}",
+        for key in std::iter::once(key) {
+            div { key: "{key}", class: "{class}",
             match vk {
                 ViewKind::Markdown | ViewKind::Text | ViewKind::Code => rsx! {
-                    text::TextView { src, view: vk, compact, on_anchor, on_save }
+                    text::TextView { src: src.clone(), view: vk, compact, on_anchor, on_save }
                 },
                 ViewKind::Image => rsx! {
-                    media::ImageView { src, compact, on_anchor }
+                    media::ImageView { src: src.clone(), compact, on_anchor }
                 },
                 ViewKind::Audio => rsx! {
-                    media::AudioView { src, compact, on_anchor }
+                    media::AudioView { src: src.clone(), compact, on_anchor }
                 },
                 ViewKind::Video => rsx! {
-                    media::VideoView { src, compact, on_anchor }
+                    media::VideoView { src: src.clone(), compact, on_anchor }
                 },
-                ViewKind::Pdf => pdf_view(src, compact, on_anchor, on_pdf_edit),
+                ViewKind::Pdf => pdf_view(src.clone(), compact, on_anchor, on_pdf_edit),
+            }
             }
         }
     }

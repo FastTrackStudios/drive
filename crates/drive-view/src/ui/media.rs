@@ -195,8 +195,9 @@ pub fn AudioView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
             src: "{play}",
             ontimeupdate: move |_| t1(),
             onloadedmetadata: move |_| read_time(),
-            onpause: emit_time.clone(),
-            onseeked: emit_time,
+            // Not on `seeked`: a click on the waveform seeks, and its own
+            // anchor (a time or a range) is the one that counts.
+            onpause: emit_time,
         }
         div { class: "dv-time",
             span { "{clock(now())}" }
