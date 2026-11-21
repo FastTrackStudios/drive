@@ -1,0 +1,34 @@
+[package]
+name = "drive-sidecars"
+description = "Drive's sidecars: data derived from a file's content (thumbnails, waveform peaks), keyed by its hash, and the native producers that make them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Without features: the keys, kinds and the peaks format (what a browser
+# needs to read a sidecar). `produce`: the native generators.
+default = []
+produce = [
+    "dep:image",
+    "dep:symphonia",
+    "dep:ab_glyph",
+    "dep:pdfcraft-render",
+    "dep:pdfcraft-fonts",
+    "dep:tracing",
+]
+
+[dependencies]
+serde.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"], optional = true }
+# Pure Rust decoders for every audio format a person keeps (WAV, AIFF,
+# FLAC, MP3, AAC/ALAC in MP4, Ogg Vorbis, CAF, MKV), read as a stream.
+symphonia = { version = "0.5", features = ["all"], optional = true }
+ab_glyph = { version = "0.2", optional = true }
+# The same pdfcraft revision drive-view uses (the root [patch] entries).
+pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa", optional = true }
+pdfcraft-fonts = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa", optional = true }
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
