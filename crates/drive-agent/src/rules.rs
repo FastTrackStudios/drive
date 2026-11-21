@@ -48,6 +48,10 @@ struct State {
     handled: BTreeMap<String, i64>,
     /// Rule → when it last ran on its schedule here.
     scheduled: BTreeMap<String, i64>,
+    /// Rule → the rule as last run here (switched on, made live or
+    /// edited: it runs once at once).
+    #[serde(default)]
+    seen_rules: BTreeMap<String, String>,
 }
 
 /// The rules, the journal and the tags, open; this device's memory.
@@ -222,6 +226,12 @@ impl Engine {
                 self.run(a, &r, live, None).await;
                 continue;
             }
+            let sig = serde_json::to_string(&r).unwrap_or_default();
+            if r.enabled && self.state.lock().await.seen_rules.get(&r.id) != Some(&sig) {
+                self.state.lock().await.seen_rules.insert(r.id.clone(), sig);
+                self.run(a, &r, r.mode == Mode::Live, None).await;
+                continue;
+            }
             if r.enabled && r.trigger.every_minutes > 0 {
                 let last = self
                     .state
@@ -245,9 +255,16 @@ impl Engine {
 
     /// A location changed and was indexed again: the rules that run on
     /// change, over it.
-    pub async fn after_index(&self, a: &Agent, location: &str) {
-        for r in self.mine(a).into_iter().filter(|r| r.trigger.on_change) {
-            self.run(a, &r, r.mode == Mode::Live, Some(location)).await;
+    pub async fn after_index(&self, a: &Agent, locations: &[String]) {
+        let projs = projects::projects(&a.space);
+        for r in self.mine(a).into_iter().filter(|r| {
+            r.trigger.on_change
+                && locations
+                    .iter()
+                    .any(|l| eval::covers_location(r, l, &projs))
+        }) {
+            // Over all of this device's places, so its preview stays whole.
+            self.run(a, &r, r.mode == Mode::Live, None).await;
         }
         self.save_state(a).await;
     }
@@ -387,6 +404,17 @@ impl Engine {
                     o.run.skipped += 1;
                     continue;
                 }
+                let fp = drive_rules::guard::fingerprint(&c.sampled, c.size, c.mtime);
+                if self
+                    .state
+                    .lock()
+                    .await
+                    .guard
+                    .handled(&rule.id, &item.key(), &fp)
+                {
+                    // Done before, unchanged since: nothing to do.
+                    continue;
+                }
                 let plan = matcher.plan(&facts, &world);
                 o.run.matched += 1;
                 o.rows.push(Row::of(&plan));
@@ -403,6 +431,11 @@ impl Engine {
                 }
                 self.carry_out(a, rule, &run_id, &facts, &plan, &root, &mut o.run)
                     .await;
+                self.state
+                    .lock()
+                    .await
+                    .guard
+                    .did(&rule.id, &item.key(), &fp);
             }
         }
         let _ = journal::put_preview(
@@ -811,7 +844,10 @@ impl Engine {
         let mut changed = false;
         for e in journal::entries(&self.journal) {
             if e.undo_requested == 0
-                || !matches!(e.status, Some(Status::Done) | Some(Status::Waiting))
+                || !matches!(
+                    e.status,
+                    Some(Status::Done) | Some(Status::Waiting) | Some(Status::UndoRefused)
+                )
                 || self.owner(a, &e) != me
             {
                 continue;
@@ -920,7 +956,120 @@ fn rel(root: &Path, p: &Path) -> String {
         .replace('\\', "/")
 }
 
+// ── one runner per device ───────────────────────────────────────────────
+
+/// `serve` claims the rules of this device: the command line then asks
+/// it rather than running them a second time beside it.
+pub fn claim(dir: &Path) {
+    let _ = std::fs::write(dir.join("rules.pid"), std::process::id().to_string());
+}
+
+/// Whether a running `serve` (not this process) has claimed them.
+fn served(dir: &Path) -> bool {
+    let Some(pid) = std::fs::read_to_string(dir.join("rules.pid"))
+        .ok()
+        .and_then(|s| s.trim().parse::<i32>().ok())
+    else {
+        return false;
+    };
+    // SAFETY: kill with signal 0 only checks that the process exists.
+    pid != std::process::id() as i32 && unsafe { libc::kill(pid, 0) } == 0
+}
+
 // ── the command line ────────────────────────────────────────────────────
+
+/// A rule written by hand may name locations, devices, projects and tags
+/// by name: they become ids.
+fn resolve_names(a: &Agent, e: &Engine, r: &mut Rule) -> Result<(), String> {
+    use drive_rules::{Action, Dest, Devices, Place, Test};
+    let locs = space::locations(&a.space);
+    let devs = space::devices(&a.space);
+    let projs = projects::projects(&a.space);
+    let lib = Library::load(&e.tags);
+    let loc = |x: &mut String| -> Result<(), String> {
+        if !locs.iter().any(|l| l.id == *x) {
+            *x = locs
+                .iter()
+                .find(|l| l.name.eq_ignore_ascii_case(x))
+                .map(|l| l.id.clone())
+                .ok_or(format!("no location {x}"))?;
+        }
+        Ok(())
+    };
+    let dev = |x: &mut String| -> Result<(), String> {
+        if !devs.iter().any(|d| d.id == *x) {
+            *x = devs
+                .iter()
+                .find(|d| d.name.eq_ignore_ascii_case(x))
+                .map(|d| d.id.clone())
+                .ok_or(format!("no device {x}"))?;
+        }
+        Ok(())
+    };
+    let proj = |x: &mut String| -> Result<(), String> {
+        if !x.is_empty() && !projs.iter().any(|p| p.id == *x) {
+            *x = projs
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(x))
+                .map(|p| p.id.clone())
+                .ok_or(format!("no project {x}"))?;
+        }
+        Ok(())
+    };
+    let tag = |x: &mut String| -> Result<(), String> {
+        if lib.get(x).is_none() {
+            *x = match lib.resolve(x).as_slice() {
+                [one] => one.clone(),
+                [] => return Err(format!("no tag {x}")),
+                _ => return Err(format!("{x} names several tags; give its id")),
+            };
+        }
+        Ok(())
+    };
+    if let Devices::Named(v) = &mut r.scope.devices {
+        for d in v {
+            dev(d)?;
+        }
+    }
+    for p in &mut r.scope.places {
+        match p {
+            Place::Location { location, .. } => loc(location)?,
+            Place::Project { project } => proj(project)?,
+            Place::Tag { tag: t } => tag(t)?,
+            Place::Drive { .. } => {}
+        }
+    }
+    for g in &mut r.when.groups {
+        for c in &mut g.conditions {
+            match &mut c.test {
+                Test::Tag { tag: t } => tag(t)?,
+                Test::Project { project } => proj(project)?,
+                Test::HeldBy { device } => dev(device)?,
+                _ => {}
+            }
+        }
+    }
+    for act in &mut r.actions {
+        match act {
+            Action::AddTags { tags } | Action::RemoveTags { tags } => {
+                for t in tags {
+                    tag(t)?;
+                }
+            }
+            Action::AddToProject { project } => proj(project)?,
+            Action::Copy {
+                to: Dest::Location { location, .. },
+                ..
+            }
+            | Action::Move {
+                to: Dest::Location { location, .. },
+                ..
+            } => loc(location)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 fn ago(ms: i64) -> String {
     if ms == 0 {
@@ -1026,7 +1175,40 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
             doc::request_run(&e.rules, &r.id, live, &who, drive_files::now_ms()).map_err(|e| e.to_string())?;
             a.drive.commit(&e.rules_id);
             let me = e.me(&a);
-            if eval::runs_on(&r, &me) {
+            if eval::runs_on(&r, &me) && served(&a.dir) {
+                // This device's `serve` runs it (one runner per device).
+                let asked = drive_files::now_ms();
+                let mut answered = None;
+                for _ in 0..90 {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if let Some(run) = journal::runs(&e.journal, &r.id)
+                        .into_iter()
+                        .find(|x| x.device == me.id && x.at >= asked - 1_000)
+                    {
+                        answered = Some(run);
+                        break;
+                    }
+                }
+                let Some(run) = answered else {
+                    out("asked; this device's agent has not answered yet (see `rules show`)");
+                    return Ok(());
+                };
+                out(format!(
+                    "{} on {} (by its agent): {} file(s) match, {} done, {} waiting, {} failed, {} held back",
+                    if run.live { "ran" } else { "dry run" },
+                    me.name,
+                    run.matched,
+                    run.done,
+                    run.waiting,
+                    run.failed,
+                    run.skipped
+                ));
+                if let Some(p) = journal::previews(&e.journal, &r.id).into_iter().find(|p| p.device == me.id) {
+                    for row in &p.rows {
+                        print_row(row);
+                    }
+                }
+            } else if eval::runs_on(&r, &me) {
                 let o = e.run(&a, &r, live, None).await;
                 e.state.lock().await.handled.insert(r.id.clone(), drive_files::now_ms());
                 e.save_state(&a).await;
@@ -1082,7 +1264,7 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 return Err("this action cannot be undone (it only made derived data)".into());
             }
             let owner = e.owner(&a, &j);
-            if owner == a.device_id() {
+            if owner == a.device_id() && !served(&a.dir) {
                 e.undo_here(&a, j).await?;
                 e.commit(&a);
                 e.save_state(&a).await;
@@ -1099,6 +1281,7 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
             let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
             let mut r: Rule = serde_json::from_str(&text).map_err(|e| format!("{file}: {e}"))?;
             r.id.clear();
+            resolve_names(&a, &e, &mut r)?;
             Matcher::new(&r).map_err(|e| e.to_string())?;
             let id = doc::save(&e.rules, &r, &who, drive_files::now_ms()).map_err(|e| e.to_string())?;
             a.drive.commit(&e.rules_id);

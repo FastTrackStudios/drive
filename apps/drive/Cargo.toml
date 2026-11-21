@@ -9,6 +9,7 @@ license.workspace = true
 dioxus.workspace = true
 drive-dioxus.workspace = true
 drive-spine.workspace = true
+drive-rules.workspace = true
 drive-view = { workspace = true, features = ["ui", "pdf"] }
 drive-sidecars.workspace = true
 drive-files = { path = "../../crates/drive-files", default-features = false }

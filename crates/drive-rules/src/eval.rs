@@ -754,7 +754,18 @@ fn plan_one(
             );
             if copy {
                 let mut s = step(i, Effect::Copy { to: target.clone() }, says);
-                if let Spot::Location { location, .. } = &target
+                let same_device = match (&target, cur) {
+                    (Spot::Location { device, .. }, Item::Location { device: d, .. }) => {
+                        device == d
+                    }
+                    _ => false,
+                };
+                if f.bundle && !same_device {
+                    s.blocked = Some(
+                        "a bundle is copied only to another folder of the same computer for now"
+                            .into(),
+                    );
+                } else if let Spot::Location { location, .. } = &target
                     && w.location(location).is_some_and(|l| l.in_storage)
                 {
                     s.blocked = Some("copies into a storage's location are not built yet".into());
@@ -810,6 +821,9 @@ fn plan_one(
         Action::HighlyAvailable => {
             let mut s = step(i, Effect::Available, "keep it highly available".into());
             s.noop = drive;
+            if f.bundle {
+                s.blocked = Some("bundles are not kept available yet".into());
+            }
             s
         }
         Action::Trash => {

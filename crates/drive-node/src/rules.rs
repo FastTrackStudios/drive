@@ -37,6 +37,15 @@ struct State {
     scheduled: BTreeMap<String, i64>,
     /// Org → the files document's version the on-change rules last saw.
     seen_files: BTreeMap<String, Vec<u8>>,
+    /// Rule → the rule as last run (switched on, made live or edited:
+    /// it runs once at once).
+    #[serde(default)]
+    seen_rules: BTreeMap<String, String>,
+}
+
+/// What a rule is, as a string (its switches and its content).
+fn sig(r: &Rule) -> String {
+    serde_json::to_string(r).unwrap_or_default()
 }
 
 async fn copy_of(rooms: &Rooms, id: &str) -> LoroDoc {
@@ -98,12 +107,15 @@ async fn pass(rooms: &Rooms, org: &str, st: &mut State) {
         {
             st.scheduled.insert(r.id.clone(), now);
             Some(r.mode == Mode::Live)
+        } else if r.enabled && st.seen_rules.get(&r.id) != Some(&sig(r)) {
+            Some(r.mode == Mode::Live)
         } else if r.enabled && r.trigger.on_change && tree_changed {
             Some(r.mode == Mode::Live)
         } else {
             None
         };
         if let Some(live) = why {
+            st.seen_rules.insert(r.id.clone(), sig(r));
             run(rooms, org, r, live, st).await;
         }
     }
@@ -213,12 +225,17 @@ async fn run(rooms: &Rooms, org: &str, rule: &Rule, live: bool, st: &mut State) 
             out.skipped += 1;
             continue;
         }
+        let fp = drive_rules::guard::fingerprint(&e.hash, e.size, e.mtime);
+        if st.guard.handled(&rule.id, &item.key(), &fp) {
+            continue;
+        }
         let plan = matcher.plan(&facts, &world);
         out.matched += 1;
         rows.push(Row::of(&plan));
         if !live || !plan.does_something() {
             continue;
         }
+        st.guard.did(&rule.id, &item.key(), &fp);
         let mut cur = item.clone();
         for step in &plan.steps {
             if step.blocked.is_some() {
@@ -370,7 +387,10 @@ async fn undos(rooms: &Rooms, org: &str, st: &mut State) {
                 .filter(|e| {
                     e.device == NODE
                         && e.undo_requested > 0
-                        && matches!(e.status, Some(Status::Done) | Some(Status::Waiting))
+                        && matches!(
+                            e.status,
+                            Some(Status::Done) | Some(Status::Waiting) | Some(Status::UndoRefused)
+                        )
                 })
                 .collect()
         })

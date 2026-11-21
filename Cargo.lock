@@ -2023,6 +2023,7 @@ dependencies = [
  "dioxus",
  "drive-dioxus",
  "drive-files",
+ "drive-rules",
  "drive-sidecars",
  "drive-spine",
  "drive-view",

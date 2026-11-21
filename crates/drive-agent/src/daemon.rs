@@ -97,6 +97,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // schedules and when asked; the first pass catches what changed while
     // the agent was off.
     let rules = Arc::new(crate::rules::Engine::open(&a).await);
+    crate::rules::claim(&a.dir);
     let ruling = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut rules_due: Vec<String> = a.my_locations().into_iter().map(|l| l.id).collect();
     let mut last_rules = tokio::time::Instant::now();
@@ -207,8 +208,11 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     let locs = std::mem::take(&mut rules_due);
                     let (a, rules, ruling) = (a.clone(), rules.clone(), ruling.clone());
                     tokio::spawn(async move {
-                        for l in locs {
-                            rules.after_index(&a, &l).await;
+                        let mut locs = locs;
+                        locs.sort();
+                        locs.dedup();
+                        if !locs.is_empty() {
+                            rules.after_index(&a, &locs).await;
                         }
                         rules.tick(&a).await;
                         ruling.store(false, std::sync::atomic::Ordering::SeqCst);

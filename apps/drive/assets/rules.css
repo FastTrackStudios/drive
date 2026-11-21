@@ -1,0 +1,100 @@
+/* Rules: the list, a rule's page, the editor (docs/rules.md). */
+.rules .primary.small { height: 30px; padding: 0 12px; border-radius: 9px; font-size: 13px; }
+.rules .primary.ruledanger { color: #fca5a5; }
+.rules select, .rules input:not([type=checkbox]) {
+  height: 32px; border-radius: 9px; border: 1px solid var(--rule); background: var(--surface);
+  padding: 0 10px; color: var(--ink); color-scheme: dark; outline: none; min-width: 0; font-size: 13.5px;
+}
+.rules input:focus, .rules select:focus { border-color: var(--accent); }
+.rules input.num { width: 76px; }
+.rules input.short { width: 110px; }
+.rules .muted { color: var(--ink-3); }
+.rules .hint.warn { color: #f5d68a; }
+
+.rulelist { display: flex; flex-direction: column; gap: 8px; }
+.rulerow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 14px; background: var(--surface); flex-wrap: wrap; }
+.rulename { flex: 1 1 240px; min-width: 0; text-align: left; display: flex; flex-direction: column; gap: 2px; }
+.rulename .title { font-weight: 650; font-size: 15.5px; }
+.rulename .sub { color: var(--ink-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+
+.switches { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 4px; border-radius: 15px; background: var(--surface-2); color: var(--ink-2); font-size: 13px; font-weight: 650; }
+.toggle .knob { width: 22px; height: 22px; border-radius: 11px; background: #52525b; transition: background .15s; }
+.toggle.on { color: var(--ink); }
+.toggle.on .knob { background: var(--accent); }
+.segmented { display: inline-flex; padding: 3px; border-radius: 11px; background: var(--surface-2); }
+.segmented .seg { height: 26px; padding: 0 12px; border-radius: 8px; color: var(--ink-3); font-size: 13px; font-weight: 650; }
+.segmented .seg.on { background: var(--surface); color: var(--ink); }
+.segmented .seg.on.live { background: rgba(240,194,75,.2); color: #f5d68a; }
+.confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; background: rgba(240,194,75,.1); border: 1px solid rgba(240,194,75,.3); color: #f5d68a; font-size: 13.5px; margin: 8px 0; flex-basis: 100%; }
+
+.rulehead .back { color: var(--ink-2); font-weight: 600; font-size: 14px; }
+.rulebar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.rulebar .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.rulesec { font-size: 15px; margin: 26px 0 10px; color: var(--ink-2); letter-spacing: .01em; }
+
+.rulesummary { display: grid; gap: 6px; padding: 14px 16px; border-radius: 14px; background: var(--surface); border: 1px solid var(--rule); font-size: 14px; }
+.rulesummary > div { display: grid; grid-template-columns: 92px 1fr; gap: 10px; }
+.rulesummary .k { color: var(--ink-3); }
+.rulesummary ol { margin: 0; padding-left: 18px; }
+
+.rprevs { display: flex; flex-direction: column; gap: 12px; }
+.preview { border: 1px solid var(--rule); border-radius: 14px; padding: 12px 14px; background: var(--sheet); }
+.prevhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.prevhead .title { font-weight: 650; }
+.prevhead .when, .runline .when { color: var(--ink-3); font-size: 13px; }
+.prevrow { padding: 7px 0; border-top: 1px solid var(--rule); font-size: 13.5px; }
+.prevrow .path { font-family: ui-monospace, monospace; font-size: 12.5px; color: var(--ink-2); word-break: break-all; }
+.step { display: flex; gap: 6px; flex-wrap: wrap; padding-left: 12px; }
+.step .arrow { color: var(--accent); }
+.step.held .arrow, .step.noop .arrow { color: var(--ink-3); }
+.step.noop { color: var(--ink-3); }
+.why { color: #f5d68a; font-size: 12.5px; }
+.step .why { flex-basis: 100%; padding-left: 16px; }
+
+.runs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.runline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13.5px; color: var(--ink-2); }
+.runline .title { font-weight: 650; color: var(--ink); }
+.journal { display: flex; flex-direction: column; }
+.jrow { padding: 9px 0; border-top: 1px solid var(--rule); font-size: 13.5px; display: flex; flex-direction: column; gap: 4px; }
+.jmain { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.jmain .path { font-family: ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
+.jmeta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--ink-3); font-size: 12.5px; }
+.chip.done { background: rgba(34,197,94,.14); color: #86efac; }
+.chip.failed, .chip.undo-refused { background: rgba(239,68,68,.16); color: #fca5a5; }
+.chip.waiting { background: rgba(240,194,75,.14); color: #f5d68a; }
+.chip.undone { background: rgba(99,102,241,.18); color: #c7d2fe; }
+
+.reditor { margin: 14px 0; padding: 14px 16px; border: 1px solid var(--accent); border-radius: 14px; background: var(--sheet); }
+.reditor.insheet { border: 0; margin: 0; padding: 4px 14px 24px; background: none; }
+.redit { display: flex; flex-direction: column; gap: 12px; }
+.redit fieldset { border: 1px solid var(--rule); border-radius: 12px; padding: 10px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.redit legend { padding: 0 6px; color: var(--ink-2); font-weight: 650; font-size: 13px; }
+.redit label.field { display: flex; flex-direction: column; gap: 4px; color: var(--ink-3); font-size: 13px; }
+.redit .row, .redit .cond, .redit .act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.redit .row input:not([type=checkbox]) { flex: 1 1 140px; }
+.redit label.check { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.redit .rgroup { border-left: 2px solid var(--rule); padding-left: 10px; display: flex; flex-direction: column; gap: 6px; }
+.redit .cond input:not([type=checkbox]):not(.num):not(.short), .redit .act input:not([type=checkbox]):not(.num):not(.short) { flex: 1 1 150px; }
+.redit select.not { width: 64px; }
+.redit .x { width: 28px; height: 28px; border-radius: 8px; color: var(--ink-3); background: var(--surface-2); flex: none; }
+.redit .x:disabled { opacity: .35; }
+.redit .act { padding: 8px 0; border-top: 1px solid var(--rule); }
+.redit .act:first-of-type { border-top: 0; }
+.redit .act .ord { color: var(--ink-3); width: 18px; }
+.redit .act .albl { font-weight: 650; min-width: 110px; }
+.redit .act .moves { display: flex; gap: 4px; margin-left: auto; }
+.redit .chip .x { width: 16px; height: 16px; border-radius: 8px; font-size: 11px; background: none; }
+.redit select.add { align-self: flex-start; }
+.redit .places { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.editorfoot { display: flex; gap: 8px; margin-top: 12px; }
+
+@media (max-width: 760px) {
+  .rulebar .actions { margin-left: 0; }
+  .rulesummary > div { grid-template-columns: 1fr; gap: 0; }
+  .redit .act .albl { min-width: 0; flex-basis: calc(100% - 30px); }
+  .redit .act .moves { margin-left: 0; }
+  .redit .cond select, .redit .act select { max-width: 100%; }
+  .rules input.short { flex: 1 1 100px; }
+}
+.redit fieldset > button, .redit .rgroup > button { align-self: flex-start; }

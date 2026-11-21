@@ -24,6 +24,17 @@ pub struct Guard {
     pub touched: BTreeMap<String, Touch>,
     /// `<rule>|<item key>` and `<rule>|<content>` → when the rule made it.
     pub made: BTreeMap<String, i64>,
+    /// `<rule>|<item key>` → the file as the rule last handled it (its
+    /// content, size and time): unchanged, the rule leaves it alone, so a
+    /// copy rule copies a file once, not on every pass.
+    #[serde(default)]
+    pub done: BTreeMap<String, String>,
+}
+
+/// What a file is, for [`Guard::done`]: changed bytes or a new time make
+/// it a new file to the rules.
+pub fn fingerprint(content: &str, size: u64, modified: i64) -> String {
+    format!("{content}:{size}:{modified}")
 }
 
 impl Guard {
@@ -47,6 +58,19 @@ impl Guard {
             return Some("this rule made it (a rule never feeds itself)".into());
         }
         None
+    }
+
+    /// Whether a rule already handled this file as it is now.
+    pub fn handled(&self, rule: &str, key: &str, fingerprint: &str) -> bool {
+        self.done
+            .get(&format!("{rule}|{key}"))
+            .is_some_and(|f| f == fingerprint)
+    }
+
+    /// A rule handled a file (as it was then).
+    pub fn did(&mut self, rule: &str, key: &str, fingerprint: &str) {
+        self.done
+            .insert(format!("{rule}|{key}"), fingerprint.to_string());
     }
 
     pub fn touch(&mut self, rule: &str, key: &str, now: i64) {
@@ -111,5 +135,19 @@ mod tests {
         g.prune(later);
         assert!(g.touched.is_empty());
         assert_eq!(g.made.len(), 2);
+    }
+
+    #[test]
+    fn a_handled_file_is_handled_once_until_it_changes() {
+        let mut g = Guard::default();
+        let f = fingerprint("h", 10, 5);
+        assert!(!g.handled("r1", "k", &f));
+        g.did("r1", "k", &f);
+        assert!(g.handled("r1", "k", &f));
+        assert!(!g.handled("r2", "k", &f), "other rules still may");
+        assert!(
+            !g.handled("r1", "k", &fingerprint("h2", 10, 6)),
+            "changed: again"
+        );
     }
 }

@@ -918,3 +918,48 @@ fn the_journal_and_previews_round_trip() {
     assert_eq!(p.len(), 1);
     assert_eq!(p[0].rows[0].steps[0].blocked.as_deref(), Some(NO_TRASH));
 }
+
+#[test]
+fn bundles_stay_on_their_computer_for_now() {
+    let fx = Fixture::new();
+    let lib = Library::load(&fx.tags);
+    let w = fx.world(&lib, device(true));
+    let mut f = file("Song.logicx", 10, 0);
+    f.bundle = true;
+    f.content.clear();
+    let r = rule(
+        vec![],
+        vec![
+            Action::Copy {
+                to: Dest::Location {
+                    location: "dl".into(),
+                    path: "Backup".into(),
+                },
+                name: String::new(),
+            },
+            Action::Copy {
+                to: Dest::Location {
+                    location: "arch".into(),
+                    path: String::new(),
+                },
+                name: String::new(),
+            },
+            Action::Copy {
+                to: Dest::Drive {
+                    path: String::new(),
+                },
+                name: String::new(),
+            },
+            Action::HighlyAvailable,
+            Action::AddTags {
+                tags: vec!["x".into()],
+            },
+        ],
+    );
+    let p = Matcher::new(&r).unwrap().plan(&f, &w);
+    assert!(
+        p.steps[0].blocked.is_none(),
+        "a copy beside it on the same computer is fine"
+    );
+    assert!(p.steps[1..].iter().all(|s| s.blocked.is_some()), "{p:?}");
+}
