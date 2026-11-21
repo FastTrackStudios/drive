@@ -45,12 +45,17 @@ pub fn roots(volumes: &[Volume], home: Option<&Path>) -> Vec<Root> {
         }
     };
     if let Some(h) = home {
+        // The disk it is on gives its size.
+        let on = volumes
+            .iter()
+            .filter(|v| h.starts_with(&v.mount))
+            .max_by_key(|v| v.mount.len());
         add(Root {
             mount: h.to_string_lossy().into_owned(),
             name: "Home".into(),
-            fs: String::new(),
-            total: 0,
-            free: 0,
+            fs: on.map(|v| v.fs.clone()).unwrap_or_default(),
+            total: on.map_or(0, |v| v.total.max(0) as u64),
+            free: on.map_or(0, |v| v.free.max(0) as u64),
             removable: false,
             home: true,
         });

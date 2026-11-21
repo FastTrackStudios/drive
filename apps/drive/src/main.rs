@@ -3,6 +3,7 @@
 //! with its protection, its devices, and the spine (the one inbox, the one
 //! calendar, notes).
 
+mod browse;
 mod browser;
 mod catalog;
 mod files;

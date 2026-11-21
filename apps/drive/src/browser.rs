@@ -35,6 +35,12 @@ pub enum Place {
         loc: String,
         path: String,
     },
+    /// A folder on a computer's disk, browsed live (`crate::browse`).
+    Volume {
+        device: String,
+        root: String,
+        path: String,
+    },
     /// Every file of a kind, on every computer.
     Kind(String),
     /// An app's documents.
@@ -172,6 +178,12 @@ pub enum Src {
     },
     /// An app's document.
     Doc { id: String, peers: u32 },
+    /// A file or folder on a computer's disk, browsed live.
+    Browse {
+        device: String,
+        root: String,
+        path: String,
+    },
 }
 
 /// A file, folder or document, as the browser shows it.
@@ -201,6 +213,7 @@ impl Item {
             Src::Tree { id, .. } => format!("t{id}"),
             Src::Index { location, path, .. } => format!("i{location}/{path}"),
             Src::Doc { id, .. } => format!("d{id}"),
+            Src::Browse { device, root, path } => format!("b{device}:{root}/{path}"),
         }
     }
 }
@@ -590,6 +603,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                                         }
                                     }
                                 }
+                                crate::browse::DeviceVolumes { space: space.clone(), device: d.id.clone(), live }
                             }
                         }
                     }
@@ -669,7 +683,7 @@ fn title_of(p: &Place) -> &'static str {
     match p {
         Place::Overview => "Overview",
         Place::Drive(_) => "Drive",
-        Place::Location { .. } => "Computers",
+        Place::Location { .. } | Place::Volume { .. } => "Computers",
         Place::Kind(_) => "Kind",
         Place::App(_) => "App",
         Place::AtRisk(_) => "At risk",
@@ -692,6 +706,7 @@ fn browsable(p: &Place) -> bool {
         p,
         Place::Drive(_)
             | Place::Location { .. }
+            | Place::Volume { .. }
             | Place::Kind(_)
             | Place::App(_)
             | Place::AtRisk(_)
@@ -800,6 +815,9 @@ fn Content(space: String) -> Element {
         Place::Location { loc, path } => rsx! {
             LocationFolder { space, loc, path }
         },
+        Place::Volume { device, root, path } => rsx! {
+            crate::browse::VolumeFolder { key: "{device}{root}/{path}", space, device, root, path }
+        },
         Place::Kind(kind) => rsx! {
             KindView { space, kind }
         },
@@ -871,6 +889,11 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
         Src::Tree { id, .. } if i.dir => nav.go(Place::Drive(Some(id.clone()))),
         Src::Index { location, path, .. } if i.dir => nav.go(Place::Location {
             loc: location.clone(),
+            path: path.clone(),
+        }),
+        Src::Browse { device, root, path } if i.dir => nav.go(Place::Volume {
+            device: device.clone(),
+            root: root.clone(),
             path: path.clone(),
         }),
         _ => nav.selected.set(Some(i)),
@@ -955,7 +978,7 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
 }
 
 fn copies_label(i: &Item) -> Option<(String, &'static str)> {
-    if i.dir || matches!(i.src, Src::Doc { .. }) {
+    if i.dir || matches!(i.src, Src::Doc { .. } | Src::Browse { .. }) {
         return None;
     }
     if let Some(k) = &i.kept {
@@ -977,7 +1000,7 @@ fn copies_label(i: &Item) -> Option<(String, &'static str)> {
 }
 
 #[component]
-fn Crumbs(parts: Vec<(String, Option<Place>)>) -> Element {
+pub fn Crumbs(parts: Vec<(String, Option<Place>)>) -> Element {
     let nav = use_nav();
     rsx! {
         div { class: "crumbs",
@@ -1427,6 +1450,7 @@ fn Inspector(space: String) -> Element {
                 },
                 _ => rsx! {},
             }
+            crate::browse::InspectorActions { key: "{item.key()}", space: space.clone(), item: item.clone() }
             crate::tags::ItemTags { key: "{item.key()}", space: space.clone(), item: item.clone() }
             if !item.dir {
                 ItemComments { item: item.clone(), download: download.clone() }
@@ -1464,6 +1488,9 @@ pub fn file_url(item: &Item, space: &str) -> Option<String> {
                 .then(|| format!("/fetch/{}/{}?path={}", enc(space), enc(location), enc(path))),
         },
         Src::Doc { .. } => None,
+        Src::Browse { device, root, path } => item
+            .online
+            .then(|| crate::browse::file_url(space, device, root, path, &item.name)),
     }
 }
 
@@ -1498,6 +1525,9 @@ pub fn sidecar_url(item: &Item, space: &str, kind: drive_sidecars::Kind) -> Opti
             }
             Some(u)
         }
+        Src::Browse { device, root, path } => Some(crate::browse::sidecar_url(
+            space, device, root, path, item, kind,
+        )),
         _ => None,
     }
 }
@@ -2019,6 +2049,8 @@ fn ItemComments(item: Item, download: Option<String>) -> Element {
             drive_spine::comments::Target::Doc(id.clone()),
             String::new(),
         ),
+        // A browsed file has no lasting place to pin comments to.
+        Src::Browse { .. } => return rsx! {},
     };
     let family = if item.kind.parent.is_empty() {
         item.kind.id.clone()

@@ -41,7 +41,7 @@ pub fn target_of(item: &Item) -> Option<Target> {
         Src::Index { sampled, .. } if !item.dir && !sampled.is_empty() => {
             Some(Target::Content(sampled.clone()))
         }
-        Src::Index { .. } => None,
+        Src::Index { .. } | Src::Browse { .. } => None,
         Src::Doc { id, .. } => Some(Target::Doc(id.clone())),
     }
 }
