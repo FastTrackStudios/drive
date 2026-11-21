@@ -587,6 +587,30 @@ fn hint(c: &C, h: &mut Hints, negated: bool) {
     }
 }
 
+/// A kind's words for [`Subject::kinds`]: its id and name, and its broader
+/// kind's.
+pub fn kind_words(kinds: &crate::kinds::Kinds, kind: &crate::kinds::Kind) -> Vec<String> {
+    let mut v = vec![kind.id.clone(), kind.name.clone()];
+    if !kind.parent.is_empty() {
+        let p = kinds.get(&kind.parent);
+        v.push(p.id.clone());
+        v.push(p.name.clone());
+    }
+    v
+}
+
+/// The extensions of the kinds a `kind:` hint names (by id or name), and
+/// the kinds under them.
+pub fn kind_extensions(kinds: &crate::kinds::Kinds, hint: &str) -> Vec<String> {
+    let h = spaced(hint);
+    kinds
+        .all()
+        .iter()
+        .filter(|k| spaced(&k.id) == h || spaced(&k.name) == h)
+        .flat_map(|k| kinds.extensions_of(&k.id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -930,6 +954,19 @@ mod tests {
         let h = hints("NOT drums");
         assert!(h.open && h.tagged && h.words.is_empty());
         assert!(hints("special:untagged").open);
+    }
+
+    #[test]
+    fn kinds_by_id_or_name() {
+        let kinds = crate::kinds::Kinds::from(Vec::new());
+        let midi = kinds.get("midi");
+        assert_eq!(kind_words(&kinds, midi), ["midi", "MIDI", "audio", "Audio"]);
+        let exts = kind_extensions(&kinds, "Audio");
+        assert!(exts.contains(&"wav".to_string()) && exts.contains(&"mid".to_string()));
+        assert_eq!(
+            kind_extensions(&kinds, "sample_instrument"),
+            kind_extensions(&kinds, "instrument")
+        );
     }
 
     #[test]

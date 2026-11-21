@@ -24,6 +24,13 @@
 //! drive-agent [--dir DIR] search WORDS…                 # every device's files
 //! drive-agent [--dir DIR] copies LOCATION PATH          # where else a file is
 //!
+//! Tags and fields (docs/tags.md; THING: a file here, drive:PATH, LOCATION:PATH,
+//! project:NAME, doc:ID):
+//! drive-agent [--dir DIR] tag ls [THING] | add THING TAG… | rm THING TAG…
+//! drive-agent [--dir DIR] tag new NAME [--parent TAG]… [--color C] [--shorthand S] [--alias A]… [--category] [--hidden]
+//! drive-agent [--dir DIR] tag field THING NAME VALUE [--kind text|multiline|date|datetime]
+//! drive-agent [--dir DIR] tag search QUERY…              # drums NOT archived, path:*.wav, kind:audio …
+//!
 //! What this device keeps:
 //! drive-agent [--dir DIR] role storage-server|workstation   # keep everything, or the work at hand
 //! drive-agent [--dir DIR] active [add|rm PATH]          # folders this device is working on
@@ -59,6 +66,7 @@ mod fs;
 mod placement;
 mod places;
 mod sites;
+mod tagging;
 mod view;
 
 use std::io::Write;
@@ -630,6 +638,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             }
             settle(&a).await;
         }
+        "tag" => tagging::command(dir, args).await?,
         "search" => {
             let words = args[1..].join(" ");
             let cfg = Config::load(dir)?;
