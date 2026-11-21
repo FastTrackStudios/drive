@@ -89,3 +89,44 @@ and blob store, device pairing, storage registration with OpenDAL (local
 folders and S3-compatible), the agent mounting `~/Drive` with on-demand
 download and pinning, states as extended attributes and a CLI, and the
 Drive app's Files, Devices and Storage views showing the same states live.
+
+## Built (prototype, 2026-11-21)
+
+- `drive-native`: the client for native programs (tokio, websocket,
+  copies on disk, reconnect), tested against an in-process node.
+- `drive-files`: the tree (a Loro tree; concurrent same-name files both
+  kept, listed as `name (2)`), blobs by BLAKE3 over OpenDAL (fs, S3,
+  WebDAV, memory; tampered bytes refused), sampled and full hashing, the
+  registry (devices, pairing codes, storages, holdings), storage configs
+  whose credentials never leave the device. Builds for the browser
+  without its OpenDAL half (`default-features = false`).
+- `drive-node`: also a storage: `PUT/GET/HEAD /blobs/<hash>`, uploads
+  refused unless they match their hash, `?name=` for downloads.
+- `drive-agent`:
+  - `init`, `invite`, `join --code`, `devices`, `storages`,
+    `storage add fs|s3|webdav` (tested with a test blob before it is
+    registered), `put`, `ls`, `status`, `pin`, `unpin`;
+  - `mount PATH`: the FUSE file system. Every file listed; reading
+    downloads (from this device's storages, then the node) and checks the
+    hash; writing uploads on close; states in `user.drive.state`, holders
+    in `user.drive.holders`; stale mounts cleared; clean unmount on stop.
+- The Drive app: Files (browse, upload, download, where each file's bytes
+  are, live), Devices (online, what each keeps, pairing codes), Storage.
+
+Tried on THEBATTLESHIP: the space `cody` mounted at `~/Drive` (user
+service `drive-agent`), a second device paired by code with its own
+storage, a file added there showing as cloud-only here and downloading on
+open, a browser upload appearing in `~/Drive`.
+
+## Next
+
+- **File-manager status:** a Nautilus extension (nautilus-python) and a
+  Dolphin overlay plugin reading `user.drive.state` for emblems and a
+  column; "Make available offline" in the context menu (pin/unpin).
+- **macOS:** the File Provider extension (Swift, around the agent), so
+  Finder shows cloud and download badges natively.
+- **Windows:** the Cloud Files API (`cloud-filter`).
+- Large files in chunks (BLAKE3/Bao, `iroh-blobs`) and streaming reads
+  instead of whole-blob downloads; eviction when the cache is full;
+  placement rules; conflicts (both versions kept); signed device keys.
+- The agent as a fleet service (it runs as a transient user unit now).

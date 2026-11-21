@@ -11,9 +11,11 @@
 //! - [`storage`]: a storage's full configuration, credentials included, as
 //!   kept on the one device that runs it (never synced).
 
+#[cfg(feature = "storage")]
 pub mod blob;
 pub mod hash;
 pub mod space;
+#[cfg(feature = "storage")]
 pub mod storage;
 pub mod tree;
 
@@ -27,10 +29,33 @@ pub fn space_doc(space: &str) -> String {
     format!("drive:space:{space}")
 }
 
-/// Milliseconds since the Unix epoch.
+/// Milliseconds since the Unix epoch (the browser's clock on the web,
+/// where `SystemTime` is not available).
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// Some randomness for ids (the browser's on the web).
+pub(crate) fn entropy() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Math::random() * u64::MAX as f64) as u64 ^ (js_sys::Math::random() * 4_294_967_296.0) as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    }
 }

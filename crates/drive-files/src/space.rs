@@ -75,7 +75,7 @@ fn getrandom_fill(buf: &mut [u8]) {
     // BLAKE3 of the time and a counter: unique enough for ids here.
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    let seed = format!("{:?}{}{:p}", std::time::SystemTime::now(), N.fetch_add(1, Ordering::Relaxed), buf);
+    let seed = format!("{}{}{:p}", crate::entropy(), N.fetch_add(1, Ordering::Relaxed), buf);
     let h = blake3::hash(seed.as_bytes());
     buf.copy_from_slice(&h.as_bytes()[..buf.len()]);
 }

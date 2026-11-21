@@ -64,17 +64,35 @@ async fn sync(ws: WebSocketUpgrade, State(rooms): State<Arc<Rooms>>) -> impl Int
         .on_upgrade(move |socket: WebSocket| rooms::serve(rooms, socket))
 }
 
-/// A blob's bytes (checked against its hash on the way out).
-async fn get_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore>) -> Result<Vec<u8>, StatusCode> {
-    match blobs.get(&hash).await {
-        Ok(b) => Ok(b),
-        Err(drive_files::blob::Error::BadHash(_)) => Err(StatusCode::BAD_REQUEST),
+/// A blob's bytes (checked against its hash on the way out); `?name=`
+/// makes it a download of that name.
+async fn get_blob(
+    UrlPath(hash): UrlPath<String>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    State(blobs): State<BlobStore>,
+) -> Result<axum::response::Response, StatusCode> {
+    let bytes = match blobs.get(&hash).await {
+        Ok(b) => b,
+        Err(drive_files::blob::Error::BadHash(_)) => return Err(StatusCode::BAD_REQUEST),
         Err(drive_files::blob::Error::Corrupt(_)) => {
             tracing::warn!(blob.hash = %hash, "a stored blob no longer matches its hash");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
-        Err(_) => Err(StatusCode::NOT_FOUND),
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+    let mut resp = axum::response::Response::new(axum::body::Body::from(bytes));
+    let h = resp.headers_mut();
+    let _ = h.insert("cache-control", axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"));
+    if let Some(name) = q.get("name") {
+        let safe: String = name.chars().filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n')).collect();
+        if let Ok(v) = axum::http::HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
+            h.insert("content-type", v);
+        }
+        if let Ok(v) = axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{safe}\"")) {
+            h.insert("content-disposition", v);
+        }
     }
+    Ok(resp)
 }
 
 async fn head_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore>) -> StatusCode {

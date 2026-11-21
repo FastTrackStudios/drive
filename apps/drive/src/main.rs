@@ -2,6 +2,7 @@
 //! every app keeps. It edits only the spine; app documents show as cards
 //! that open their app.
 
+mod files;
 mod notes;
 
 use dioxus::prelude::*;
@@ -12,6 +13,8 @@ use drive_spine as spine;
 const STYLE: Asset = asset!("/assets/drive.css");
 
 fn main() {
+    // Warnings and up: Loro reports its encoding at INFO, which floods the console.
+    dioxus::logger::init(dioxus::logger::tracing::Level::WARN).expect("the logger starts once");
     dioxus::launch(App);
 }
 
@@ -20,6 +23,9 @@ enum Tab {
     Inbox,
     Calendar,
     Notes,
+    Files,
+    Devices,
+    Storage,
     Everything,
 }
 
@@ -41,6 +47,9 @@ fn Shell() -> Element {
         (Tab::Inbox, "Inbox"),
         (Tab::Calendar, "Calendar"),
         (Tab::Notes, "Notes"),
+        (Tab::Files, "Files"),
+        (Tab::Devices, "Devices"),
+        (Tab::Storage, "Storage"),
         (Tab::Everything, "Everything"),
     ];
     rsx! {
@@ -75,6 +84,15 @@ fn Shell() -> Element {
                     },
                     Tab::Notes => rsx! {
                         notes::Notes {}
+                    },
+                    Tab::Files => rsx! {
+                        files::Spaces { which: "files" }
+                    },
+                    Tab::Devices => rsx! {
+                        files::Spaces { which: "devices" }
+                    },
+                    Tab::Storage => rsx! {
+                        files::Spaces { which: "storage" }
                     },
                     Tab::Everything => rsx! {
                         Everything {}
