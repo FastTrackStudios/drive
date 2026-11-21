@@ -277,7 +277,10 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         )
         .merge(
             Router::new()
-                .route("/blobs/{hash}", get(get_blob_ranged).head(head_blob).put(put_blob))
+                .route(
+                    "/blobs/{hash}",
+                    get(get_blob_ranged).head(head_blob).put(put_blob),
+                )
                 .route("/pdf/edit/{hash}", axum::routing::post(edit_pdf))
                 .layer(axum::middleware::from_fn_with_state(
                     rooms.clone(),
@@ -361,7 +364,12 @@ fn with_accept_ranges(mut r: axum::response::Response) -> axum::response::Respon
 /// `bytes=-500`) over `len` bytes, as inclusive offsets; `None` when it
 /// cannot be served.
 fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
-    let spec = header.trim().strip_prefix("bytes=")?.split(',').next()?.trim();
+    let spec = header
+        .trim()
+        .strip_prefix("bytes=")?
+        .split(',')
+        .next()?
+        .trim();
     let (a, b) = spec.split_once('-')?;
     if len == 0 {
         return None;
@@ -391,7 +399,9 @@ async fn edit_pdf(
 ) -> axum::response::Response {
     let bytes = match blobs.get(&hash).await {
         Ok(b) => b,
-        Err(drive_files::blob::Error::BadHash(_)) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(drive_files::blob::Error::BadHash(_)) => {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let n = edits.len();

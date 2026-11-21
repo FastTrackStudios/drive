@@ -13,10 +13,16 @@ pub fn peaks(samples: &[f32], buckets: usize) -> Vec<(f32, f32)> {
         .map(|b| {
             let from = (b as f64 * per) as usize;
             let to = (((b + 1) as f64 * per) as usize).clamp(from + 1, samples.len());
-            samples[from..to].iter().fold((0.0f32, 0.0f32), |(lo, hi), &s| {
-                let s = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
-                (lo.min(s), hi.max(s))
-            })
+            samples[from..to]
+                .iter()
+                .fold((0.0f32, 0.0f32), |(lo, hi), &s| {
+                    let s = if s.is_finite() {
+                        s.clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    (lo.min(s), hi.max(s))
+                })
         })
         .collect()
 }
@@ -51,10 +57,15 @@ mod tests {
 
     #[test]
     fn slices_a_sound() {
-        let s: Vec<f32> = (0..1000).map(|i| if i < 500 { 0.5 } else { -0.25 }).collect();
+        let s: Vec<f32> = (0..1000)
+            .map(|i| if i < 500 { 0.5 } else { -0.25 })
+            .collect();
         let p = peaks(&s, 4);
         assert_eq!(p, vec![(0.0, 0.5), (0.0, 0.5), (-0.25, 0.0), (-0.25, 0.0)]);
-        assert_eq!(peaks(&[0.1, f32::NAN, 2.0], 10), vec![(0.0, 0.1), (0.0, 0.0), (0.0, 1.0)]);
+        assert_eq!(
+            peaks(&[0.1, f32::NAN, 2.0], 10),
+            vec![(0.0, 0.1), (0.0, 0.0), (0.0, 1.0)]
+        );
         assert!(peaks(&[], 10).is_empty());
         assert_eq!(merge(&[(-0.1, 0.2)], &[(-0.3, 0.1)]), vec![(-0.3, 0.2)]);
         assert_eq!(svg_path(&[(-1.0, 1.0)], 10.0, 20.0), "M5.0 0.0V20.0");

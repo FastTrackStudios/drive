@@ -60,7 +60,11 @@ impl PdfDoc {
         }
         let renderer = PageRenderer::new(bytes, RenderConfig::default());
         let texts = vec![None; info.pages.len()];
-        Ok(PdfDoc { renderer, info, texts })
+        Ok(PdfDoc {
+            renderer,
+            info,
+            texts,
+        })
     }
 
     pub fn pages(&self) -> usize {
@@ -102,7 +106,11 @@ impl PdfDoc {
         }
         let mut rgba = r.rgba.to_vec();
         unpremultiply(&mut rgba);
-        Ok(Page { width: r.width, height: r.height, rgba })
+        Ok(Page {
+            width: r.width,
+            height: r.height,
+            rgba,
+        })
     }
 
     /// A page's text layer (read once, then kept).
@@ -133,7 +141,10 @@ impl PdfDoc {
         for page in 0..self.pages() {
             let Some(t) = self.text(page) else { continue };
             for range in t.find_opts_limited(needle, false, false, MAX_HITS - hits.len()) {
-                hits.push(Hit { page, rects: t.line_rects(range) });
+                hits.push(Hit {
+                    page,
+                    rects: t.line_rects(range),
+                });
             }
             if hits.len() >= MAX_HITS {
                 break;
@@ -147,7 +158,9 @@ impl PdfDoc {
         if (rect[2] - rect[0]).abs() < 1.0 || (rect[3] - rect[1]).abs() < 1.0 {
             return String::new();
         }
-        let Some(t) = self.text(page) else { return String::new() };
+        let Some(t) = self.text(page) else {
+            return String::new();
+        };
         let glyphs = t.glyphs_in(rect);
         t.column_text(&glyphs)
     }
@@ -229,8 +242,11 @@ pub(crate) mod tests {
             out.extend(format!("{o:010} 00000 n \n").as_bytes());
         }
         out.extend(
-            format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1)
-                .as_bytes(),
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
         );
         out
     }
@@ -252,15 +268,24 @@ pub(crate) mod tests {
         assert_eq!(hits[0].page, 0);
         let r = hits[0].rects[0];
         // Near the top left: 72 pt in, 92 pt down (y flipped from 700).
-        assert!((60.0..90.0).contains(&r[0]) && (60.0..100.0).contains(&r[1]), "{r:?}");
-        assert_eq!(d.text_in(0, [60.0, 60.0, 300.0, 100.0]).trim(), "Hello Drive");
+        assert!(
+            (60.0..90.0).contains(&r[0]) && (60.0..100.0).contains(&r[1]),
+            "{r:?}"
+        );
+        assert_eq!(
+            d.text_in(0, [60.0, 60.0, 300.0, 100.0]).trim(),
+            "Hello Drive"
+        );
         assert_eq!(d.text_in(0, [60.0, 60.0, 60.0, 60.0]), "");
         let user = d.to_user(0, [72.0, 92.0, 92.0, 112.0]).unwrap();
         assert_eq!(user, [72.0, 680.0, 92.0, 700.0]);
 
         let c = d.comments();
         assert_eq!(c.len(), 1);
-        assert_eq!((c[0].page, c[0].author.as_str(), c[0].text.as_str()), (0, "Cody", "Check the bridge"));
+        assert_eq!(
+            (c[0].page, c[0].author.as_str(), c[0].text.as_str()),
+            (0, "Cody", "Check the bridge")
+        );
         assert_eq!(c[0].rect, [72.0, 172.0, 92.0, 192.0]);
         assert!(PdfDoc::open(b"not a pdf".to_vec()).is_err());
     }

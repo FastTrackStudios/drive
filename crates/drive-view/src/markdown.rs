@@ -23,12 +23,28 @@ pub fn to_html(md: &str) -> String {
         | Options::ENABLE_FOOTNOTES;
     let events = Parser::new_ext(md, opts).map(|e| match e {
         Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
-        Event::Start(Tag::Link { link_type, dest_url, title, id }) if !safe_url(&dest_url) => {
-            Event::Start(Tag::Link { link_type, dest_url: CowStr::Borrowed("#"), title, id })
-        }
-        Event::Start(Tag::Image { link_type, dest_url, title, id }) if !safe_url(&dest_url) => {
-            Event::Start(Tag::Image { link_type, dest_url: CowStr::Borrowed(""), title, id })
-        }
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) if !safe_url(&dest_url) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: CowStr::Borrowed("#"),
+            title,
+            id,
+        }),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) if !safe_url(&dest_url) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: CowStr::Borrowed(""),
+            title,
+            id,
+        }),
         e => e,
     });
     let mut out = String::with_capacity(md.len() * 3 / 2);
@@ -50,7 +66,9 @@ mod tests {
 
     #[test]
     fn raw_html_and_script_links_stay_harmless() {
-        let h = to_html("<script>alert(1)</script>\n\n[x](javascript:alert(1)) [y](JaVaScRiPt:alert(1)) ![i](data:text/html,hi) [ok](/s/a?x=1:2) [m](mailto:a@b.c)");
+        let h = to_html(
+            "<script>alert(1)</script>\n\n[x](javascript:alert(1)) [y](JaVaScRiPt:alert(1)) ![i](data:text/html,hi) [ok](/s/a?x=1:2) [m](mailto:a@b.c)",
+        );
         assert!(!h.contains("<script>"), "{h}");
         assert!(h.contains("&lt;script&gt;"));
         assert!(!h.to_lowercase().contains("javascript:"), "{h}");

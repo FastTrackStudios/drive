@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 pub mod edit;
 #[cfg(feature = "ui")]
 pub mod markdown;
-pub mod peaks;
 #[cfg(feature = "pdf")]
 pub mod pdf;
+pub mod peaks;
 #[cfg(feature = "sign")]
 pub mod sign;
 #[cfg(feature = "ui")]
@@ -153,7 +153,10 @@ pub fn clock(secs: f64) -> String {
     if h > 0 {
         format!("{h}:{m:02}:{s:02}")
     } else {
-        format!("{m}:{s:02}.{}", ((secs - whole as f64) * 10.0).floor() as u64)
+        format!(
+            "{m}:{s:02}.{}",
+            ((secs - whole as f64) * 10.0).floor() as u64
+        )
     }
 }
 
@@ -163,29 +166,62 @@ mod tests {
 
     #[test]
     fn picks_a_viewer_by_kind_and_name() {
-        assert_eq!(ViewKind::pick("text", "document", "README.md"), Some(ViewKind::Markdown));
-        assert_eq!(ViewKind::pick("text", "document", "log.txt"), Some(ViewKind::Text));
-        assert_eq!(ViewKind::pick("sheet", "document", "a.csv"), Some(ViewKind::Text));
+        assert_eq!(
+            ViewKind::pick("text", "document", "README.md"),
+            Some(ViewKind::Markdown)
+        );
+        assert_eq!(
+            ViewKind::pick("text", "document", "log.txt"),
+            Some(ViewKind::Text)
+        );
+        assert_eq!(
+            ViewKind::pick("sheet", "document", "a.csv"),
+            Some(ViewKind::Text)
+        );
         assert_eq!(ViewKind::pick("sheet", "document", "a.xlsx"), None);
         assert_eq!(ViewKind::pick("code", "", "main.rs"), Some(ViewKind::Code));
         assert_eq!(ViewKind::pick("chart", "", "Song.kf"), Some(ViewKind::Code));
         assert_eq!(ViewKind::pick("image", "", "a.HEIC"), None);
         assert_eq!(ViewKind::pick("image", "", "a.PNG"), Some(ViewKind::Image));
-        assert_eq!(ViewKind::pick("audio", "", "Kick.wav"), Some(ViewKind::Audio));
+        assert_eq!(
+            ViewKind::pick("audio", "", "Kick.wav"),
+            Some(ViewKind::Audio)
+        );
         assert_eq!(ViewKind::pick("midi", "audio", "groove.mid"), None);
-        assert_eq!(ViewKind::pick("pdf", "document", "Chart.pdf"), Some(ViewKind::Pdf));
+        assert_eq!(
+            ViewKind::pick("pdf", "document", "Chart.pdf"),
+            Some(ViewKind::Pdf)
+        );
         // An app's kind falls back to its broader kind.
-        assert_eq!(ViewKind::pick("studio.chart", "pdf", "x.pdf"), Some(ViewKind::Pdf));
+        assert_eq!(
+            ViewKind::pick("studio.chart", "pdf", "x.pdf"),
+            Some(ViewKind::Pdf)
+        );
         assert_eq!(ViewKind::pick("project", "", "Song.rpp"), None);
     }
 
     #[test]
     fn anchors_travel_as_json() {
-        let a = Anchor::Region { page: 1, rect: [72.0, 300.0, 192.0, 340.0], user: None, text: String::new() };
+        let a = Anchor::Region {
+            page: 1,
+            rect: [72.0, 300.0, 192.0, 340.0],
+            user: None,
+            text: String::new(),
+        };
         let j = serde_json::to_string(&a).unwrap();
-        assert_eq!(j, r#"{"kind":"region","page":1,"rect":[72.0,300.0,192.0,340.0]}"#);
+        assert_eq!(
+            j,
+            r#"{"kind":"region","page":1,"rect":[72.0,300.0,192.0,340.0]}"#
+        );
         assert_eq!(serde_json::from_str::<Anchor>(&j).unwrap(), a);
         assert_eq!(a.describe(), "Page 2, 120×40 at 72, 300");
-        assert_eq!(Anchor::TimeRange { start: 62.5, end: 3725.0 }.describe(), "1:02.5 – 1:02:05");
+        assert_eq!(
+            Anchor::TimeRange {
+                start: 62.5,
+                end: 3725.0
+            }
+            .describe(),
+            "1:02.5 – 1:02:05"
+        );
     }
 }

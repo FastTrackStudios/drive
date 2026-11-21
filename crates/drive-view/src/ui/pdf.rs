@@ -61,8 +61,12 @@ pub fn PdfView(
         use_effect(move || {
             let p = page();
             let _ = zoom();
-            let Some(Ok(d)) = doc.read().clone() else { return };
-            let Some(holder) = element::<web_sys::HtmlElement>(&page_id) else { return };
+            let Some(Ok(d)) = doc.read().clone() else {
+                return;
+            };
+            let Some(holder) = element::<web_sys::HtmlElement>(&page_id) else {
+                return;
+            };
             let mut d = d.borrow_mut();
             let (pw, ph) = d.size(p);
             let css = holder.client_width().max(1) as f32;
@@ -87,7 +91,12 @@ pub fn PdfView(
     let (pages, (pw, ph), label, title) = {
         let b = d.borrow();
         let p = page();
-        (b.pages(), b.size(p), b.label(p), b.title().map(str::to_string))
+        (
+            b.pages(),
+            b.size(p),
+            b.label(p),
+            b.title().map(str::to_string),
+        )
     };
     let p = page();
     let mut go = move |to: usize| {
@@ -144,7 +153,12 @@ pub fn PdfView(
             let mut b = d.borrow_mut();
             let text = b.text_in(p, rect);
             let user = b.to_user(p, rect);
-            h.call(Anchor::Region { page: p as u32, rect, user, text });
+            h.call(Anchor::Region {
+                page: p as u32,
+                rect,
+                user,
+                text,
+            });
         }
     };
     let edit = move |e: PageEdit| {
@@ -176,7 +190,12 @@ pub fn PdfView(
         .filter(|(_, h)| h.page == p)
         .map(|(i, h)| (i == hit(), h.rects.clone()))
         .collect();
-    let notes: Vec<Comment> = comments.read().iter().filter(|c| c.page == p).cloned().collect();
+    let notes: Vec<Comment> = comments
+        .read()
+        .iter()
+        .filter(|c| c.page == p)
+        .cloned()
+        .collect();
     let n_hits = hits.read().len();
     let mut find2 = find.clone();
     rsx! {
@@ -286,7 +305,12 @@ fn draw(canvas_id: &str, page: &Page) -> Result<(), String> {
         .flatten()
         .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok())
         .ok_or("no 2D context")?;
-    let img = web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&page.rgba), page.width, page.height)
-        .map_err(|_| "the page is too big to draw")?;
-    ctx.put_image_data(&img, 0.0, 0.0).map_err(|_| "the canvas refused the page".to_string())
+    let img = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+        Clamped(&page.rgba),
+        page.width,
+        page.height,
+    )
+    .map_err(|_| "the page is too big to draw")?;
+    ctx.put_image_data(&img, 0.0, 0.0)
+        .map_err(|_| "the canvas refused the page".to_string())
 }

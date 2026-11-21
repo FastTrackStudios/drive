@@ -19,11 +19,18 @@ pub fn ImageView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
     let img_id = id.clone();
     let pick = move |p: Picked| {
         let Some(h) = on_anchor else { return };
-        let Some(img) = element::<web_sys::HtmlImageElement>(&img_id) else { return };
+        let Some(img) = element::<web_sys::HtmlImageElement>(&img_id) else {
+            return;
+        };
         // CSS pixels → the image's own pixels.
         let k = img.natural_width() as f32 / (img.client_width().max(1) as f32);
         let r = p.rect.map(|v| (v * k).round());
-        h.call(Anchor::Region { page: 0, rect: r, user: None, text: String::new() });
+        h.call(Anchor::Region {
+            page: 0,
+            rect: r,
+            user: None,
+            text: String::new(),
+        });
     };
     let on_load = {
         let id = id.clone();
@@ -131,8 +138,12 @@ pub fn AudioView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
     let emit_time = {
         let id = id.clone();
         move |_| {
-            let (Some(h), Some(a)) = (on_anchor, element::<web_sys::HtmlMediaElement>(&id)) else { return };
-            h.call(Anchor::Time { at: a.current_time() });
+            let (Some(h), Some(a)) = (on_anchor, element::<web_sys::HtmlMediaElement>(&id)) else {
+                return;
+            };
+            h.call(Anchor::Time {
+                at: a.current_time(),
+            });
         }
     };
     let seek_id = id.clone();
@@ -165,7 +176,11 @@ pub fn AudioView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
         Wave::Plain(u) => (None, u.clone()),
     };
     let len = length();
-    let head = if len > 0.0 { (now() / len * 100.0).clamp(0.0, 100.0) } else { 0.0 };
+    let head = if len > 0.0 {
+        (now() / len * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
     let mut t1 = read_time.clone();
     rsx! {
         if let Some(p) = peaks {
@@ -262,8 +277,12 @@ pub fn VideoView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
     let emit_time = {
         let id = id.clone();
         move |_| {
-            let (Some(h), Some(v)) = (on_anchor, element::<web_sys::HtmlMediaElement>(&id)) else { return };
-            h.call(Anchor::Time { at: v.current_time() });
+            let (Some(h), Some(v)) = (on_anchor, element::<web_sys::HtmlMediaElement>(&id)) else {
+                return;
+            };
+            h.call(Anchor::Time {
+                at: v.current_time(),
+            });
         }
     };
     let mut t1 = read_time.clone();

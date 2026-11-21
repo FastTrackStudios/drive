@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use pdfcraft_cos::{Document, SaveOptions, write_full};
 pub use crate::PageEdit;
+use pdfcraft_cos::{Document, SaveOptions, write_full};
 
 /// The largest number of edits one request may make.
 pub const MAX_EDITS: usize = 256;
@@ -26,7 +26,9 @@ pub fn apply(bytes: Vec<u8>, edits: &[PageEdit]) -> Result<Vec<u8>, String> {
     let mut doc = Document::open(Arc::new(bytes)).map_err(|e| e.to_string())?;
     for e in edits {
         let r = match e {
-            PageEdit::Rotate { pages, degrees } => pdfcraft_organize::rotate_pages(&mut doc, pages, *degrees),
+            PageEdit::Rotate { pages, degrees } => {
+                pdfcraft_organize::rotate_pages(&mut doc, pages, *degrees)
+            }
             PageEdit::Delete { pages } => pdfcraft_organize::delete_pages(&mut doc, pages),
             PageEdit::Move { pages, to } => pdfcraft_organize::move_pages(&mut doc, pages, *to),
         };
@@ -60,8 +62,20 @@ mod tests {
 
         let out = apply(out, &[PageEdit::Delete { pages: vec![0] }]).unwrap();
         assert_eq!(page_count(out.clone()).unwrap(), 1);
-        assert!(apply(out, &[PageEdit::Delete { pages: vec![0] }]).is_err(), "the last page stays");
-        assert!(apply(hello(), &[PageEdit::Rotate { pages: vec![0], degrees: 45 }]).is_err());
+        assert!(
+            apply(out, &[PageEdit::Delete { pages: vec![0] }]).is_err(),
+            "the last page stays"
+        );
+        assert!(
+            apply(
+                hello(),
+                &[PageEdit::Rotate {
+                    pages: vec![0],
+                    degrees: 45
+                }]
+            )
+            .is_err()
+        );
         assert!(apply(hello(), &[PageEdit::Delete { pages: vec![9] }]).is_err());
     }
 }

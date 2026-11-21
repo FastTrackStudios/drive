@@ -244,10 +244,7 @@ mod tests {
         proxied.insert("x-forwarded-for", "100.64.0.7".parse().unwrap());
         assert!(!is_local(Some(lo), &proxied));
         let mut tailnet = HeaderMap::new();
-        tailnet.insert(
-            "host",
-            "workstation.example.ts.net:9444".parse().unwrap(),
-        );
+        tailnet.insert("host", "workstation.example.ts.net:9444".parse().unwrap());
         assert!(!is_local(Some(lo), &tailnet));
         assert!(!is_local(Some("192.168.1.9:5000".parse().unwrap()), &h));
         assert!(!is_local(None, &h));
