@@ -1,0 +1,19 @@
+[package]
+name = "drive-files"
+description = "Drive's files: the file tree (a Loro tree), content-addressed blobs over OpenDAL, BLAKE3 hashing, and the space's registry of devices and storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+loro.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3 = "1"
+opendal = { version = "0.59", features = ["services-fs", "services-memory", "services-s3", "services-webdav"] }
+bytes = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
