@@ -154,6 +154,47 @@ impl Rooms {
         location: &str,
         path: &str,
     ) -> Result<String, FetchError> {
+        self.ask_agent(space, location, Duration::from_secs(120), |req| {
+            ToClient::Fetch {
+                req,
+                location: location.into(),
+                path: path.into(),
+            }
+        })
+        .await
+    }
+
+    /// Ask the device that owns `location` to make sidecars of `path` and
+    /// put them on the node; returns the file's content key.
+    pub async fn make_sidecars(
+        &self,
+        space: &str,
+        location: &str,
+        path: &str,
+        kinds: Vec<String>,
+        force: bool,
+    ) -> Result<String, FetchError> {
+        self.ask_agent(space, location, Duration::from_secs(180), |req| {
+            ToClient::Sidecars {
+                req,
+                location: location.into(),
+                path: path.into(),
+                kinds,
+                force,
+            }
+        })
+        .await
+    }
+
+    /// Send the agent of the device that owns `location` a request, and
+    /// wait for its [`ToNode::Fetched`] answer.
+    async fn ask_agent(
+        &self,
+        space: &str,
+        location: &str,
+        wait: Duration,
+        msg: impl FnOnce(u64) -> ToClient,
+    ) -> Result<String, FetchError> {
         let device = self
             .read(&drive_files::space_doc(space), |d| {
                 drive_files::space::locations(d)
@@ -173,18 +214,11 @@ impl Rooms {
         let req = self.next_req.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(req, tx);
-        if outbox
-            .send(ToClient::Fetch {
-                req,
-                location: location.into(),
-                path: path.into(),
-            })
-            .is_err()
-        {
+        if outbox.send(msg(req)).is_err() {
             self.pending.lock().await.remove(&req);
             return Err(FetchError::Offline(device));
         }
-        let answer = tokio::time::timeout(Duration::from_secs(120), rx).await;
+        let answer = tokio::time::timeout(wait, rx).await;
         self.pending.lock().await.remove(&req);
         match answer {
             Ok(Ok(Ok(hash))) => Ok(hash),

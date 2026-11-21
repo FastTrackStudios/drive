@@ -47,6 +47,15 @@ pub enum Event {
         location: String,
         path: String,
     },
+    /// The node asks this agent to make sidecars of a file in one of its
+    /// locations; answer with [`Drive::fetched`] (the content key).
+    Sidecars {
+        req: u64,
+        location: String,
+        path: String,
+        kinds: Vec<String>,
+        force: bool,
+    },
 }
 
 struct OpenDoc {
@@ -470,6 +479,21 @@ impl Drive {
                     req,
                     location,
                     path,
+                });
+            }
+            ToClient::Sidecars {
+                req,
+                location,
+                path,
+                kinds,
+                force,
+            } => {
+                let _ = self.0.events.send(Event::Sidecars {
+                    req,
+                    location,
+                    path,
+                    kinds,
+                    force,
                 });
             }
             ToClient::Error { message } if message == "sign in" => {

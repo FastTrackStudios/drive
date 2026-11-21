@@ -46,6 +46,10 @@
 //! drive-agent [--dir DIR] site build ID [--force]       # build and publish now
 //! ```
 //!
+//! Sidecars (thumbnails, waveform peaks; made here from this device's files):
+//! drive-agent [--dir DIR] sidecars [--force] [--kind thumb|peaks] [--max N]
+//!                                   # make what the node lacks now (`serve` does it in the background)
+//!
 //! What this command line prints is its output, on stdout; the mount's
 //! diagnostics go through `tracing` to stderr.
 
@@ -58,6 +62,7 @@ mod daemon;
 mod fs;
 mod placement;
 mod places;
+mod sidecars;
 mod sites;
 mod view;
 
@@ -508,6 +513,28 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             drop(others);
             drop(main);
             tracing::info!(mount.at = %at.display(), "unmounted");
+        }
+        "sidecars" => {
+            let a = start(dir).await?;
+            let force = args.iter().any(|x| x == "--force");
+            let only = flag(args, "--kind")
+                .map(|k| drive_sidecars::Kind::of_family(&k))
+                .unwrap_or_default();
+            if flag(args, "--kind").is_some() && only.is_empty() {
+                return Err("--kind takes thumb, peaks, thumb-256 or thumb-1024".into());
+            }
+            let max = flag(args, "--max")
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(usize::MAX);
+            let p = a.backfill_sidecars(&only, force, max).await;
+            out(format!(
+                "{} files read ({}): {} sidecars made, {} with no generator, {} failed",
+                p.files,
+                human(p.bytes),
+                p.made,
+                p.no_generator,
+                p.failed
+            ));
         }
         "serve" => {
             let a = Arc::new(start(dir).await?);

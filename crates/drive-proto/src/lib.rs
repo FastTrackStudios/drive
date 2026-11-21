@@ -134,6 +134,18 @@ pub enum ToClient {
         location: String,
         path: String,
     },
+    /// To an agent: make these sidecars (`thumb-256`, `peaks`, …: see
+    /// `drive-sidecars`) of a file in one of your locations, put them on
+    /// the node, and answer with [`ToNode::Fetched`] (the file's content
+    /// key, or why not: `no generator: …` when nothing here reads it).
+    /// `force`: make them again even if the node has them.
+    Sidecars {
+        req: u64,
+        location: String,
+        path: String,
+        kinds: Vec<String>,
+        force: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -178,5 +190,13 @@ mod tests {
             result: Err("offline".into()),
         };
         assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
+        let m = ToClient::Sidecars {
+            req: 4,
+            location: "l1".into(),
+            path: "Songs/a.wav".into(),
+            kinds: vec!["peaks".into()],
+            force: false,
+        };
+        assert_eq!(decode::<ToClient>(&encode(&m)).unwrap(), m);
     }
 }

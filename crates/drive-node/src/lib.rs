@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod migrate;
 pub mod rooms;
 pub mod share;
+pub mod sidecars;
 pub mod sites;
 pub mod store;
 
@@ -42,6 +43,9 @@ pub struct Options {
     pub issuer: Option<String>,
     /// Where daily backups also go (the R2 bucket, Starcommand).
     pub backup_to: Option<StorageConfig>,
+    /// Make missing sidecars of the files the node keeps in the background
+    /// (on by default; `--no-backfill` turns it off).
+    pub no_backfill: bool,
 }
 
 type Remote = Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>;
@@ -185,6 +189,24 @@ async fn guard_writes(
     guard(State(rooms), peer, req, next).await
 }
 
+/// Sidecar requests: a plain read by content key is open (like a blob);
+/// one that names a space (asking its device to make it), and every write
+/// or purge, goes through [`guard`].
+async fn guard_sidecars(
+    State(rooms): State<Arc<Rooms>>,
+    peer: Remote,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let read = req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD;
+    let names_space = org_of_request(req.uri()).is_some();
+    let stats = req.uri().path() == "/sidecars/stats";
+    if read && !names_space && !stats {
+        return next.run(req).await;
+    }
+    guard(State(rooms), peer, req, next).await
+}
+
 /// The node's routes: `/sync` (the websocket), `/health`, and each app's
 /// web build under its prefix (`""` for the root).
 pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) -> Router {
@@ -232,6 +254,23 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         rooms: rooms.clone(),
         blobs: blobs.clone(),
     };
+    let sidecar_store = Arc::new(
+        sidecars::Sidecars::open(data, blobs.clone(), data.join("blobs"))
+            .await
+            .expect("the sidecar store opens"),
+    );
+    if !opts.no_backfill {
+        tokio::spawn(sidecars::backfill(
+            sidecar_store.clone(),
+            rooms.clone(),
+            std::time::Duration::from_secs(120),
+            50,
+        ));
+    }
+    let sidecar_routes = sidecars::Routes {
+        sc: sidecar_store,
+        rooms: rooms.clone(),
+    };
     let mut app = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
@@ -274,6 +313,26 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .route("/sites/{space}/{id}/", get(sites::index))
                 .route("/sites/{space}/{id}/{*path}", get(sites::file))
                 .with_state(catalog),
+        )
+        // Sidecars: reading one by its content key needs nothing (as a
+        // blob); asking a device to make one, and every write, is a
+        // member's.
+        .merge(
+            Router::new()
+                .route(
+                    "/sidecar/{key}/{kind}",
+                    get(sidecars::get).put(sidecars::put),
+                )
+                .route("/sidecars/missing", axum::routing::post(sidecars::missing))
+                .route("/sidecars/miss", axum::routing::post(sidecars::miss))
+                .route("/sidecars/stats", get(sidecars::stats))
+                .route("/sidecars/purge", axum::routing::post(sidecars::purge))
+                .layer(axum::middleware::from_fn_with_state(
+                    rooms.clone(),
+                    guard_sidecars,
+                ))
+                .layer(axum::extract::DefaultBodyLimit::max(64 << 20))
+                .with_state(sidecar_routes),
         )
         .merge(
             Router::new()
