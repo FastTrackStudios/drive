@@ -243,7 +243,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
             Router::new()
                 .route(
                     "/index/{space}/{location}",
-                    axum::routing::put(catalog::put_index),
+                    axum::routing::put(catalog::put_index).delete(catalog::drop_index),
                 )
                 .route("/search", get(catalog::search))
                 .route("/list", get(catalog::list))

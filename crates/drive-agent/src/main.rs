@@ -5,6 +5,7 @@
 //! drive-agent [--dir DIR] invite                       # a pairing code for another device
 //! drive-agent [--dir DIR] join  --node URL --space home --name Laptop --code K7Q2XM
 //! drive-agent [--dir DIR] devices | storages
+//! drive-agent [--dir DIR] device rm NAME                # forget a device, its locations and storages
 //! drive-agent [--dir DIR] storage add fs     NAME PATH
 //! drive-agent [--dir DIR] storage add s3     NAME BUCKET ENDPOINT KEY SECRET [REGION]
 //! drive-agent [--dir DIR] storage add webdav NAME ENDPOINT [USER PASSWORD]
@@ -165,6 +166,40 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 .find(|x| x.id == d.approved_by)
                 .map_or(d.approved_by.clone(), |x| x.name);
             out(format!("Joined {} as {name}, approved by {by}.", cfg.space));
+        }
+        "device" if args.get(1).map(String::as_str) == Some("rm") => {
+            let who = args.get(2).ok_or("device rm NAME")?.clone();
+            let a = start(dir).await?;
+            let d = space::devices(&a.space)
+                .into_iter()
+                .find(|d| d.name == who || d.id == who)
+                .ok_or(format!("no device {who}"))?;
+            if d.id == a.device_id() {
+                return Err("that is this device; remove it from another one".into());
+            }
+            let space_name = a.cfg.lock().expect("cfg").space.clone();
+            let node = a.cfg.lock().expect("cfg").node_http();
+            let storages: Vec<_> = space::storages(&a.space).into_iter().filter(|s| s.device == d.id).collect();
+            let locations: Vec<_> = space::locations(&a.space)
+                .into_iter()
+                .filter(|l| l.device == d.id || storages.iter().any(|s| s.id == l.storage))
+                .collect();
+            for l in &locations {
+                let _ = a.http.delete(format!("{node}/index/{space_name}/{}", l.id)).send().await;
+                space::remove_location(&a.space, &l.id).map_err(|e| e.to_string())?;
+            }
+            for s in &storages {
+                space::remove_storage(&a.space, &s.id).map_err(|e| e.to_string())?;
+            }
+            space::remove_device(&a.space, &d.id).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            out(format!(
+                "Removed {} ({} locations, {} storages). Its files stay where they are; this space no longer knows it.",
+                d.name,
+                locations.len(),
+                storages.len()
+            ));
         }
         "devices" => {
             let a = start(dir).await?;

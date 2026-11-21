@@ -36,6 +36,20 @@ fn fail(e: impl std::fmt::Display) -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+/// Forget a location's index (the location was removed).
+pub async fn drop_index(
+    UrlPath((space_id, location)): UrlPath<(String, String)>,
+    State(c): State<Catalog>,
+) -> Result<StatusCode, StatusCode> {
+    c.rooms
+        .store
+        .drop_index(&space_id, &location)
+        .await
+        .map_err(fail)?;
+    tracing::info!(index.space = %space_id, index.location = %location, "an index was dropped");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Take a location's new index: kept as a blob (so devices can browse it
 /// offline) and as rows (for search).
 pub async fn put_index(
