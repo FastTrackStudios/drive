@@ -1737,11 +1737,13 @@ version = "0.1.0"
 dependencies = [
  "drive-files",
  "drive-native",
+ "drive-sites",
  "drive-spine",
  "fuser",
  "libc",
  "loro",
  "notify",
+ "opendal",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

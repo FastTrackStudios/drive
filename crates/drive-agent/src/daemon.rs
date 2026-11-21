@@ -93,6 +93,13 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     }
     refresh_view(&a, &view).await;
 
+    // Sites: checked a few seconds after their pages, theme or settings
+    // change, and every minute (new sites, builds asked for elsewhere).
+    let building = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut sites_due: Option<tokio::time::Instant> =
+        Some(tokio::time::Instant::now() + Duration::from_secs(3));
+    let mut last_sites = tokio::time::Instant::now();
+
     let mut pending: HashMap<String, tokio::time::Instant> = HashMap::new();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let mut last_full = tokio::time::Instant::now();
@@ -113,6 +120,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 }
                 Ok(Event::Online(true)) => {
                     a.announce();
+                }
+                Ok(Event::Changed(doc)) if doc == a.files_id || doc.contains("/drive:site:") => {
+                    let at = tokio::time::Instant::now() + Duration::from_secs(4);
+                    sites_due = Some(sites_due.map_or(at, |d| d.min(at)));
                 }
                 Ok(Event::Presence { .. }) => {
                     view.write().expect("view").online = online_devices(&a);
@@ -147,6 +158,20 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     a.place().await;
                     a.make_available().await;
                     a.publish_available().await;
+                }
+                if now.duration_since(last_sites) > Duration::from_secs(60) && sites_due.is_none() {
+                    sites_due = Some(now);
+                }
+                if sites_due.is_some_and(|d| d <= now)
+                    && !building.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    sites_due = None;
+                    last_sites = now;
+                    let (a, building) = (a.clone(), building.clone());
+                    tokio::spawn(async move {
+                        a.build_due_sites().await;
+                        building.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
                 }
                 if now.duration_since(last_view) > Duration::from_secs(30) {
                     last_view = now;

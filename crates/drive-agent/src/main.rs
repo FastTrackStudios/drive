@@ -36,6 +36,14 @@
 //! drive-agent [--dir DIR] policy add NAME [--copies 3 --media 2 --offsite 1] [--scope LOC,LOC]
 //! drive-agent [--dir DIR] protection                    # every policy, checked
 //! drive-agent [--dir DIR] backup LOCATION STORAGE       # copy a location into a storage
+//!
+//! Static sites (built here with dodeca's `ddc`, served by the node under
+//! /sites/<space>/<id>/, and copied to a public storage if they have one):
+//! drive-agent [--dir DIR] site theme-init [FOLDER]      # the starter theme into the space (Sites/Themes/Base)
+//! drive-agent [--dir DIR] site create TITLE --source FOLDER [--id ID] [--theme FOLDER]
+//!                         [--overrides FOLDER] [--storage STORAGE] [--base-url URL] [--manual]
+//! drive-agent [--dir DIR] site ls | show ID | rm ID
+//! drive-agent [--dir DIR] site build ID [--force]       # build and publish now
 //! ```
 //!
 //! What this command line prints is its output, on stdout; the mount's
@@ -50,6 +58,7 @@ mod daemon;
 mod fs;
 mod placement;
 mod places;
+mod sites;
 mod view;
 
 use std::io::Write;
@@ -780,6 +789,14 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 format!("{who} serves available files at {url}")
             });
         }
+        "site"
+            if matches!(
+                args.get(1).map(String::as_str),
+                Some("theme-init" | "create" | "ls" | "show" | "rm" | "build")
+            ) =>
+        {
+            site_command(dir, args).await?;
+        }
         "site" => {
             let who = args.get(1).ok_or("site DEVICE_OR_STORAGE SITE")?;
             let site = args.get(2).ok_or("site DEVICE_OR_STORAGE SITE")?;
@@ -1004,6 +1021,191 @@ async fn mount_fs<F: fuser::Filesystem + Send + Sync + 'static>(
             Err(e) => return Err(format!("mount {}: {e}", at.display())),
         }
     }
+}
+
+/// `drive-agent site …`: static sites.
+async fn site_command(dir: &Path, args: &[String]) -> Result<(), String> {
+    use drive_files::sites::{self as dsites, Site};
+    let a = start(dir).await?;
+    let node = a.cfg.lock().expect("cfg").node_http();
+    match args.get(1).map(String::as_str).unwrap_or("") {
+        "theme-init" => {
+            let folder = args.get(2).map_or(sites::DEFAULT_THEME, String::as_str);
+            let n = a.theme_init(folder).await?;
+            settle(&a).await;
+            out(format!(
+                "{folder}: {n} theme files added (templates/, sass/, static/). Edit them there, or give a site an override folder."
+            ));
+        }
+        "create" => {
+            let title = args.get(2).filter(|t| !t.starts_with("--")).ok_or(
+                "site create TITLE --source FOLDER [--id ID] [--theme FOLDER] [--overrides FOLDER] [--storage STORAGE] [--base-url URL] [--manual]",
+            )?;
+            let source = flag(args, "--source").ok_or("--source FOLDER (the Markdown pages)")?;
+            let source = source.trim_matches('/').to_string();
+            if tree::resolve(&a.files, &source)
+                .flatten()
+                .is_none_or(|e| !e.dir)
+            {
+                return Err(format!("no folder {source}"));
+            }
+            let id = flag(args, "--id").unwrap_or_else(|| dsites::id_from(title));
+            if id.is_empty() {
+                return Err("the site needs an id (--id)".into());
+            }
+            if dsites::listed(&a.space).contains_key(&id) {
+                return Err(format!("there is already a site {id}"));
+            }
+            let theme = flag(args, "--theme").unwrap_or_else(|| sites::DEFAULT_THEME.into());
+            if tree::resolve(&a.files, &theme).flatten().is_none() {
+                let n = a.theme_init(&theme).await?;
+                out(format!("{theme}: the starter theme ({n} files)"));
+            }
+            let storage = match flag(args, "--storage") {
+                Some(s) => space::storages(&a.space)
+                    .into_iter()
+                    .find(|x| x.name == s || x.id == s)
+                    .map(|x| x.id)
+                    .ok_or(format!("no storage {s}"))?,
+                None => String::new(),
+            };
+            let site = Site {
+                id: id.clone(),
+                title: title.clone(),
+                source,
+                theme: theme.trim_matches('/').to_string(),
+                overrides: flag(args, "--overrides")
+                    .map(|o| o.trim_matches('/').to_string())
+                    .unwrap_or_default(),
+                storage,
+                base_url: flag(args, "--base-url").unwrap_or_default(),
+                builder: a.device_id(),
+                auto: !args.iter().any(|x| x == "--manual"),
+                created: drive_files::now_ms(),
+                ..Site::default()
+            };
+            let (doc_id, doc) = a.site_doc(&id).await;
+            dsites::write(&doc, &site).map_err(|e| e.to_string())?;
+            a.drive.commit(&doc_id);
+            dsites::set_listed(&a.space, &id, Some(title)).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            out(format!(
+                "Site {id} ({title}) from {}; build it with `drive-agent site build {id}`{}.",
+                site.source,
+                if site.auto {
+                    " (and this device's agent rebuilds it when its pages change)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        "ls" => {
+            for (id, title) in dsites::listed(&a.space) {
+                let (_, doc) = a.site_doc(&id).await;
+                let site = dsites::read(&doc).unwrap_or_default();
+                let state = match dsites::last_build(&doc) {
+                    None => "not built".to_string(),
+                    Some(b) if b.ok => format!(
+                        "built, {} pages, {} broken links",
+                        b.pages,
+                        b.broken_links.len()
+                    ),
+                    Some(b) => format!("failed: {}", b.message.lines().next().unwrap_or_default()),
+                };
+                out(format!("{id:<20} {title:<24} {:<28} {state}", site.source));
+            }
+        }
+        "show" => {
+            let id = args.get(2).ok_or("site show ID")?;
+            let (_, doc) = a.site_doc(id).await;
+            let site = dsites::read(&doc).ok_or(format!("no site {id}"))?;
+            let builder = space::devices(&a.space)
+                .into_iter()
+                .find(|d| d.id == site.builder)
+                .map_or(site.builder.clone(), |d| d.name);
+            out(format!("{} ({})", site.title, site.id));
+            out(format!("  pages      {}", site.source));
+            out(format!("  theme      {}", site.theme));
+            out(format!(
+                "  overrides  {}",
+                if site.overrides.is_empty() {
+                    "-"
+                } else {
+                    &site.overrides
+                }
+            ));
+            out(format!(
+                "  storage    {}",
+                if site.storage.is_empty() {
+                    "the node only"
+                } else {
+                    &site.storage
+                }
+            ));
+            out(format!(
+                "  built by   {builder}{}",
+                if site.auto {
+                    ", rebuilt when it changes"
+                } else {
+                    ""
+                }
+            ));
+            match dsites::last_build(&doc) {
+                None => out("  not built yet"),
+                Some(b) => {
+                    out(format!(
+                        "  last build {} ({} ms): {}",
+                        if b.ok { "ok" } else { "failed" },
+                        b.duration_ms,
+                        b.message
+                    ));
+                    for at in sites::addresses(&node, &b) {
+                        out(format!("  at         {at}"));
+                    }
+                    for l in &b.broken_links {
+                        out(format!("  broken     {l}"));
+                    }
+                    for l in &b.unresolved {
+                        out(format!("  unresolved {l}"));
+                    }
+                }
+            }
+        }
+        "rm" => {
+            let id = args.get(2).ok_or("site rm ID")?;
+            dsites::set_listed(&a.space, id, None).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            out(format!(
+                "{id} is no longer listed; what it published stays until it is deleted there."
+            ));
+        }
+        "build" => {
+            let id = args.get(2).ok_or("site build ID [--force]")?;
+            let force = args.iter().any(|x| x == "--force");
+            match a.site_build(id, force).await? {
+                sites::Outcome::Unchanged => out(format!(
+                    "{id}: nothing changed since its last build (--force builds it anyway)"
+                )),
+                sites::Outcome::Built(b) => {
+                    out(format!("{id}: {} in {} ms", b.message, b.duration_ms));
+                    for at in sites::addresses(&node, &b) {
+                        out(format!("  {at}"));
+                    }
+                    for l in b.broken_links.iter().take(20) {
+                        out(format!("  broken link {l}"));
+                    }
+                    for l in b.unresolved.iter().take(20) {
+                        out(format!("  unresolved {l}"));
+                    }
+                }
+            }
+            settle(&a).await;
+        }
+        _ => return Err("site theme-init|create|ls|show|rm|build".into()),
+    }
+    Ok(())
 }
 
 /// Run until Ctrl-C or SIGTERM (systemd's stop).

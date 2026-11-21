@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 drive-native = { path = "../drive-native" }
 drive-files = { path = "../drive-files" }
+drive-sites = { path = "../drive-sites" }
+opendal = { version = "0.59", default-features = false }
 drive-spine.workspace = true
 loro.workspace = true
 serde.workspace = true
