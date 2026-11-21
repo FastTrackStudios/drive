@@ -14,8 +14,9 @@ installed.
 - [docs/design.md](docs/design.md): the design.
 - [PLAN.md](PLAN.md): the prototype plan.
 - [docs/apps/meals.md](docs/apps/meals.md): the Meals app.
+- [PROTOTYPE.md](PROTOTYPE.md): the running prototype (Drive and four apps, live).
 
-Status: design and plan; no code yet. The first client is Studio
+Status: a working prototype (see PROTOTYPE.md); the plan is the way to the real thing.
 (`../studio-proto`, a Dioxus 0.8 app).
 
 Licence: to be decided.
