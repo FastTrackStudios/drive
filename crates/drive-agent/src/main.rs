@@ -143,6 +143,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 token: None,
                 token_expires: None,
                 signed_in_as: None,
+                allow_evict: false,
             };
             cfg.save(dir)?;
             let a = Agent::start(dir, cfg.clone()).await;
@@ -258,6 +259,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 token: None,
                 token_expires: None,
                 signed_in_as: None,
+                allow_evict: false,
             };
             let a = Agent::start(dir, cfg.clone()).await;
             let d = space::join(&a.space, &code, this_device(&cfg.device_id, &name))

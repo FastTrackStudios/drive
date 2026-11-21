@@ -350,7 +350,10 @@ impl Filesystem for DriveFs {
             if e.dir {
                 return Err(Errno::EISDIR);
             }
-            tree::remove(&self.agent.files, e.id).map_err(|_| Errno::EIO)?;
+            // Into the Trash, never deleted; removing from the Trash is refused.
+            if !tree::trash(&self.agent.files, e.id).map_err(|_| Errno::EIO)? {
+                return Err(Errno::EPERM);
+            }
             self.agent.commit_files();
             Ok(())
         })();
@@ -368,7 +371,10 @@ impl Filesystem for DriveFs {
             if !tree::children(&self.agent.files, Some(e.id)).is_empty() {
                 return Err(Errno::ENOTEMPTY);
             }
-            tree::remove(&self.agent.files, e.id).map_err(|_| Errno::EIO)?;
+            // Into the Trash, never deleted; removing from the Trash is refused.
+            if !tree::trash(&self.agent.files, e.id).map_err(|_| Errno::EIO)? {
+                return Err(Errno::EPERM);
+            }
             self.agent.commit_files();
             Ok(())
         })();
@@ -399,7 +405,10 @@ impl Filesystem for DriveFs {
             if let Some(old) = tree::lookup(&self.agent.files, to, newname)
                 && old.id != e.id
             {
-                tree::remove(&self.agent.files, old.id).map_err(|_| Errno::EIO)?;
+                // The replaced file goes to the Trash (its bytes stay).
+                if !tree::trash(&self.agent.files, old.id).map_err(|_| Errno::EIO)? {
+                    return Err(Errno::EPERM);
+                }
             }
             tree::rename(&self.agent.files, e.id, to, newname).map_err(|_| Errno::EIO)?;
             self.agent.commit_files();

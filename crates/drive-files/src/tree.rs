@@ -191,9 +191,46 @@ pub fn rename(
     Ok(())
 }
 
-/// Remove an entry and everything under it.
-pub fn remove(doc: &LoroDoc, id: TreeID) -> loro::LoroResult<()> {
-    tree(doc).delete(id)
+/// The folder at the top where removed things go.
+pub const TRASH: &str = "Trash";
+
+/// Remove an entry: move it (and everything under it) into the Trash
+/// folder at the top, renamed if the Trash already holds that name.
+/// Nothing in the tree is ever deleted, so every file's bytes stay
+/// reachable. `false`: refused, because it is the Trash itself or already
+/// in it (emptying the Trash is not something Drive does).
+pub fn trash(doc: &LoroDoc, id: TreeID) -> loro::LoroResult<bool> {
+    let bin = match lookup(doc, None, TRASH) {
+        Some(e) if e.dir => e.id,
+        _ => mkdir(doc, None, TRASH)?,
+    };
+    if id == bin || in_trash(doc, id) {
+        return Ok(false);
+    }
+    let name = entry(doc, id).map(|e| e.name).unwrap_or_default();
+    let mut put = name.clone();
+    let mut n = 2;
+    while lookup(doc, Some(bin), &put).is_some_and(|e| e.id != id) {
+        put = format!("{name} ({n})");
+        n += 1;
+    }
+    rename(doc, id, Some(bin), &put)?;
+    tree(doc).get_meta(id)?.insert("trashed", crate::now_ms())?;
+    Ok(true)
+}
+
+/// Whether an entry is the Trash or inside it.
+pub fn in_trash(doc: &LoroDoc, id: TreeID) -> bool {
+    let mut at = Some(id);
+    while let Some(cur) = at {
+        if parent_of(doc, cur).is_none()
+            && entry(doc, cur).is_some_and(|e| e.dir && e.name == TRASH)
+        {
+            return true;
+        }
+        at = parent_of(doc, cur);
+    }
+    false
 }
 
 /// Every file, with its path.
@@ -281,7 +318,23 @@ mod tests {
         rename(&a, kick, None, "Kick In.wav").unwrap();
         assert!(resolve(&a, "Kick In.wav").unwrap().is_some());
         assert!(children(&a, Some(stems)).is_empty());
-        remove(&a, stems).unwrap();
+        // Removing moves into the Trash; nothing is deleted.
+        assert!(trash(&a, stems).unwrap());
         assert!(resolve(&a, "Stems").is_none());
+        assert!(resolve(&a, "Trash/Stems").unwrap().is_some());
+        assert!(in_trash(&a, stems));
+        // Removing from the Trash (or the Trash itself) is refused.
+        assert!(!trash(&a, stems).unwrap());
+        let bin = resolve(&a, "Trash").unwrap().unwrap().id;
+        assert!(!trash(&a, bin).unwrap());
+        // A second "Stems" goes in beside the first.
+        let again = mkdir(&a, None, "Stems").unwrap();
+        assert!(trash(&a, again).unwrap());
+        assert!(resolve(&a, "Trash/Stems (2)").unwrap().is_some());
+        // A trashed file keeps its bytes.
+        let gone = create_file(&a, None, "mix.wav").unwrap();
+        set_content(&a, gone, 9, &"b".repeat(64)).unwrap();
+        assert!(trash(&a, gone).unwrap());
+        assert_eq!(resolve(&a, "Trash/mix.wav").unwrap().unwrap().hash, "b".repeat(64));
     }
 }

@@ -46,6 +46,12 @@ pub struct Config {
     pub token_expires: Option<String>,
     #[serde(default)]
     pub signed_in_as: Option<String>,
+    /// Whether this device may let go of its copies of Drive files once a
+    /// storage holds them (eviction, unpinning). Off unless turned on by
+    /// hand: until there are verified second copies, Drive keeps every
+    /// byte it has.
+    #[serde(default)]
+    pub allow_evict: bool,
 }
 
 impl Config {
@@ -408,7 +414,8 @@ impl Agent {
             let stored = space::holders(&self.space, &e.hash)
                 .iter()
                 .any(|(_, how)| how == "stored");
-            if stored {
+            let allowed = self.cfg.lock().expect("cfg").allow_evict;
+            if stored && allowed {
                 let _ = std::fs::remove_file(self.cache_path(&e.hash));
                 let _ = space::set_held(&self.space, &me, &e.hash, None);
             }

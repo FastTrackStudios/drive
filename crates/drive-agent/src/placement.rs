@@ -130,7 +130,13 @@ impl Agent {
                 }
             }
         }
-        for h in &p.evict {
+        // Letting copies go is off unless this device was told it may
+        // (`allow_evict`): Drive keeps every byte it has until then.
+        let may_evict = self.cfg.lock().expect("cfg").allow_evict;
+        if !may_evict && !p.evict.is_empty() {
+            tracing::info!(placement.kept = p.evict.len(), "eviction is off: copies kept");
+        }
+        for h in p.evict.iter().filter(|_| may_evict) {
             if std::fs::remove_file(self.cache_path(h)).is_ok() {
                 let _ = space::set_held(&self.space, &me, h, None);
                 done.evicted += 1;
