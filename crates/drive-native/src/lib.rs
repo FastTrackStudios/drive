@@ -145,6 +145,7 @@ impl Drive {
             return d.doc.clone();
         }
         let doc = LoroDoc::new();
+        drive_spine::history::prepare(&doc, &self.0.name);
         if let Ok(bytes) = tokio::fs::read(self.0.dir.join("docs").join(file_name(id))).await {
             let _ = doc.import(&bytes);
         }
@@ -195,7 +196,7 @@ impl Drive {
         let pending = {
             let docs = self.0.docs.lock().expect("docs");
             let Some(d) = docs.get(id) else { return };
-            d.doc.commit();
+            drive_spine::history::commit(&d.doc, &self.0.name);
             d.outbox
                 .lock()
                 .map(|mut o| std::mem::take(&mut *o))

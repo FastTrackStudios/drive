@@ -1770,6 +1770,7 @@ name = "drive-client"
 version = "0.1.0"
 dependencies = [
  "drive-proto",
+ "drive-spine",
  "futures-channel",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -1826,6 +1827,7 @@ dependencies = [
  "axum",
  "drive-node",
  "drive-proto",
+ "drive-spine",
  "futures-util",
  "loro",
  "rustls",

@@ -97,6 +97,8 @@ struct Inner {
     /// The issuer's access token, sent in the handshake (none: the node
     /// is open, or this is its own computer).
     token: RefCell<Option<String>>,
+    /// Who this browser's changes are by (in every change's history).
+    author: RefCell<String>,
 }
 
 /// A connection to a Drive node, and the documents open on it.
@@ -152,6 +154,7 @@ impl Drive {
             events: tx,
             retry_ms: Cell::new(500),
             token: RefCell::new(token),
+            author: RefCell::new(String::new()),
         }));
         drive.save_me();
         drop_old_copies();
@@ -166,6 +169,24 @@ impl Drive {
         *self.0.token.borrow_mut() = token;
         if changed && let Some(ws) = self.0.ws.borrow().as_ref() {
             let _ = ws.close();
+        }
+    }
+
+    /// Who the changes made here are by: the signed-in person's email, or
+    /// this browser's name.
+    pub fn set_author(&self, who: &str) {
+        *self.0.author.borrow_mut() = who.to_string();
+        for d in self.0.docs.borrow().values() {
+            d.doc.set_next_commit_message(who);
+        }
+    }
+
+    fn author(&self) -> String {
+        let a = self.0.author.borrow().clone();
+        if a.is_empty() {
+            self.0.me.borrow().name.clone()
+        } else {
+            a
         }
     }
 
@@ -204,6 +225,7 @@ impl Drive {
             return d.doc.clone();
         }
         let doc = LoroDoc::new();
+        drive_spine::history::prepare(&doc, &self.author());
         // This browser's copy arrives a moment later (IndexedDB is async);
         // it merges with whatever the node has sent by then.
         {
@@ -267,7 +289,7 @@ impl Drive {
         let pending = {
             let docs = self.0.docs.borrow();
             let Some(d) = docs.get(id) else { return };
-            d.doc.commit();
+            drive_spine::history::commit(&d.doc, &self.author());
             let mut o = d
                 .outbox
                 .lock()

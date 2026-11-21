@@ -7,6 +7,7 @@
 //! reordered); `events` is a map of event id → event map (so an app can
 //! update its own event by id).
 
+pub mod history;
 pub mod kinds;
 pub mod schema;
 

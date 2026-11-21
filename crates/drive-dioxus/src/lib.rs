@@ -305,6 +305,14 @@ fn Connected(
             docs: Rc::new(RefCell::new(HashMap::new())),
             lists: Rc::new(RefCell::new(HashMap::new())),
         };
+        // Every change made here is by the signed-in person (or this
+        // browser's name).
+        let author = if who.is_empty() {
+            ctx.me.peek().name.clone()
+        } else {
+            who.clone()
+        };
+        ctx.drive.set_author(&author);
         pump(ctx.clone(), rx);
         ctx
     });

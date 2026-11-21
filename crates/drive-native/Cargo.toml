@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 drive-proto.workspace = true
+drive-spine.workspace = true
 loro.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
