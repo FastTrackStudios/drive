@@ -47,6 +47,8 @@ pub enum Place {
     AllOrgs,
     Protection,
     Devices,
+    /// Static sites built from folders.
+    Sites,
     Inbox,
     Calendar,
     Notes,
@@ -634,6 +636,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                 h3 { "Space" }
                 {item(Place::Protection, "Protection".into(), "Lock".into(), None)}
                 {item(Place::Devices, "Devices & storage".into(), "Devices".into(), None)}
+                {item(Place::Sites, "Sites".into(), "Globe".into(), None)}
                 h3 { "Spine" }
                 {item(Place::Inbox, "Inbox".into(), "Document".into(), None)}
                 {item(Place::Calendar, "Calendar".into(), "Book".into(), None)}
@@ -658,6 +661,7 @@ fn title_of(p: &Place) -> &'static str {
         Place::AllOrgs => "All orgs",
         Place::Protection => "Protection",
         Place::Devices => "Devices & storage",
+        Place::Sites => "Sites",
         Place::Inbox => "Inbox",
         Place::Calendar => "Calendar",
         Place::Notes => "Notes",
@@ -797,6 +801,9 @@ fn Content(space: String) -> Element {
         },
         Place::Devices => rsx! {
             crate::files::DevicesPage { space }
+        },
+        Place::Sites => rsx! {
+            crate::sites::SitesPage { space }
         },
         Place::Inbox => rsx! {
             crate::Inbox {}

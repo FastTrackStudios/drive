@@ -99,6 +99,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let mut sites_due: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + Duration::from_secs(3));
     let mut last_sites = tokio::time::Instant::now();
+    let mut listed: Vec<String> = drive_files::sites::listed(&a.space).into_keys().collect();
 
     let mut pending: HashMap<String, tokio::time::Instant> = HashMap::new();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -120,6 +121,15 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 }
                 Ok(Event::Online(true)) => {
                     a.announce();
+                }
+                Ok(Event::Changed(doc)) if doc == a.space_id => {
+                    // A site added or removed (the Drive app, another device).
+                    let now: Vec<String> = drive_files::sites::listed(&a.space).into_keys().collect();
+                    if now != listed {
+                        listed = now;
+                        let at = tokio::time::Instant::now() + Duration::from_secs(2);
+                        sites_due = Some(sites_due.map_or(at, |d| d.min(at)));
+                    }
                 }
                 Ok(Event::Changed(doc)) if doc == a.files_id || doc.contains("/drive:site:") => {
                     let at = tokio::time::Instant::now() + Duration::from_secs(4);
