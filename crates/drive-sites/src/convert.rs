@@ -7,7 +7,8 @@
 //!   titles stay as they were.
 //! - YAML frontmatter (`---`) becomes TOML (`+++`): `title` and `weight`
 //!   (or `order`) at the top, everything else (`tags`, `aliases`, `date`,
-//!   `description`, …) under `[extra]`. No title: the note's first `# Heading`,
+//!   `description`, …) under `[extra]` (which always has `description`
+//!   and `tags`, empty if the note has none). No title: the note's first `# Heading`,
 //!   or its file name. `publish: false` or `draft: true` leaves a note out.
 //! - `[[Page]]`, `[[Page|label]]`, `[[Page#Heading]]` become links to the
 //!   page's route; `![[image.png]]` an image; relative Markdown links to
@@ -229,9 +230,15 @@ fn toml_front(title: &str, fm: &serde_yaml_ng::Mapping, root_description: Option
             extra.insert(k.to_string(), v);
         }
     }
-    if !extra.is_empty() {
-        top.insert("extra".into(), toml::Value::Table(extra));
-    }
+    // Templates read these on every page; gingembre refuses a missing
+    // field, so they are always there.
+    extra
+        .entry("description")
+        .or_insert_with(|| toml::Value::String(String::new()));
+    extra
+        .entry("tags")
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    top.insert("extra".into(), toml::Value::Table(extra));
     let text = toml::to_string(&top).unwrap_or_else(|_| format!("title = {title:?}\n"));
     format!("+++\n{}+++\n", text)
 }

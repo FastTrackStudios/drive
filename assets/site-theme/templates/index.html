@@ -22,7 +22,7 @@
     {% for p in section.pages %}
     <li>
         <a href="{{ p.permalink }}">{{ p.title }}</a>
-        {% if p.description %}<span class="page-desc">{{ p.description }}</span>{% endif %}
+        {% if p.extra.description %}<span class="page-desc">{{ p.extra.description }}</span>{% endif %}
     </li>
     {% endfor %}
 </ul>

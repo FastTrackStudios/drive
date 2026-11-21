@@ -64,10 +64,12 @@ impl Placement {
         format!("{}{path}{rest}", self.prefix)
     }
 
-    /// The script that places URLs the search widget makes at run time.
+    /// The script that places URLs the search widget makes at run time: what
+    /// it fetches (index files: the prefix only) and the result links it
+    /// adds (pages: `index.html` too when the placement names it).
     fn shim(&self) -> String {
         format!(
-            "<script>(function(){{var B={b},X={x};function f(u){{if(typeof u!==\"string\"||u.charAt(0)!==\"/\"||u.charAt(1)===\"/\")return u;if(B&&(u===B||u.indexOf(B+\"/\")===0))return u;var i=u.search(/[?#]/),p=i<0?u:u.slice(0,i),r=i<0?\"\":u.slice(i);if(X){{var l=p.slice(p.lastIndexOf(\"/\")+1);if(p.charAt(p.length-1)===\"/\")p+=\"index.html\";else if(l.indexOf(\".\")<0)p+=\"/index.html\";}}return B+p+r}}var F=window.fetch;window.fetch=function(i,o){{return F.call(this,f(i),o)}};function fix(n){{if(!n.querySelectorAll)return;var a=[].slice.call(n.querySelectorAll(\"a[href]\"));if(n.matches&&n.matches(\"a[href]\"))a.push(n);a.forEach(function(e){{var h=e.getAttribute(\"href\"),g=f(h);if(g!==h)e.setAttribute(\"href\",g)}})}}new MutationObserver(function(m){{m.forEach(function(r){{r.addedNodes.forEach(fix)}})}}).observe(document.documentElement,{{childList:true,subtree:true}})}})();</script>",
+            "<script>(function(){{var B={b},X={x};function f(u,x){{if(typeof u!==\"string\"||u.charAt(0)!==\"/\"||u.charAt(1)===\"/\")return u;if(B&&(u===B||u.indexOf(B+\"/\")===0))return u;var i=u.search(/[?#]/),p=i<0?u:u.slice(0,i),r=i<0?\"\":u.slice(i);if(x){{var l=p.slice(p.lastIndexOf(\"/\")+1);if(p.charAt(p.length-1)===\"/\")p+=\"index.html\";else if(l.indexOf(\".\")<0)p+=\"/index.html\";}}return B+p+r}}var F=window.fetch;window.fetch=function(i,o){{return F.call(this,f(i,false),o)}};function fix(n){{if(!n.querySelectorAll)return;var a=[].slice.call(n.querySelectorAll(\"a[href]\"));if(n.matches&&n.matches(\"a[href]\"))a.push(n);a.forEach(function(e){{var h=e.getAttribute(\"href\"),g=f(h,X);if(g!==h)e.setAttribute(\"href\",g)}})}}new MutationObserver(function(m){{m.forEach(function(r){{r.addedNodes.forEach(fix)}})}}).observe(document.documentElement,{{childList:true,subtree:true}})}})();</script>",
             b = serde_json::to_string(&self.prefix).unwrap_or_else(|_| "\"\"".into()),
             x = self.explicit_index,
         )

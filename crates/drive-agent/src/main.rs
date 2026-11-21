@@ -10,7 +10,7 @@
 //! drive-agent [--dir DIR] storage add fs     NAME PATH
 //! drive-agent [--dir DIR] storage add s3     NAME BUCKET ENDPOINT KEY SECRET [REGION]
 //! drive-agent [--dir DIR] storage add webdav NAME ENDPOINT [USER PASSWORD]
-//! drive-agent [--dir DIR] put LOCAL_FILE [FOLDER]
+//! drive-agent [--dir DIR] put LOCAL_FILE_OR_FOLDER [FOLDER]
 //! drive-agent [--dir DIR] ls [FOLDER] | status PATH | pin PATH | unpin PATH
 //! drive-agent [--dir DIR] mount MOUNTPOINT [--computers PATH]
 //!                                   # the space as a folder, and every computer's
@@ -384,7 +384,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         "put" => {
             let src = PathBuf::from(args.get(1).ok_or("put LOCAL_FILE [FOLDER]")?);
             let a = start(dir).await?;
-            let folder = match args.get(2) {
+            let folder = match args.get(2).filter(|_| !src.is_dir()) {
                 Some(p) => tree::resolve(&a.files, p)
                     .ok_or(format!("no folder {p}"))?
                     .map(|e| e.id),
@@ -395,6 +395,34 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 .and_then(|n| n.to_str())
                 .ok_or("a file name")?
                 .to_string();
+            if src.is_dir() {
+                // A folder: everything in it, folders made as needed
+                // (hidden files included: an Obsidian vault's .obsidian/).
+                let base = match args.get(2) {
+                    Some(p) => format!("{}/{name}", p.trim_matches('/')),
+                    None => name.clone(),
+                };
+                let mut stack = vec![(src.clone(), base)];
+                let mut n = 0;
+                while let Some((local, at)) = stack.pop() {
+                    let parent = a.ensure_folder(&at)?;
+                    let entries = std::fs::read_dir(&local).map_err(|e| format!("{}: {e}", local.display()))?;
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        let file = entry.file_name().to_string_lossy().into_owned();
+                        if p.is_dir() {
+                            stack.push((p, format!("{at}/{file}")));
+                        } else if p.is_file() {
+                            a.put(&p, parent, &file).await?;
+                            n += 1;
+                        }
+                    }
+                }
+                a.commit_files();
+                settle(&a).await;
+                out(format!("{n} files put under /{}", args.get(2).map_or(name.clone(), |p| format!("{}/{name}", p.trim_matches('/')))));
+                return Ok(());
+            }
             let e = a.put(&src, folder, &name).await?;
             settle(&a).await;
             out(format!(

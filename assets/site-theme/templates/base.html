@@ -48,6 +48,13 @@
                 </ul>
             </details>
         </nav>
+        <script>
+            // A phone: the contents start folded, above the page.
+            if (window.matchMedia("(max-width: 760px)").matches) {
+                var m = document.querySelector(".nav-menu");
+                if (m) m.removeAttribute("open");
+            }
+        </script>
         <main class="content">
             {% block content %}{% endblock content %}
         </main>
