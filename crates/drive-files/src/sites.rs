@@ -296,9 +296,7 @@ pub fn set_published(
     storage: &str,
     files: &BTreeMap<String, String>,
 ) -> loro::LoroResult<()> {
-    let m = doc
-        .get_map("published")
-        .get_or_create_container(storage, LoroMap::new())?;
+    let m = doc.get_map("published").ensure_mergeable_map(storage)?;
     set_map(&m, files)
 }
 
