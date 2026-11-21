@@ -4,7 +4,7 @@
 //! drive-agent [--dir DIR] init  --node ws://host:8096/sync --space home --name "Studio PC"
 //! drive-agent [--dir DIR] invite                       # a pairing code for another device
 //! drive-agent [--dir DIR] sign-in | sign-out             # this device signs in as its person (the node's issuer)
-drive-agent [--dir DIR] sign-in --node URL --space NAME  # before joining a node that asks for a sign-in
+//! drive-agent [--dir DIR] sign-in --node URL --space NAME  # before joining a node that asks for a sign-in
 //! drive-agent [--dir DIR] join  --node URL --space home --name Laptop --code K7Q2XM
 //! drive-agent [--dir DIR] devices | storages
 //! drive-agent [--dir DIR] device rm NAME                # forget a device, its locations and storages
