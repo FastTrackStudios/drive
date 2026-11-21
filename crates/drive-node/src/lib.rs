@@ -277,7 +277,8 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         )
         .merge(
             Router::new()
-                .route("/blobs/{hash}", get(get_blob).head(head_blob).put(put_blob))
+                .route("/blobs/{hash}", get(get_blob_ranged).head(head_blob).put(put_blob))
+                .route("/pdf/edit/{hash}", axum::routing::post(edit_pdf))
                 .layer(axum::middleware::from_fn_with_state(
                     rooms.clone(),
                     guard_writes,
@@ -310,6 +311,107 @@ async fn sync(
     let local = auth::is_local(peer_addr(&peer), &headers);
     ws.max_message_size(64 << 20)
         .on_upgrade(move |socket: WebSocket| rooms::serve(rooms, socket, local))
+}
+
+/// [`get_blob`] answering a `Range: bytes=…` request with just those bytes
+/// (`206`), so a player can seek in a video or a long recording.
+async fn get_blob_ranged(
+    path: UrlPath<String>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    blobs: State<BlobStore>,
+) -> Result<axum::response::Response, StatusCode> {
+    let resp = get_blob(path, query, blobs).await?;
+    let Some(range) = headers.get("range").and_then(|v| v.to_str().ok()) else {
+        return Ok(with_accept_ranges(resp));
+    };
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let len = bytes.len() as u64;
+    let Some((start, end)) = byte_range(range, len) else {
+        let mut r = axum::response::Response::new(axum::body::Body::empty());
+        *r.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+        if let Ok(v) = axum::http::HeaderValue::from_str(&format!("bytes */{len}")) {
+            r.headers_mut().insert("content-range", v);
+        }
+        return Ok(r);
+    };
+    let mut r = axum::response::Response::from_parts(
+        parts,
+        axum::body::Body::from(bytes.slice(start as usize..=end as usize)),
+    );
+    *r.status_mut() = StatusCode::PARTIAL_CONTENT;
+    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("bytes {start}-{end}/{len}")) {
+        r.headers_mut().insert("content-range", v);
+    }
+    Ok(with_accept_ranges(r))
+}
+
+fn with_accept_ranges(mut r: axum::response::Response) -> axum::response::Response {
+    r.headers_mut().insert(
+        "accept-ranges",
+        axum::http::HeaderValue::from_static("bytes"),
+    );
+    r
+}
+
+/// The first range of a `Range` header (`bytes=0-99`, `bytes=100-`,
+/// `bytes=-500`) over `len` bytes, as inclusive offsets; `None` when it
+/// cannot be served.
+fn byte_range(header: &str, len: u64) -> Option<(u64, u64)> {
+    let spec = header.trim().strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (a, b) = spec.split_once('-')?;
+    if len == 0 {
+        return None;
+    }
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", n) => {
+            let n: u64 = n.parse().ok()?;
+            if n == 0 {
+                return None;
+            }
+            (len.saturating_sub(n), len - 1)
+        }
+        (a, "") => (a.parse().ok()?, len - 1),
+        (a, b) => (a.parse().ok()?, b.parse::<u64>().ok()?.min(len - 1)),
+    };
+    (start <= end && start < len).then_some((start, end))
+}
+
+/// Page edits to a PDF blob (rotate, delete, move: `drive_view::PageEdit`s
+/// as JSON), made here with pdfcraft; the edited file is kept as a new blob
+/// and its hash and size are the answer. The file's entry is the app's to
+/// point at it, as after an upload.
+async fn edit_pdf(
+    UrlPath(hash): UrlPath<String>,
+    State(blobs): State<BlobStore>,
+    axum::Json(edits): axum::Json<Vec<drive_view::PageEdit>>,
+) -> axum::response::Response {
+    let bytes = match blobs.get(&hash).await {
+        Ok(b) => b,
+        Err(drive_files::blob::Error::BadHash(_)) => return StatusCode::BAD_REQUEST.into_response(),
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let n = edits.len();
+    let edited = tokio::task::spawn_blocking(move || drive_view::edit::apply(bytes, &edits)).await;
+    let out = match edited {
+        Ok(Ok(out)) => out,
+        Ok(Err(why)) => {
+            tracing::warn!(pdf.hash = %hash, pdf.edits = n, pdf.why = %why, "a PDF edit was refused");
+            return (StatusCode::UNPROCESSABLE_ENTITY, why).into_response();
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let size = out.len();
+    match blobs.put(out).await {
+        Ok(new) => axum::Json(serde_json::json!({ "hash": new, "size": size })).into_response(),
+        Err(e) => {
+            tracing::warn!(pdf.hash = %hash, error = %e, "an edited PDF could not be stored");
+            StatusCode::INSUFFICIENT_STORAGE.into_response()
+        }
+    }
 }
 
 /// A blob's bytes (checked against its hash on the way out); `?name=`
@@ -375,5 +477,23 @@ async fn put_blob(
             tracing::warn!(blob.hash = %hash, error = %e, "a blob could not be stored");
             StatusCode::INSUFFICIENT_STORAGE
         }
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::byte_range;
+
+    #[test]
+    fn byte_ranges() {
+        assert_eq!(byte_range("bytes=0-99", 1000), Some((0, 99)));
+        assert_eq!(byte_range("bytes=900-", 1000), Some((900, 999)));
+        assert_eq!(byte_range("bytes=-100", 1000), Some((900, 999)));
+        assert_eq!(byte_range("bytes=0-5000", 1000), Some((0, 999)));
+        assert_eq!(byte_range("bytes=0-1,5-9", 1000), Some((0, 1)));
+        assert_eq!(byte_range("bytes=1000-", 1000), None);
+        assert_eq!(byte_range("bytes=5-1", 1000), None);
+        assert_eq!(byte_range("items=0-1", 1000), None);
+        assert_eq!(byte_range("bytes=0-0", 0), None);
     }
 }

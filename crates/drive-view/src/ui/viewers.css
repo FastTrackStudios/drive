@@ -1,0 +1,79 @@
+/* Drive's viewers. Colours from the host's variables, with Drive's own as defaults. */
+.dv { --dv-ink: var(--ink, #f4f4f5); --dv-ink-2: var(--ink-2, #a1a1aa); --dv-ink-3: var(--ink-3, #8b8b94);
+  --dv-surface: var(--surface, #141417); --dv-surface-2: var(--surface-2, #1f1f23); --dv-rule: var(--rule, #2b2b31);
+  --dv-accent: var(--accent, #2dd4bf); --dv-sheet: var(--sheet, #0e0e11);
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; color: var(--dv-ink); width: 100%; }
+.dv.compact { gap: 6px; }
+.dv-none, .dv-wait, .dv-err { color: var(--dv-ink-3); font-size: 13px; margin: 8px 0; }
+.dv-err { color: #f87171; }
+.dv-hint { color: var(--dv-ink-3); font-size: 12px; }
+.dv-title { margin: 0; }
+.dv-bar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-height: 30px; }
+.dv-gap { flex: 1; }
+.dv-sep { width: 1px; height: 18px; background: var(--dv-rule); margin: 0 4px; }
+.dv-btn { height: 28px; min-width: 28px; padding: 0 9px; border-radius: 8px; background: var(--dv-surface); color: var(--dv-ink-2); font-size: 13px; font-weight: 600; border: 1px solid var(--dv-rule); }
+.dv-btn:hover:not(:disabled) { color: var(--dv-ink); }
+.dv-btn.on { background: var(--dv-surface-2); color: var(--dv-ink); border-color: var(--dv-ink-3); }
+.dv-btn:disabled { opacity: .4; cursor: default; }
+.dv-btn.dv-danger { color: #f87171; }
+.dv-find { height: 28px; width: 170px; max-width: 46vw; border-radius: 8px; border: 1px solid var(--dv-rule); background: var(--dv-sheet); padding: 0 9px; outline: none; font-size: 13px; }
+.dv-find:focus { border-color: var(--dv-accent); }
+
+/* text */
+.dv-md { line-height: 1.6; overflow-wrap: anywhere; }
+.dv-md img { max-width: 100%; }
+.dv-md pre, .dv-md code { background: var(--dv-surface); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.dv-md pre { padding: 10px; overflow-x: auto; }
+.dv-md code { padding: 1px 4px; }
+.dv-md table { border-collapse: collapse; }
+.dv-md td, .dv-md th { border: 1px solid var(--dv-rule); padding: 4px 8px; }
+.dv-md a { color: var(--dv-accent); }
+.dv-md h1 { font-size: 1.6em; margin: .4em 0; } .dv-md h2 { font-size: 1.3em; }
+.dv-code { display: flex; background: var(--dv-surface); border-radius: 10px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.5; max-height: 100%; }
+.dv-code pre { margin: 0; padding: 10px; }
+.dv-gutter { color: var(--dv-ink-3); text-align: right; user-select: none; border-right: 1px solid var(--dv-rule); }
+.dv-src { flex: 1; white-space: pre; min-width: 0; }
+.compact .dv-code { max-height: 260px; }
+.compact .dv-md { max-height: 320px; overflow: hidden; font-size: 13px; mask-image: linear-gradient(#000 80%, transparent); }
+.dv-edit { width: 100%; min-height: 50vh; flex: 1; resize: vertical; background: var(--dv-surface); border: 1px solid var(--dv-rule); border-radius: 10px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; outline: none; }
+.dv-edit:focus { border-color: var(--dv-accent); }
+
+/* region picking */
+.dv-region { position: relative; }
+.dv-pick { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+.dv-sel { position: absolute; pointer-events: none; border: 1.5px solid var(--dv-accent); background: color-mix(in srgb, var(--dv-accent) 18%, transparent); border-radius: 2px; }
+.dv-fill { position: absolute; inset: 0; }
+
+/* images */
+.dv-stage { display: flex; justify-content: center; align-items: flex-start; overflow: auto; min-height: 0; background: repeating-conic-gradient(#1a1a1e 0 25%, #121215 0 50%) 0 0 / 16px 16px; border-radius: 10px; }
+.dv-stage .dv-region { display: inline-block; line-height: 0; }
+.dv-img { display: block; max-width: 100%; max-height: 78vh; object-fit: contain; }
+.compact .dv-img { max-height: 240px; }
+.dv-img.actual { max-width: none; max-height: none; }
+
+/* audio */
+.dv-wave { height: 80px; background: var(--dv-surface); border-radius: 10px; color: var(--dv-accent); overflow: hidden; }
+.dv-wave .dv-region, .dv-wave svg { width: 100%; height: 80px; display: block; }
+.dv-wave path { vector-effect: non-scaling-stroke; }
+.dv-head { position: absolute; top: 0; bottom: 0; width: 1.5px; background: var(--dv-ink); pointer-events: none; }
+.dv-band { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--dv-ink) 14%, transparent); pointer-events: none; }
+.dv-wave .dv-sel { border-width: 0 1.5px; border-radius: 0; }
+.dv-audio { width: 100%; height: 40px; }
+.dv-time { font-variant-numeric: tabular-nums; font-size: 13px; }
+
+/* video */
+.dv-video { width: 100%; max-height: 78vh; background: #000; border-radius: 10px; }
+.compact .dv-video { max-height: 220px; }
+
+/* pdf */
+.dv-scroll { overflow: auto; min-height: 0; flex: 1; background: var(--dv-surface); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; align-items: safe center; }
+.compact .dv-scroll { padding: 0; background: none; }
+.dv-page { position: relative; flex: none; max-width: none; background: #fff; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
+.dv-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.dv-page > .dv-region { position: absolute; inset: 0; }
+.dv-hit { position: absolute; background: rgba(250, 204, 21, .35); pointer-events: none; mix-blend-mode: multiply; }
+.dv-hit.on { background: rgba(249, 115, 22, .55); outline: 1.5px solid #f97316; }
+.dv-note { position: absolute; border: 1.5px dashed #f59e0b; background: rgba(245, 158, 11, .12); pointer-events: none; border-radius: 2px; }
+.dv-notes summary { cursor: pointer; color: var(--dv-ink-2); font-size: 13px; }
+.dv-noteitem { display: block; text-align: left; width: 100%; padding: 6px 0; border-top: 1px solid var(--dv-rule); font-size: 13px; }
+.dv-frame { width: 100%; height: 78vh; border: 0; background: #fff; }

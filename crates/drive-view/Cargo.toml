@@ -1,0 +1,66 @@
+[package]
+name = "drive-view"
+description = "Drive's viewers: preview and quick edit for every kind of file (markdown, text, images, audio, video, PDF), as Dioxus components any app can embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["ui", "pdf"]
+# The Dioxus components (off for a server that only uses the native edits).
+ui = [
+    "dep:dioxus",
+    "dep:gloo-net",
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "dep:pulldown-cmark",
+]
+# PDF pages, text and search in the viewer (pdfcraft's renderer only: no
+# OCR, JavaScript or XFA in the browser build).
+pdf = ["dep:pdfcraft-render"]
+# Native PDF page edits: rotate, delete, move (pdfcraft-organize).
+edit = ["dep:pdfcraft-cos", "dep:pdfcraft-organize"]
+# Native PDF signing with a PKCS #12 digital ID (pdfcraft-sign; its RSA
+# goes through aws-lc, a C library, so it is never on by default and never
+# in the browser: the keys stay on the computer that has them).
+sign = ["edit", "dep:pdfcraft-sign"]
+
+[dependencies]
+serde.workspace = true
+dioxus = { workspace = true, optional = true }
+gloo-net = { version = "0.8", default-features = false, features = ["http"], optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Window",
+    "Document",
+    "Element",
+    "DomRect",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "HtmlImageElement",
+    "HtmlMediaElement",
+    "HtmlTextAreaElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "AudioContext",
+    "BaseAudioContext",
+    "AudioBuffer",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
+] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
+
+# pdfcraft (https://github.com/storytold/pdfcraft, MIT OR Apache-2.0),
+# v0.21.1, pinned by its tag's commit. Only the crates a viewer needs.
+pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa", optional = true }
+pdfcraft-cos = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa", optional = true }
+pdfcraft-organize = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa", optional = true }
+pdfcraft-sign = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa", optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
