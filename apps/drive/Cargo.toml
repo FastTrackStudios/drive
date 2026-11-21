@@ -9,6 +9,7 @@ license.workspace = true
 dioxus.workspace = true
 drive-dioxus.workspace = true
 drive-spine.workspace = true
+drive-view = { workspace = true, features = ["ui", "pdf"] }
 drive-files = { path = "../../crates/drive-files", default-features = false }
 gloo-net = { version = "0.8", default-features = false, features = ["http"] }
 serde_json.workspace = true

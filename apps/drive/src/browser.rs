@@ -78,6 +78,8 @@ pub struct Nav {
     pub sort: Signal<(Sort, bool)>,
     pub sidebar: Signal<bool>,
     pub inspector: Signal<bool>,
+    /// The picked file, full screen.
+    pub preview: Signal<bool>,
     pub debug: Signal<bool>,
     /// Another org whose project (shared with this one) is being viewed;
     /// `None`: this org.
@@ -96,6 +98,7 @@ impl Nav {
             sort: Signal::new((Sort::Name, false)),
             sidebar: Signal::new(false),
             inspector: Signal::new(true),
+            preview: Signal::new(false),
             debug: Signal::new(false),
             within: Signal::new(None),
         }
@@ -109,6 +112,7 @@ impl Nav {
             self.place.set(p);
         }
         self.selected.set(None);
+        self.preview.set(false);
         self.query.set(String::new());
         self.sidebar.set(false);
     }
@@ -450,6 +454,9 @@ fn Shell(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -> 
                 }
             }
             Inspector { key: "{view}", space: view.clone() }
+            if (nav.preview)() && has_sel {
+                Preview { key: "{view}", space: view.clone() }
+            }
         }
     }
 }
@@ -870,6 +877,15 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
                             key: "{key}",
                             class: format!("{}{}{}", if grid { "cell" } else { "row" }, if on { " on" } else { "" }, if !i.online && i.available.is_none() && !i.dir && !matches!(i.src, Src::Doc { .. }) { " away" } else { "" }),
                             onclick: move |_| open(it.clone()),
+                            ondoubleclick: {
+                                let it = i.clone();
+                                move |_| {
+                                    if !it.dir && viewable(&it) {
+                                        nav.selected.set(Some(it.clone()));
+                                        nav.preview.set(true);
+                                    }
+                                }
+                            },
                             oncontextmenu: move |e| {
                                 e.prevent_default();
                                 nav.selected.set(Some(it2.clone()));
@@ -1351,40 +1367,47 @@ fn Inspector(space: String) -> Element {
     };
     let r = reg.loro();
     let up = online(&reg);
-    let (where_, open_link, download) = match &item.src {
-        Src::Tree { hash, .. } => (
-            item.at.clone(),
-            None,
-            (!hash.is_empty()).then(|| format!("/blobs/{hash}?name={}", enc(&item.name))),
-        ),
-        Src::Index { location, path, .. } => (
-            item.at.clone(),
-            None,
-            match &item.available {
-                Some(h) => Some(format!("/blobs/{h}?name={}", enc(&item.name))),
-                None => item.online.then(|| {
-                    format!(
-                        "/fetch/{}/{}?path={}",
-                        enc(&space),
-                        enc(location),
-                        enc(path)
-                    )
-                }),
-            },
-        ),
-        Src::Doc { id, .. } => (app_label(&item.kind.app), item.kind.link(id), None),
+    let download = file_url(&item, &space);
+    let (where_, open_link) = match &item.src {
+        Src::Doc { id, .. } => (app_label(&item.kind.app), item.kind.link(id)),
+        _ => (item.at.clone(), None),
     };
+    let can_view = download.is_some() && viewable(&item);
+    // Read it at once when that is cheap: from the node, or a small file
+    // from a computer (asked of its agent).
+    let inline = can_view
+        && (matches!(item.src, Src::Tree { .. })
+            || item.available.is_some()
+            || item.size <= INLINE_FROM_DEVICE);
     rsx! {
         aside { class: "inspector",
             div { class: "ihead",
                 button { class: "x", title: "Close", onclick: move |_| nav.selected.set(None), "✕" }
             }
-            img { class: "ibig", src: icon(&item.kind.icon), alt: "" }
+            if inline && let Some(url) = download.clone() {
+                div { class: "ipreview",
+                    drive_view::Viewer {
+                        key: "{url}",
+                        kind: item.kind.id.clone(),
+                        parent: item.kind.parent.clone(),
+                        name: item.name.clone(),
+                        url,
+                        size: item.size,
+                        bearer: drive_dioxus::auth::bearer(),
+                        compact: true,
+                    }
+                }
+            } else {
+                img { class: "ibig", src: icon(&item.kind.icon), alt: "" }
+            }
             h2 { class: "iname", "{item.name}" }
             span { class: "ikind", "{item.kind.name}" }
             div { class: "iacts",
                 if let Some(href) = open_link {
                     a { class: "primary", href: "{href}", "Open in {app_label(&item.kind.app)}" }
+                }
+                if can_view {
+                    button { class: "primary", onclick: move |_| nav.preview.set(true), "Preview" }
                 }
                 if let Some(href) = download {
                     a { class: "primary ghost", href: "{href}", "Download" }
@@ -1432,6 +1455,200 @@ fn Inspector(space: String) -> Element {
                     Row { k: "Media", v: k["media"].to_string() }
                     Row { k: "Offsite", v: k["offsite"].to_string() }
                 }
+            }
+        }
+    }
+}
+
+/// Files read from a computer (through its agent) for the inspector's
+/// preview without asking; bigger ones wait for Preview.
+const INLINE_FROM_DEVICE: u64 = 8 << 20;
+
+/// Where a file's bytes can be read now: the node's copy, or its computer
+/// through the node (`None`: nowhere reachable, or not a file).
+pub fn file_url(item: &Item, space: &str) -> Option<String> {
+    if item.dir {
+        return None;
+    }
+    match &item.src {
+        Src::Tree { hash, .. } => {
+            (!hash.is_empty()).then(|| format!("/blobs/{hash}?name={}", enc(&item.name)))
+        }
+        Src::Index { location, path, .. } => match &item.available {
+            Some(h) => Some(format!("/blobs/{h}?name={}", enc(&item.name))),
+            None => item.online.then(|| {
+                format!(
+                    "/fetch/{}/{}?path={}",
+                    enc(space),
+                    enc(location),
+                    enc(path)
+                )
+            }),
+        },
+        Src::Doc { .. } => None,
+    }
+}
+
+/// Whether Drive has a viewer for it.
+pub fn viewable(item: &Item) -> bool {
+    !item.dir
+        && !matches!(item.src, Src::Doc { .. })
+        && drive_view::ViewKind::pick(&item.kind.id, &item.kind.parent, &item.name).is_some()
+}
+
+/// Keep bytes on the node: their hash, or why not.
+async fn put_blob(bytes: &[u8]) -> Result<String, String> {
+    let hash = drive_files::hash::of_bytes(bytes);
+    let mut put = gloo_net::http::Request::put(&format!("/blobs/{hash}"));
+    if let Some(b) = drive_dioxus::auth::bearer() {
+        put = put.header("authorization", &b);
+    }
+    let req = put
+        .body(js_sys::Uint8Array::from(bytes))
+        .map_err(|e| e.to_string())?;
+    match req.send().await {
+        Ok(r) if r.ok() => Ok(hash),
+        Ok(r) => Err(format!("the node refused it ({})", r.status())),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Ask the node to edit a PDF's pages: the edited file's hash and size.
+async fn edit_pdf(hash: &str, edits: &[drive_view::PageEdit]) -> Result<(String, u64), String> {
+    let body = serde_json::to_string(edits).map_err(|e| e.to_string())?;
+    let mut req = gloo_net::http::Request::post(&format!("/pdf/edit/{hash}"))
+        .header("content-type", "application/json");
+    if let Some(b) = drive_dioxus::auth::bearer() {
+        req = req.header("authorization", &b);
+    }
+    let r = req
+        .body(body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !r.ok() {
+        return Err(r.text().await.unwrap_or_else(|_| r.status().to_string()));
+    }
+    let v: Value = serde_json::from_str(&r.text().await.map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok((s(&v, "hash"), v["size"].as_u64().unwrap_or(0)))
+}
+
+/// The picked file, full screen: its viewer, with quick edits for files of
+/// the space's own tree (a new version of the file, as an upload makes).
+#[component]
+fn Preview(space: String) -> Element {
+    let mut nav = use_nav();
+    let files = use_doc(files_doc(&space));
+    let reg = use_doc(space_doc(&space));
+    let mut status = use_signal(String::new);
+    let mut anchor = use_signal(|| None::<drive_view::Anchor>);
+    let Some(item) = (nav.selected)() else {
+        return rsx! {};
+    };
+    let Some(url) = file_url(&item, &space) else {
+        return rsx! {};
+    };
+    // A new version of a tree file: point its entry at `hash`.
+    let commit = {
+        let files = files.clone();
+        let reg = reg.clone();
+        move |item: Item, hash: String, size: u64| {
+            let Src::Tree { id, .. } = &item.src else { return };
+            let Some(tid) = tree::parse_id(id) else { return };
+            files.edit(|d| {
+                let _ = tree::set_content(d, tid, size, &hash);
+            });
+            reg.edit(|d| {
+                let _ = space::set_held(d, "node", &hash, Some("stored"));
+            });
+            let mut next = item.clone();
+            next.size = size;
+            next.src = Src::Tree { id: id.clone(), hash };
+            let mut sel = nav.selected;
+            sel.set(Some(next));
+        }
+    };
+    let editable = matches!(item.src, Src::Tree { .. });
+    let on_save = editable.then(|| {
+        let item = item.clone();
+        let commit = commit.clone();
+        EventHandler::new(move |bytes: Vec<u8>| {
+            let item = item.clone();
+            let commit = commit.clone();
+            spawn(async move {
+                status.set("Saving…".into());
+                match put_blob(&bytes).await {
+                    Ok(hash) => {
+                        commit(item, hash, bytes.len() as u64);
+                        status.set("Saved".into());
+                    }
+                    Err(e) => status.set(format!("Not saved: {e}")),
+                }
+            });
+        })
+    });
+    let on_pdf_edit = match &item.src {
+        Src::Tree { hash, .. } if editable => {
+            let item = item.clone();
+            let hash = hash.clone();
+            Some(EventHandler::new(move |edits: Vec<drive_view::PageEdit>| {
+                let item = item.clone();
+                let hash = hash.clone();
+                let commit = commit.clone();
+                spawn(async move {
+                    status.set("Editing the PDF…".into());
+                    match edit_pdf(&hash, &edits).await {
+                        Ok((new, size)) => {
+                            commit(item, new, size);
+                            status.set("Saved".into());
+                        }
+                        Err(e) => status.set(format!("Not edited: {e}")),
+                    }
+                });
+            }))
+        }
+        _ => None,
+    };
+    let close = move |_| nav.preview.set(false);
+    rsx! {
+        div {
+            class: "fullview",
+            tabindex: "0",
+            onkeydown: move |e: KeyboardEvent| {
+                if e.key().to_string() == "Escape" {
+                    nav.preview.set(false);
+                }
+            },
+            header { class: "fvhead",
+                img { class: "fvicon", src: icon(&item.kind.icon), alt: "" }
+                div { class: "fvname",
+                    b { "{item.name}" }
+                    span { class: "ikind", "{item.kind.name} · {human(item.size)}" }
+                }
+                if !status().is_empty() {
+                    span { class: "fvstatus", "{status}" }
+                }
+                a { class: "primary ghost", href: "{url}", "Download" }
+                button { class: "x", title: "Close (Esc)", onclick: close, "✕" }
+            }
+            div { class: "fvbody",
+                drive_view::Viewer {
+                    key: "{url}",
+                    kind: item.kind.id.clone(),
+                    parent: item.kind.parent.clone(),
+                    name: item.name.clone(),
+                    url: url.clone(),
+                    size: item.size,
+                    bearer: drive_dioxus::auth::bearer(),
+                    on_anchor: Some(EventHandler::new(move |a| anchor.set(Some(a)))),
+                    on_save,
+                    on_pdf_edit,
+                }
+            }
+            if let Some(a) = anchor() {
+                footer { class: "fvfoot", title: "Where a comment would hang", "{a.describe()}" }
             }
         }
     }
