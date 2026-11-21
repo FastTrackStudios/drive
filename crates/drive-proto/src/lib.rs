@@ -23,7 +23,7 @@ pub type DocId = String;
 /// A document's full id in an org: `home/studio:library`. Ids that already
 /// name their org (they hold a `/`) are left as they are.
 pub fn qualify(org: &str, id: &str) -> String {
-    if id.contains('/') || org.is_empty() {
+    if org_of(id).is_some() || org.is_empty() {
         id.to_string()
     } else {
         format!("{org}/{id}")
@@ -40,7 +40,33 @@ pub fn unqualify<'a>(org: &str, id: &'a str) -> &'a str {
 
 /// The org a full id belongs to (`home` for `home/studio:library`).
 pub fn org_of(id: &str) -> Option<&str> {
-    id.split_once('/').map(|(o, _)| o)
+    // An org slug has no ':'; an app's id always does before any '/'
+    // (`studio:song:a/b` is not in an org `studio:song:a`).
+    id.split_once('/')
+        .map(|(o, _)| o)
+        .filter(|o| !o.is_empty() && !o.contains(':'))
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn ids_and_their_orgs() {
+        assert_eq!(qualify("cody", "studio:library"), "cody/studio:library");
+        assert_eq!(
+            qualify("cody", "other/studio:library"),
+            "other/studio:library"
+        );
+        // A path inside an app id is not an org.
+        assert_eq!(
+            qualify("cody", "comments:loc:l1:Song A/Mixes/v2.wav"),
+            "cody/comments:loc:l1:Song A/Mixes/v2.wav"
+        );
+        assert_eq!(org_of("cody/comments:loc:l1:a/b"), Some("cody"));
+        assert_eq!(org_of("comments:loc:l1:a/b"), None);
+        assert_eq!(unqualify("cody", "cody/x:y"), "x:y");
+    }
 }
 
 /// A connection's peer number, given by the node.

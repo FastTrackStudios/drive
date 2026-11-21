@@ -23,6 +23,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use drive_files::placement::Role;
 use drive_files::projects::{self, Available, Part, Project, Share};
 use drive_files::space;
+use drive_spine::comments::{self, Anchor, Target};
 use drive_spine::kinds::Kinds;
 
 use crate::catalog::Catalog;
@@ -322,8 +323,35 @@ pub async fn page(
             let ok = ok_files.contains(&(p.id.clone(), f.path.clone()));
             let href = format!("{base}/file?part={}&path={}", enc(&p.id), enc(&f.path));
             let fast = r.kept(p, f).is_some();
+            // Review: a player for audio and video, and the file's comments
+            // with a form (a guest's name, a note, at the current time).
+            let media = media_of(&f.name);
+            let review = if ok {
+                let player = match media {
+                    Some("audio") => {
+                        format!("<audio controls preload=none src=\"{href}\"></audio>")
+                    }
+                    Some(_) => format!("<video controls preload=none src=\"{href}\"></video>"),
+                    None => String::new(),
+                };
+                let at = if media.is_some() {
+                    "<label class=atl><input type=checkbox name=at checked> at <span class=now>0:00</span></label>"
+                } else {
+                    ""
+                };
+                format!(
+                    "<div class=review data-part=\"{}\" data-path=\"{}\">{player}<div class=cm></div>\
+                     <form><input name=name placeholder=\"Your name\" required maxlength=80>\
+                     <textarea name=body required maxlength=4000 placeholder=\"Leave a note\"></textarea>\
+                     <div class=row>{at}<button>Comment</button></div></form></div>",
+                    esc(&p.id),
+                    esc(&f.path)
+                )
+            } else {
+                String::new()
+            };
             body.push_str(&format!(
-                "<li class=\"{}\">{}<span class=size>{}</span>{}</li>",
+                "<li class=\"{}\"><div class=line>{}<span class=size>{}</span>{}</div>{review}</li>",
                 if ok { "" } else { "off" },
                 if ok {
                     format!("<a href=\"{href}\">{}</a>", esc(p.relative(&f.path)))
@@ -342,8 +370,174 @@ pub async fn page(
         }
         body.push_str("</ul>");
     }
+    body.push_str(&format!("<script>{REVIEW_JS}</script>"));
     Html(shell(&r.project.name, &body)).into_response()
 }
+
+/// Audio or video, by extension: the share page plays these.
+fn media_of(name: &str) -> Option<&'static str> {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "wav" | "mp3" | "flac" | "aif" | "aiff" | "m4a" | "ogg" | "opus" => Some("audio"),
+        "mp4" | "mov" | "m4v" | "webm" => Some("video"),
+        _ => None,
+    }
+}
+
+fn file_target(part: &Part, f: &Found) -> Target {
+    Target::Indexed {
+        location: part.location.clone(),
+        path: f.path.clone(),
+    }
+}
+
+/// `/s/{space}/{token}/comments?part=&path=`: a shared file's comments.
+pub async fn comments(
+    UrlPath((space_id, token)): UrlPath<(String, String)>,
+    State(c): State<Catalog>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let r = match resolve(&c, &space_id, &token).await {
+        Ok(r) => r,
+        Err(s) => return s.into_response(),
+    };
+    let Some((part, f)) = r.find(
+        q.get("part").map_or("", String::as_str),
+        q.get("path").map_or("", String::as_str),
+    ) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let id = drive_proto::qualify(&space_id, &file_target(part, f).doc_id());
+    let threads = c.rooms.read(&id, comments::threads).await;
+    let json: Vec<serde_json::Value> = threads
+        .into_iter()
+        .filter(|t| !t.root.deleted)
+        .map(|t| {
+            serde_json::json!({
+                "id": t.root.id,
+                "by": t.root.by,
+                "created": t.root.created,
+                "body": t.root.body,
+                "resolved": t.root.resolved,
+                "version": t.root.version,
+                "at": match t.root.anchor { Anchor::Time { start_ms, .. } => Some(start_ms), _ => None },
+                "replies": t.replies.iter().filter(|x| !x.deleted).map(|x| serde_json::json!({ "by": x.by, "body": x.body, "created": x.created })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({ "threads": json, "version": f.sampled })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct GuestComment {
+    part: String,
+    path: String,
+    name: String,
+    body: String,
+    at_ms: Option<i64>,
+}
+
+/// `POST /s/{space}/{token}/comments`: a guest's note on a shared file (the
+/// link is the permission; the guest names themself).
+pub async fn comment(
+    UrlPath((space_id, token)): UrlPath<(String, String)>,
+    State(c): State<Catalog>,
+    axum::Json(g): axum::Json<GuestComment>,
+) -> Response {
+    let (name, text) = (g.name.trim(), g.body.trim());
+    if name.is_empty()
+        || text.is_empty()
+        || name.chars().count() > 80
+        || text.chars().count() > 4000
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a name and a note, please (up to 80 and 4000 characters)",
+        )
+            .into_response();
+    }
+    let r = match resolve(&c, &space_id, &token).await {
+        Ok(r) => r,
+        Err(s) => return s.into_response(),
+    };
+    let Some((part, f)) = r.find(&g.part, &g.path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let id = drive_proto::qualify(&space_id, &file_target(part, f).doc_id());
+    let by = format!("{name} (guest)");
+    let author = format!("guest:{name}");
+    let anchor = match g.at_ms {
+        Some(ms) if ms >= 0 => Anchor::Time {
+            start_ms: ms,
+            end_ms: ms,
+        },
+        _ => Anchor::Whole,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let added = c
+        .rooms
+        .edit(&id, &by, |d| {
+            comments::add(
+                d,
+                comments::New {
+                    author: &author,
+                    by: &by,
+                    body: text,
+                    anchor,
+                    version: &f.sampled,
+                    parent: None,
+                },
+                now,
+            )
+        })
+        .await;
+    match added {
+        Ok(cid) => {
+            tracing::info!(share.space = %space_id, comment.id = %cid, "a guest commented on a shared file");
+            axum::Json(serde_json::json!({ "id": cid })).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "a guest comment did not save");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// The share page's review script: plays a file, lists its comments
+/// (a time jumps the player there), and posts a guest's note at the
+/// current time.
+const REVIEW_JS: &str = r#"
+const B=location.pathname.replace(/\/$/,'');
+const fmt=ms=>{const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+document.querySelectorAll('.review').forEach(r=>{
+  const part=r.dataset.part,path=r.dataset.path,au=r.querySelector('audio,video'),list=r.querySelector('.cm'),f=r.querySelector('form');
+  const q='part='+encodeURIComponent(part)+'&path='+encodeURIComponent(path);
+  const load=async()=>{
+    const j=await(await fetch(B+'/comments?'+q)).json();
+    list.innerHTML=j.threads.map(t=>'<div class=c>'+(t.at!=null?'<button type=button class=at data-ms='+t.at+'>'+fmt(t.at)+'</button>':'')
+      +'<b>'+esc(t.by)+'</b> <span class=when>'+new Date(t.created).toLocaleString()+'</span>'
+      +(t.resolved?' <span class=tag>resolved</span>':'')+(t.version!==j.version?' <span class=tag>earlier version</span>':'')
+      +'<p>'+esc(t.body)+'</p>'+t.replies.map(x=>'<div class=reply><b>'+esc(x.by)+'</b> '+esc(x.body)+'</div>').join('')+'</div>').join('');
+    list.querySelectorAll('.at').forEach(b=>b.onclick=()=>{if(au){au.currentTime=b.dataset.ms/1000;au.play()}});
+  };
+  f.name.value=localStorage.getItem('drive:guest')||'';
+  if(au)au.addEventListener('timeupdate',()=>{const l=f.querySelector('.now');if(l)l.textContent=fmt(au.currentTime*1000)});
+  f.onsubmit=async e=>{
+    e.preventDefault();localStorage.setItem('drive:guest',f.name.value);
+    const body={part,path,name:f.name.value,body:f.body.value};
+    if(au&&f.at&&f.at.checked)body.at_ms=Math.round(au.currentTime*1000);
+    const res=await fetch(B+'/comments',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(res.ok){f.body.value='';load()}else alert(await res.text());
+  };
+  load();
+});
+"#;
 
 /// `/s/{space}/{token}/file?part=&path=`: one file of the share.
 pub async fn file(
@@ -525,4 +719,16 @@ li a{color:#2dd4bf;text-decoration:none;font-weight:600;flex:1;min-width:0;overf
 li.off{color:#8b8b94}li.off{flex:1}\
 .size{color:#8b8b94;font-size:13px;margin-left:auto;white-space:nowrap}\
 .tag{font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:9px;background:#1f1f23;color:#a1a1aa;white-space:nowrap}\
-footer{margin-top:40px;color:#52525b;font-size:12px;text-align:center}";
+footer{margin-top:40px;color:#52525b;font-size:12px;text-align:center}\
+li{flex-direction:column;align-items:stretch}.line{display:flex;align-items:center;gap:10px}\
+.review{display:flex;flex-direction:column;gap:8px;margin-top:8px}\
+.review audio,.review video{width:100%;max-height:320px;border-radius:10px}\
+.cm .c{background:#1f1f23;border-radius:10px;padding:8px 10px;margin-bottom:6px}\
+.cm .c p{margin:4px 0 0}.cm .when{color:#8b8b94;font-size:12px}\
+.cm .reply{margin:6px 0 0 14px;font-size:14px;color:#d4d4d8}\
+.at{background:#2dd4bf;color:#042f2a;border:0;border-radius:8px;padding:1px 7px;font-weight:700;margin-right:6px;cursor:pointer}\
+form{display:flex;flex-direction:column;gap:6px}\
+form input,form textarea{background:#0e0e11;color:#f4f4f5;border:1px solid #2b2b31;border-radius:10px;padding:8px 10px;font:inherit}\
+form textarea{min-height:60px;resize:vertical}.row{display:flex;align-items:center;gap:10px}\
+.row button{margin-left:auto;background:#f4f4f5;color:#000;border:0;border-radius:10px;padding:8px 14px;font-weight:650;cursor:pointer}\
+.atl{color:#a1a1aa;font-size:13px}";

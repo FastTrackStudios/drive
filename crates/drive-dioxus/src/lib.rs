@@ -33,6 +33,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 
 pub mod auth;
+pub mod comments;
 pub mod text;
 pub mod ui;
 
@@ -207,7 +208,13 @@ async fn boot() -> Boot {
     Boot::Ready {
         org,
         token: if issuer.is_some() { token } else { None },
-        who: v["who"].as_str().unwrap_or_default().to_string(),
+        // Who is signed in; without an issuer the node says "anyone", and
+        // the browser's own name is the author instead.
+        who: if issuer.is_some() {
+            v["who"].as_str().unwrap_or_default().to_string()
+        } else {
+            String::new()
+        },
         issuer: issuer.is_some(),
     }
 }

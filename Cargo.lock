@@ -1791,6 +1791,7 @@ dependencies = [
  "dioxus",
  "drive-client",
  "drive-proto",
+ "drive-spine",
  "futures-util",
  "js-sys",
  "serde",

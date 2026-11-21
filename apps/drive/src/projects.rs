@@ -194,6 +194,8 @@ pub fn ProjectView(space: String, id: String) -> Element {
             p { class: "hint",
                 "Parts stay on the computers that have them. A part marked available is copied to the node by its computer, so the client mixes can be shared while it is off; charts and documents are kept available wherever they are."
             }
+            h2 { class: "sec", "Comments" }
+            drive_dioxus::comments::CommentsPanel { target: drive_spine::comments::Target::Project(pid.clone()) }
             h2 { class: "sec", "Shared with orgs" }
             SharedWith { reg: reg.clone(), owner: space.clone(), project: pid.clone(), with: p.shared_with.clone() }
             h2 { class: "sec", "Share" }

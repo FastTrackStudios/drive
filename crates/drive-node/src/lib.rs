@@ -263,6 +263,10 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .route("/s/{space}/{token}", get(share::page))
                 .route("/s/{space}/{token}/file", get(share::file))
                 .route("/s/{space}/{token}/zip", get(share::zip))
+                .route(
+                    "/s/{space}/{token}/comments",
+                    get(share::comments).post(share::comment),
+                )
                 .with_state(catalog),
         )
         .merge(

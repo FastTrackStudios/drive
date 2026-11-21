@@ -104,6 +104,30 @@ impl Rooms {
         });
     }
 
+    /// Change a document on the node itself (a guest's comment through a
+    /// share link): the edit is committed under `author`, saved, and sent
+    /// to everyone who has the document open.
+    pub async fn edit<T>(&self, id: &str, author: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
+        let mut rooms = self.rooms.lock().await;
+        let room = self.ensure(&mut rooms, id).await;
+        let before = room.doc.oplog_vv();
+        drive_spine::history::prepare(&room.doc, author);
+        let out = f(&room.doc);
+        drive_spine::history::commit(&room.doc, author);
+        if let Ok(bytes) = room.doc.export(ExportMode::updates(&before))
+            && !bytes.is_empty()
+        {
+            room.dirty = true;
+            for o in room.peers.values() {
+                let _ = o.send(ToClient::Update {
+                    doc: id.to_string(),
+                    bytes: bytes.clone(),
+                });
+            }
+        }
+        out
+    }
+
     /// Read a document as the node holds it (loading it if needed).
     pub async fn read<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
         let mut rooms = self.rooms.lock().await;

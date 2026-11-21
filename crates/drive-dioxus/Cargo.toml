@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 drive-client.workspace = true
 drive-proto.workspace = true
+drive-spine.workspace = true
 dioxus.workspace = true
 serde.workspace = true
 serde_json.workspace = true

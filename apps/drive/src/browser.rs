@@ -1386,7 +1386,7 @@ fn Inspector(space: String) -> Element {
                 if let Some(href) = open_link {
                     a { class: "primary", href: "{href}", "Open in {app_label(&item.kind.app)}" }
                 }
-                if let Some(href) = download {
+                if let Some(href) = download.clone() {
                     a { class: "primary ghost", href: "{href}", "Download" }
                 }
             }
@@ -1424,6 +1424,9 @@ fn Inspector(space: String) -> Element {
                     TreeCopies { reg: reg.clone(), id, hash, up: up.clone(), devices: space::devices(&r) }
                 },
                 _ => rsx! {},
+            }
+            if !item.dir {
+                ItemComments { item: item.clone(), download: download.clone() }
             }
             if let Some(k) = &item.kept {
                 section { class: "isec warn",
@@ -1615,6 +1618,52 @@ fn SharedWithUs(org: String) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// An item's comments, with a player for audio and video so a note can
+/// be pinned to a moment (and a moment played back).
+#[component]
+fn ItemComments(item: Item, download: Option<String>) -> Element {
+    let (target, version) = match &item.src {
+        Src::Tree { id, hash } => (
+            drive_spine::comments::Target::File(id.clone()),
+            hash.clone(),
+        ),
+        Src::Index {
+            location,
+            path,
+            sampled,
+        } => (
+            drive_spine::comments::Target::Indexed {
+                location: location.clone(),
+                path: path.clone(),
+            },
+            sampled.clone(),
+        ),
+        Src::Doc { id, .. } => (
+            drive_spine::comments::Target::Doc(id.clone()),
+            String::new(),
+        ),
+    };
+    let family = if item.kind.parent.is_empty() {
+        item.kind.id.clone()
+    } else {
+        item.kind.parent.clone()
+    };
+    let media = matches!(family.as_str(), "audio" | "video") && download.is_some();
+    let player = media.then(|| "drive-review-player".to_string());
+    rsx! {
+        section { class: "isec",
+            if media {
+                if family == "video" {
+                    video { id: "drive-review-player", class: "iplayer", controls: true, preload: "none", src: download.clone().unwrap_or_default() }
+                } else {
+                    audio { id: "drive-review-player", class: "iplayer", controls: true, preload: "none", src: download.clone().unwrap_or_default() }
+                }
+            }
+            drive_dioxus::comments::CommentsPanel { key: "{item.key()}", target, version, player }
         }
     }
 }
