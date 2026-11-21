@@ -259,6 +259,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
             .await
             .expect("the sidecar store opens"),
     );
+    tokio::spawn(sidecars::flush_loop(sidecar_store.clone()));
     if !opts.no_backfill {
         tokio::spawn(sidecars::backfill(
             sidecar_store.clone(),

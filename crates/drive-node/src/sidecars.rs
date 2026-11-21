@@ -810,7 +810,16 @@ pub async fn purge(State(s): State<Routes>, Json(p): Json<Purge>) -> Response {
 
 // ── background ──────────────────────────────────────────────────────────
 
-/// Now and then: write the read times, and make what is missing for the
+/// Write the read times every minute.
+pub async fn flush_loop(sc: Arc<Sidecars>) {
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        sc.flush_used().await;
+    }
+}
+
+/// Now and then: make what is missing for the
 /// files the node keeps (every space's tree), one file at a time, at most
 /// `per_pass` files a pass, never more than the store's limits allow.
 pub async fn backfill(sc: Arc<Sidecars>, rooms: Arc<Rooms>, every: Duration, per_pass: usize) {
@@ -818,7 +827,6 @@ pub async fn backfill(sc: Arc<Sidecars>, rooms: Arc<Rooms>, every: Duration, per
     tick.tick().await;
     loop {
         tick.tick().await;
-        sc.flush_used().await;
         let made = backfill_once(&sc, &rooms, per_pass).await;
         if made > 0 {
             tracing::info!(
