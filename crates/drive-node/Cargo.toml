@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 drive-proto.workspace = true
+drive-files = { path = "../drive-files" }
 loro.workspace = true
 serde_json.workspace = true
 axum = { version = "0.8", features = ["ws"] }

@@ -1,0 +1,19 @@
+[package]
+name = "drive-agent"
+description = "Drive's agent: registers this device and its storage, keeps its cache, and shows the space's files to the operating system (a FUSE mount on Linux) with their sync state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drive-native = { path = "../drive-native" }
+drive-files = { path = "../drive-files" }
+loro.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+fuser = "0.19"
+libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

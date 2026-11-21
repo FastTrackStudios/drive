@@ -9,10 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::State;
+use axum::body::Bytes;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::StatusCode;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use drive_files::blob::BlobStore;
+use drive_files::storage::StorageConfig;
 use tower_http::services::{ServeDir, ServeFile};
 
 use rooms::Rooms;
@@ -24,11 +28,21 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
     let store = store::Store::open(&data.join("drive.db")).await.expect("the document store opens");
     let rooms = Arc::new(Rooms::new(store));
     tokio::spawn(rooms.clone().flush_loop());
+    // The node is a storage too: blobs on its disk, over HTTP.
+    let blobs = StorageConfig::Fs { root: data.join("blobs").to_string_lossy().into_owned() }
+        .blobs()
+        .expect("the node's blob folder opens");
 
     let mut app = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
-        .with_state(rooms);
+        .with_state(rooms)
+        .merge(
+            Router::new()
+                .route("/blobs/{hash}", get(get_blob).head(head_blob).put(put_blob))
+                .layer(axum::extract::DefaultBodyLimit::max(2 << 30))
+                .with_state(blobs),
+        );
     // Longest prefixes first, so "/" does not swallow "/canvas".
     let mut apps = apps;
     apps.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
@@ -48,4 +62,40 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
 async fn sync(ws: WebSocketUpgrade, State(rooms): State<Arc<Rooms>>) -> impl IntoResponse {
     ws.max_message_size(64 << 20)
         .on_upgrade(move |socket: WebSocket| rooms::serve(rooms, socket))
+}
+
+/// A blob's bytes (checked against its hash on the way out).
+async fn get_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore>) -> Result<Vec<u8>, StatusCode> {
+    match blobs.get(&hash).await {
+        Ok(b) => Ok(b),
+        Err(drive_files::blob::Error::BadHash(_)) => Err(StatusCode::BAD_REQUEST),
+        Err(drive_files::blob::Error::Corrupt(_)) => {
+            tracing::warn!(blob.hash = %hash, "a stored blob no longer matches its hash");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn head_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore>) -> StatusCode {
+    match blobs.has(&hash).await {
+        Ok(true) => StatusCode::OK,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+/// Keep a blob; refused unless the bytes match the hash in the path.
+async fn put_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore>, body: Bytes) -> StatusCode {
+    match blobs.put_checked(&hash, body.to_vec()).await {
+        Ok(()) => StatusCode::CREATED,
+        Err(drive_files::blob::Error::Corrupt(_)) | Err(drive_files::blob::Error::BadHash(_)) => {
+            tracing::warn!(blob.hash = %hash, "a blob upload did not match its hash");
+            StatusCode::BAD_REQUEST
+        }
+        Err(e) => {
+            tracing::warn!(blob.hash = %hash, error = %e, "a blob could not be stored");
+            StatusCode::INSUFFICIENT_STORAGE
+        }
+    }
 }
