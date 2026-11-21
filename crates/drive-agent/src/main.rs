@@ -32,6 +32,11 @@
 //! drive-agent [--dir DIR] tag field THING NAME VALUE [--kind text|multiline|date|datetime]
 //! drive-agent [--dir DIR] tag search QUERY…              # drums NOT archived, path:*.wav, kind:audio …
 //!
+//! File rules (docs/rules.md; every rule starts off and as a dry run):
+//! drive-agent [--dir DIR] rules ls | show NAME | journal [NAME] | undo ID
+//! drive-agent [--dir DIR] rules run NAME [--live]       # here now, and asked of every device
+//! drive-agent [--dir DIR] rules add FILE.json | on|off NAME | live|dry-run NAME | rm NAME
+//!
 //! What this device keeps:
 //! drive-agent [--dir DIR] role storage-server|workstation   # keep everything, or the work at hand
 //! drive-agent [--dir DIR] active [add|rm PATH]          # folders this device is working on
@@ -71,6 +76,8 @@ mod daemon;
 mod fs;
 mod placement;
 mod places;
+mod rules;
+mod rules_fs;
 mod sidecars;
 mod sites;
 mod tagging;
@@ -146,6 +153,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 token_expires: None,
                 signed_in_as: None,
                 allow_evict: false,
+                allow_rule_moves: false,
             };
             cfg.save(dir)?;
             let a = Agent::start(dir, cfg.clone()).await;
@@ -176,6 +184,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     token_expires: None,
                     signed_in_as: None,
                     allow_evict: false,
+                    allow_rule_moves: false,
                 },
                 (Err(e), _, _) => return Err(format!("{e} (before joining: sign-in --node URL --space NAME)")),
             };
@@ -282,6 +291,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 token_expires: prior.as_ref().and_then(|c| c.token_expires.clone()),
                 signed_in_as: prior.as_ref().and_then(|c| c.signed_in_as.clone()),
                 allow_evict: false,
+                allow_rule_moves: false,
             };
             let a = Agent::start(dir, cfg.clone()).await;
             let d = space::join(&a.space, &code, this_device(&cfg.device_id, &name))
@@ -686,6 +696,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             settle(&a).await;
         }
         "tag" => tagging::command(dir, args).await?,
+        "rules" => rules::command(dir, args).await?,
         "search" => {
             let words = args[1..].join(" ");
             let cfg = Config::load(dir)?;

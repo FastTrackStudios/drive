@@ -1992,9 +1992,11 @@ checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 name = "drive-agent"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "drive-files",
  "drive-native",
  "drive-proto",
+ "drive-rules",
  "drive-sidecars",
  "drive-sites",
  "drive-spine",
@@ -2116,6 +2118,7 @@ dependencies = [
  "blake3",
  "drive-files",
  "drive-proto",
+ "drive-rules",
  "drive-sidecars",
  "drive-spine",
  "drive-view",
@@ -2141,6 +2144,18 @@ version = "0.1.0"
 dependencies = [
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "drive-rules"
+version = "0.1.0"
+dependencies = [
+ "drive-files",
+ "drive-spine",
+ "loro",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

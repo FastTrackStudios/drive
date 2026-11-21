@@ -1,0 +1,14 @@
+[package]
+name = "drive-rules"
+description = "Drive's file rules (Hazel-style), pure: the rules document, the journal, and the evaluator that turns a file's facts and a rule into a plan; shared by the agents, the node and the app (native and wasm)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+loro.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+drive-spine.workspace = true
+drive-files = { path = "../drive-files", default-features = false }
+regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl"] }

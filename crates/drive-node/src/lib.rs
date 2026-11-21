@@ -9,6 +9,7 @@ pub mod browse;
 pub mod catalog;
 pub mod migrate;
 pub mod rooms;
+pub mod rules;
 pub mod share;
 pub mod sidecars;
 pub mod sites;
@@ -243,6 +244,8 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         data.join("backups"),
         opts.backup_to.clone(),
     ));
+    // File rules over each org's Drive tree (docs/rules.md).
+    tokio::spawn(rules::run_loop(rooms.clone(), data.to_path_buf()));
     let default_org = opts.org.clone().unwrap_or_default();
     // The node is a storage too: blobs on its disk, over HTTP.
     let blobs = StorageConfig::Fs {
