@@ -123,12 +123,16 @@ to the thread.
 
 ## M9 — Meals
 
-- **The Meals app v0** on Drive: building blocks, combinations, plans,
-  prep sessions, shopping list ([docs/apps/meals.md](docs/apps/meals.md)).
+- **The Meals app v0** on Drive: building blocks and their workflows
+  (steps with scaled quantities, active and passive time, "done when",
+  variants, sub-workflows), combinations, plans, the prep session's
+  timeline, cook mode, the shopping list
+  ([docs/apps/meals.md](docs/apps/meals.md)).
 
-**Demo:** plan a week from blocks; the prep session lands in the
-calendar and the shopping list in the inbox; a guest opens the plan by
-link.
+**Demo:** plan a week from blocks; the prep session's timeline overlaps
+the teriyaki's simmer with the chicken's prep; two phones run cook mode
+together, live; the session is in the calendar and the shopping list in
+the inbox; a guest opens the plan by link.
 
 ## After the prototype
 

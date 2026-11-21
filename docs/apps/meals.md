@@ -71,6 +71,95 @@ and the app should show it.
 | `Fridge` | What is prepped and on hand: each component's amount left and when it was made (so when it expires), and raw stock. |
 | `ShoppingList` | What the prep needs, minus what is on hand, by aisle. |
 
+## Steps and workflows
+
+Every component, flavour and meal is made by a **workflow**: steps with
+inputs, equipment, parameters, timing and a way to know each step is
+done. Workflows compose, so a prep session or a dinner is one workflow
+built from the components' own.
+
+### A step
+
+| Field | Example (level 1, the sear) |
+|---|---|
+| Action | sear |
+| Inputs, with **quantity rules** | chicken breast (the parameter `w`, grams); salt **1–1.5% of `w`**; black pepper **generous**; cooking oil 5 g |
+| Equipment | cast-iron pan |
+| Parameters | pan surface ~425 °F; the pan must stay hot (a heavy pan) |
+| Time | ~5 min, **active**; depends on thickness and cut |
+| **Done when** | internal 165 °F; browned both sides |
+| **Why** | an even thickness cooks evenly: the centre reaches 165 before the outside dries |
+| Cautions | a spice blend with salt in it: less salt |
+| Media | a photo or a short clip of the step |
+
+**Quantity rules** are what recipes lack: absolute (60 g soy sauce), a
+ratio of a parameter (salt 1% of the chicken), a range (1–1.5%), or a
+judgement (generous, to taste, a spoonful or two). Ratios recompute as
+the batch scales.
+
+**Time** is split into **active** (hands on) and **passive** (simmering,
+resting, chilling), so a schedule can overlap them.
+
+### A workflow
+
+- **Parameters** for the whole workflow: the chicken's weight, how many
+  portions.
+- **Variants** that change steps: the cut (whole, strips, cubes) changes
+  the sear time; the cooking method (pan-sear, roast, grill, bread and
+  fry) swaps whole steps.
+- **Sub-workflows:** a breading station (flour, egg and milk, panko;
+  press the crumbs in) is its own workflow, used inside "breaded cutlet";
+  level 1's sear is used inside level 2's batch cook.
+- **Steps form a graph, not a list:** each step says what it needs
+  (the dressing before the slaw; the orzo can run while the cutlets fry).
+- **Output:** the component it makes, its yield in grams, how it is
+  stored (a squeeze bottle, a sealed tub) and how long it keeps.
+
+### The video as workflows
+
+| Workflow | Steps | Output |
+|---|---|---|
+| Plain salted chicken (level 2) | flatten (or cut into strips or cubes) → salt 1% of `w` → **sear** (time by cut) → cool → store | plain chicken, ~4 days, fridge |
+| Bloom in pan (flavour method) | 5 g oil in a hot pan → spice blend, bloom 20–30 s → cold chicken in, toss → heat through | smoky spicy chicken, to eat now |
+| Toss with dressing (method) | warm the chicken (microwave) → toss with a dressing | chimichurri chicken, now |
+| Glaze (method) | sauce into a pan → chicken in → heat until glossy | teriyaki chicken, now |
+| Teriyaki sauce | pot on the scale: soy 60 g, mirin 60 g, sake 60 g, sugar 25 g, ginger ~1 in grated, 1 clove garlic → simmer ~5 min (**passive**) → cornstarch slurry, thicken → cool → squeeze bottle | teriyaki sauce, fridge |
+| Chimichurri | parsley, dried oregano, garlic, chilli flakes, olive oil, red wine vinegar → mix | chimichurri, fridge |
+| Breaded cutlet (level 3) | flatten into two cutlets → salt → **breading station** (sub-workflow) → shallow-fry in peanut oil until golden, to temperature | cutlets, now |
+| Sprout slaw | finely chop Brussels sprouts → half a shallot, thinly sliced → toss with a spoonful or two of Caesar dressing | slaw, fridge |
+| Parmesan orzo | boil in salted water 6–8 min (**passive**) → drain → butter ~2 tbsp, parmesan a generous handful, black pepper | orzo, now or fridge |
+| The plate (assembly) | slaw on the left → orzo on the right → cutlet in the centre → drizzle dressing over | the meal: ~840 kcal, ~60 g protein |
+
+The flavour **methods** are workflows with a slot: "bloom in pan" takes
+any spice blend, "glaze" any sauce. That is how 3 methods × 4 flavours
+become 12 workflows without writing 12.
+
+### Prep sessions and cook mode
+
+- **Scheduling:** a prep session merges the workflows of everything the
+  plan needs into one timeline: it orders steps by what they need,
+  overlaps passive time (the teriyaki simmers while the chicken is
+  flattened), respects equipment (one cast-iron pan, one oven) and
+  people, and says when to start so everything is ready together.
+- **Cook mode:** one step at a time, big, with its quantities already
+  scaled, its timers running, and its "done when"; a step's timer and its
+  checkpoint ("165 °F?") gate the next.
+- **Together, live:** two people in the kitchen split the timeline;
+  each sees the other's steps tick off (Drive's realtime sync and
+  presence).
+- **Learning:** actual times and notes recorded per run, so the next
+  estimate is better ("your cubes take 6 min, not 5").
+
+### Text, in and out
+
+Workflows are structured documents (so they sync, merge and schedule).
+**Cooklang** is their text form, for import, export and quick entry: it
+already has ingredients, cookware (`#`), timers (`~{5%minutes}`),
+sections, and references to other recipes with a multiplier
+(`@./sauces/teriyaki{2}`). What Cooklang lacks (ratios of a parameter,
+"done when", variants, active and passive time) lives in the structured
+model, written into Cooklang's metadata when exported.
+
 ## What the app does
 
 1. **Build blocks.** Add components (from a recipe, a technique applied
@@ -83,7 +172,9 @@ and the app should show it.
    whose slots can be filled from what is prepped, ranked by what expires
    first and what you have not eaten lately; the count of possible meals
    shown, as in the video ("48 meals from this prep").
-5. **Eat and log.** Taking a meal draws its amounts from the fridge and
+5. **Prep and cook by workflow.** The prep session's timeline, then cook
+   mode, step by step, alone or together.
+6. **Eat and log.** Taking a meal draws its amounts from the fridge and
    logs its nutrition.
 
 ## On Drive
@@ -101,8 +192,10 @@ and the app should show it.
 
 ## First prototype (M9 of the plan)
 
-Components with roles and keeping times; three templates (plate, rice
-bowl, wrap); planning a week; the prep session and shopping list worked
-out from it; "what can I make tonight" from the fridge; the prep
-session's Event in the Drive app. Nutrition from a small seeded catalog;
-Cooklang recipes for components.
+The video's ten workflows above as seed data; steps with quantity rules,
+active and passive time and "done when"; variants and sub-workflows;
+components with roles and keeping times; three templates (plate, rice
+bowl, wrap); planning a week; the prep session's timeline and shopping
+list worked out from it; cook mode with timers; "what can I make
+tonight" from the fridge; the prep session's Event in the Drive app.
+Nutrition from a small seeded catalog; Cooklang import and export.
