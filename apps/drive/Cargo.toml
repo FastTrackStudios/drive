@@ -19,7 +19,7 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Storage"] }
 serde.workspace = true
 # The window: sidebar, top bar, tabs once a second one opens (main, 2026-11-21).
-app-shell = { git = "https://github.com/FastTrackStudios/app-shell", rev = "0f6d85b9d5007ae93a8bb4052406d8356969a98d" }
+app-shell = { git = "https://github.com/FastTrackStudios/app-shell", tag = "v0.2.0" }
 
 [features]
 default = []
