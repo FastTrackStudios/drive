@@ -82,6 +82,8 @@ pub struct Nav {
     pub inspector: Signal<bool>,
     /// The picked file, full screen.
     pub preview: Signal<bool>,
+    /// The items on screen, in their order (what the arrow keys walk).
+    pub visible: CopyValue<Vec<Item>>,
     pub debug: Signal<bool>,
     /// Another org whose project (shared with this one) is being viewed;
     /// `None`: this org.
@@ -101,6 +103,7 @@ impl Nav {
             sidebar: Signal::new(false),
             inspector: Signal::new(true),
             preview: Signal::new(false),
+            visible: CopyValue::new(Vec::new()),
             debug: Signal::new(false),
             within: Signal::new(None),
         }
@@ -408,7 +411,8 @@ pub fn kind_hue(id: &str) -> u32 {
 
 #[component]
 pub fn Browser() -> Element {
-    use_context_provider(Nav::new);
+    let nav = use_context_provider(Nav::new);
+    use_quick_look(nav);
     let ctx = drive_dioxus::use_drive();
     // The space is the org this browser is in; the others the node keeps
     // can be switched to.
@@ -846,6 +850,7 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
         })
     });
     let sel = (nav.selected)().map(|i| i.key());
+    nav.visible.set(items.clone());
     let mut open = move |i: Item| match &i.src {
         Src::Tree { id, .. } if i.dir => nav.go(Place::Drive(Some(id.clone()))),
         Src::Index { location, path, .. } if i.dir => nav.go(Place::Location {
@@ -1486,20 +1491,115 @@ pub fn file_url(item: &Item, space: &str) -> Option<String> {
         }
         Src::Index { location, path, .. } => match &item.available {
             Some(h) => Some(format!("/blobs/{h}?name={}", enc(&item.name))),
-            None => item.online.then(|| {
-                format!(
-                    "/fetch/{}/{}?path={}",
-                    enc(space),
-                    enc(location),
-                    enc(path)
-                )
-            }),
+            None => item
+                .online
+                .then(|| format!("/fetch/{}/{}?path={}", enc(space), enc(location), enc(path))),
         },
         Src::Doc { .. } => None,
     }
 }
 
 /// Whether Drive has a viewer for it.
+/// Quick Look, as on a Mac: Space opens the picked file full screen and
+/// closes it again; the arrow keys pick the next or previous item (a row
+/// at a time in the grid), and an open preview follows. Keys typed into a
+/// field, a button or a link are theirs.
+const QUICK_LOOK_JS: &str = r#"
+const keys = [' ', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+const own = (t) => t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(t.tagName));
+const columns = () => {
+  const cells = document.querySelectorAll('.grid > .cell');
+  if (!cells.length) return 1;
+  const top = cells[0].offsetTop;
+  let n = 0;
+  for (const c of cells) { if (c.offsetTop !== top) break; n++; }
+  return Math.max(n, 1);
+};
+const onKey = (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || !keys.includes(e.key) || own(e.target)) return;
+  if (!document.body.dataset.picked) return;
+  if (e.key !== 'Escape') e.preventDefault();
+  dioxus.send(e.key + ':' + columns());
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const on = document.querySelector('.cell.on, .row.on');
+    if (on) on.scrollIntoView({ block: 'nearest' });
+  }));
+};
+if (window.__driveQuickLook) window.removeEventListener('keydown', window.__driveQuickLook);
+window.__driveQuickLook = onKey;
+window.addEventListener('keydown', onKey);
+await new Promise(() => {});
+"#;
+
+fn use_quick_look(nav: Nav) {
+    use_hook(move || {
+        spawn(async move {
+            let mut keys = document::eval(QUICK_LOOK_JS);
+            while let Ok(k) = keys.recv::<String>().await {
+                let (key, cols) = k.rsplit_once(':').unwrap_or((k.as_str(), "1"));
+                quick_look_key(nav, key, cols.parse().unwrap_or(1));
+            }
+        });
+    });
+    // The page's keys act only while something is picked.
+    use_effect(move || {
+        let picked = (nav.selected)().is_some();
+        let _ = js_sys::eval(if picked {
+            "document.body.dataset.picked = '1'"
+        } else {
+            "delete document.body.dataset.picked"
+        });
+    });
+}
+
+fn quick_look_key(mut nav: Nav, key: &str, columns: usize) {
+    let open = *nav.preview.peek();
+    match key {
+        " " => {
+            if open {
+                nav.preview.set(false);
+            } else if nav.selected.peek().as_ref().is_some_and(viewable) {
+                nav.preview.set(true);
+            }
+        }
+        "Escape" => {
+            if open {
+                nav.preview.set(false);
+            }
+        }
+        _ => {
+            let items = nav.visible.read().clone();
+            let grid = *nav.view.peek() == View::Grid;
+            let step = match key {
+                "ArrowUp" | "ArrowDown" if grid => columns.max(1),
+                _ => 1,
+            };
+            let forward = matches!(key, "ArrowDown" | "ArrowRight");
+            let current = nav.selected.peek().as_ref().map(Item::key);
+            let Some(next) = step_to(&items, current.as_deref(), step, forward) else {
+                return;
+            };
+            if open && !viewable(&next) {
+                nav.preview.set(false);
+            }
+            nav.selected.set(Some(next));
+        }
+    }
+}
+
+/// The item `step` places on from `current` (the first one when nothing
+/// is picked), staying inside the list.
+fn step_to(items: &[Item], current: Option<&str>, step: usize, forward: bool) -> Option<Item> {
+    let last = items.len().checked_sub(1)?;
+    let at = current.and_then(|c| items.iter().position(|i| i.key() == c));
+    let next = match at {
+        None => 0,
+        Some(i) if forward => (i + step).min(last),
+        Some(i) => i.saturating_sub(step),
+    };
+    items.get(next).cloned()
+}
+
 pub fn viewable(item: &Item) -> bool {
     !item.dir
         && !matches!(item.src, Src::Doc { .. })
@@ -1565,8 +1665,12 @@ fn Preview(space: String) -> Element {
         let files = files.clone();
         let reg = reg.clone();
         move |item: Item, hash: String, size: u64| {
-            let Src::Tree { id, .. } = &item.src else { return };
-            let Some(tid) = tree::parse_id(id) else { return };
+            let Src::Tree { id, .. } = &item.src else {
+                return;
+            };
+            let Some(tid) = tree::parse_id(id) else {
+                return;
+            };
             files.edit(|d| {
                 let _ = tree::set_content(d, tid, size, &hash);
             });
@@ -1575,7 +1679,10 @@ fn Preview(space: String) -> Element {
             });
             let mut next = item.clone();
             next.size = size;
-            next.src = Src::Tree { id: id.clone(), hash };
+            next.src = Src::Tree {
+                id: id.clone(),
+                hash,
+            };
             let mut sel = nav.selected;
             sel.set(Some(next));
         }
@@ -1603,21 +1710,23 @@ fn Preview(space: String) -> Element {
         Src::Tree { hash, .. } if editable => {
             let item = item.clone();
             let hash = hash.clone();
-            Some(EventHandler::new(move |edits: Vec<drive_view::PageEdit>| {
-                let item = item.clone();
-                let hash = hash.clone();
-                let commit = commit.clone();
-                spawn(async move {
-                    status.set("Editing the PDF…".into());
-                    match edit_pdf(&hash, &edits).await {
-                        Ok((new, size)) => {
-                            commit(item, new, size);
-                            status.set("Saved".into());
+            Some(EventHandler::new(
+                move |edits: Vec<drive_view::PageEdit>| {
+                    let item = item.clone();
+                    let hash = hash.clone();
+                    let commit = commit.clone();
+                    spawn(async move {
+                        status.set("Editing the PDF…".into());
+                        match edit_pdf(&hash, &edits).await {
+                            Ok((new, size)) => {
+                                commit(item, new, size);
+                                status.set("Saved".into());
+                            }
+                            Err(e) => status.set(format!("Not edited: {e}")),
                         }
-                        Err(e) => status.set(format!("Not edited: {e}")),
-                    }
-                });
-            }))
+                    });
+                },
+            ))
         }
         _ => None,
     };
