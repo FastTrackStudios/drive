@@ -1,2 +1,6 @@
 /target
 /data
+.devenv/
+.devenv.flake.nix
+.direnv/
+devenv.lock.bak

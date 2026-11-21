@@ -42,7 +42,10 @@ pub enum ToNode {
     Agent { space: String, device: String },
     /// The answer to [`ToClient::Fetch`]: the file's blob is on the node
     /// (its BLAKE3 hash), or why not.
-    Fetched { req: u64, result: Result<String, String> },
+    Fetched {
+        req: u64,
+        result: Result<String, String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,18 +54,31 @@ pub enum ToClient {
     Welcome { peer: Peer },
     /// The answer to Join: the updates the client lacks, and the node's
     /// version vector (so the client can send what the node lacks).
-    Synced { doc: DocId, bytes: Vec<u8>, version_vector: Vec<u8> },
+    Synced {
+        doc: DocId,
+        bytes: Vec<u8>,
+        version_vector: Vec<u8>,
+    },
     /// Another peer's updates.
     Update { doc: DocId, bytes: Vec<u8> },
     /// A peer's presence; `None` when it left.
-    Presence { doc: DocId, peer: Peer, name: String, json: Option<String> },
+    Presence {
+        doc: DocId,
+        peer: Peer,
+        name: String,
+        json: Option<String>,
+    },
     /// The answer to List.
     Docs { prefix: String, docs: Vec<DocInfo> },
     /// Something went wrong with a request.
     Error { message: String },
     /// To an agent: put this file (from one of your locations) on the node
     /// as a blob, and answer with [`ToNode::Fetched`].
-    Fetch { req: u64, location: String, path: String },
+    Fetch {
+        req: u64,
+        location: String,
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -90,11 +106,22 @@ mod tests {
 
     #[test]
     fn messages_round_trip() {
-        let m = ToNode::Join { doc: "canvas:a".into(), version_vector: vec![1, 2, 3] };
+        let m = ToNode::Join {
+            doc: "canvas:a".into(),
+            version_vector: vec![1, 2, 3],
+        };
         assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
-        let m = ToClient::Presence { doc: "x".into(), peer: 7, name: "Mia".into(), json: None };
+        let m = ToClient::Presence {
+            doc: "x".into(),
+            peer: 7,
+            name: "Mia".into(),
+            json: None,
+        };
         assert_eq!(decode::<ToClient>(&encode(&m)).unwrap(), m);
-        let m = ToNode::Fetched { req: 3, result: Err("offline".into()) };
+        let m = ToNode::Fetched {
+            req: 3,
+            result: Err("offline".into()),
+        };
         assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
     }
 }

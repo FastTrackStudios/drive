@@ -15,9 +15,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use drive_files::tree::{self, Entry};
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, LockOwner, OpenAccMode,
-    OpenFlags, Owner, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, LockOwner,
+    OpenAccMode, OpenFlags, Owner, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow,
+    WriteFlags,
 };
 use loro::TreeID;
 use tokio::runtime::Handle;
@@ -87,7 +88,14 @@ impl DriveFs {
         if ino == INodeNo::ROOT {
             return Ok(None);
         }
-        self.inodes.lock().expect("inodes").by_ino.get(&ino.0).copied().map(Some).ok_or(Errno::ENOENT)
+        self.inodes
+            .lock()
+            .expect("inodes")
+            .by_ino
+            .get(&ino.0)
+            .copied()
+            .map(Some)
+            .ok_or(Errno::ENOENT)
     }
 
     fn ino_of(&self, id: TreeID) -> INodeNo {
@@ -109,7 +117,12 @@ impl DriveFs {
                     .expect("open")
                     .values()
                     .find(|o| o.id == e.id && o.scratch.is_some())
-                    .and_then(|o| o.scratch.as_ref().and_then(|(_, f)| f.metadata().ok()).map(|m| m.len()));
+                    .and_then(|o| {
+                        o.scratch
+                            .as_ref()
+                            .and_then(|(_, f)| f.metadata().ok())
+                            .map(|m| m.len())
+                    });
                 (e.dir, scratch.unwrap_or(e.size), e.mtime)
             }
         };
@@ -122,7 +135,11 @@ impl DriveFs {
             mtime: t,
             ctime: t,
             crtime: t,
-            kind: if dir { FileType::Directory } else { FileType::RegularFile },
+            kind: if dir {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            },
             perm: if dir { 0o755 } else { 0o644 },
             nlink: if dir { 2 } else { 1 },
             uid: self.uid,
@@ -136,21 +153,32 @@ impl DriveFs {
     fn entry_of(&self, ino: INodeNo) -> Result<Option<Entry>, Errno> {
         match self.id_of(ino)? {
             None => Ok(None),
-            Some(id) => tree::entry(&self.agent.files, id).map(Some).ok_or(Errno::ENOENT),
+            Some(id) => tree::entry(&self.agent.files, id)
+                .map(Some)
+                .ok_or(Errno::ENOENT),
         }
     }
 
     fn name(name: &OsStr) -> Result<&str, Errno> {
-        name.to_str().filter(|n| !n.contains('/')).ok_or(Errno::EINVAL)
+        name.to_str()
+            .filter(|n| !n.contains('/'))
+            .ok_or(Errno::EINVAL)
     }
 
     /// A scratch copy of a file, holding its current bytes, for writing.
     fn scratch_for(&self, e: &Entry, truncate: bool) -> Result<(PathBuf, File), Errno> {
         let dir = self.agent.dir.join("scratch");
         std::fs::create_dir_all(&dir).map_err(|_| Errno::EIO)?;
-        let path = dir.join(format!("{}-{}", tree::id_string(e.id).replace('@', "_"), self.next_fh.load(Ordering::Relaxed)));
+        let path = dir.join(format!(
+            "{}-{}",
+            tree::id_string(e.id).replace('@', "_"),
+            self.next_fh.load(Ordering::Relaxed)
+        ));
         if !truncate && !e.hash.is_empty() {
-            let src = self.rt.block_on(self.agent.fetch(&e.hash)).map_err(|_| Errno::EIO)?;
+            let src = self
+                .rt
+                .block_on(self.agent.fetch(&e.hash))
+                .map_err(|_| Errno::EIO)?;
             std::fs::copy(src, &path).map_err(|_| Errno::EIO)?;
         }
         let f = OpenOptions::new()
@@ -165,12 +193,17 @@ impl DriveFs {
 
     /// Upload a written file and record its new content.
     fn commit_scratch(&self, o: &Open) -> Result<(), Errno> {
-        let Some((path, f)) = &o.scratch else { return Ok(()) };
+        let Some((path, f)) = &o.scratch else {
+            return Ok(());
+        };
         let _ = f.sync_all();
-        let (hash, size) = self.rt.block_on(self.agent.upload(o.id, path)).map_err(|e| {
-            tracing::warn!(error = %e, "an upload failed");
-            Errno::EIO
-        })?;
+        let (hash, size) = self
+            .rt
+            .block_on(self.agent.upload(o.id, path))
+            .map_err(|e| {
+                tracing::warn!(error = %e, "an upload failed");
+                Errno::EIO
+            })?;
         tree::set_content(&self.agent.files, o.id, size, &hash).map_err(|_| Errno::EIO)?;
         self.agent.commit_files();
         let _ = std::fs::remove_file(path);
@@ -182,7 +215,9 @@ impl DriveFs {
         match (name, e) {
             (STATE, None) => Ok(b"folder".to_vec()),
             (STATE, Some(e)) => Ok(self.agent.state(&e).as_str().as_bytes().to_vec()),
-            (HOLDERS, Some(e)) if !e.hash.is_empty() => Ok(self.agent.holders(&e.hash).join(", ").into_bytes()),
+            (HOLDERS, Some(e)) if !e.hash.is_empty() => {
+                Ok(self.agent.holders(&e.hash).join(", ").into_bytes())
+            }
             (HOLDERS, _) => Ok(Vec::new()),
             _ => Err(Errno::ENODATA),
         }
@@ -244,7 +279,9 @@ impl Filesystem for DriveFs {
             let e = self.entry_of(ino)?;
             if let (Some(size), Some(e)) = (size, e.as_ref()) {
                 let mut open = self.open.lock().expect("open");
-                let handle = fh.and_then(|f| open.get_mut(&f.0)).filter(|o| o.scratch.is_some());
+                let handle = fh
+                    .and_then(|f| open.get_mut(&f.0))
+                    .filter(|o| o.scratch.is_some());
                 match handle {
                     Some(o) => {
                         if let Some((_, f)) = &o.scratch {
@@ -262,7 +299,8 @@ impl Filesystem for DriveFs {
                                 self.agent.upload(e.id, &tmp).await
                             })
                             .map_err(|_| Errno::EIO)?;
-                        tree::set_content(&self.agent.files, e.id, 0, &hash).map_err(|_| Errno::EIO)?;
+                        tree::set_content(&self.agent.files, e.id, 0, &hash)
+                            .map_err(|_| Errno::EIO)?;
                         self.agent.commit_files();
                     }
                     None => return Err(Errno::ENOTSUP),
@@ -277,7 +315,16 @@ impl Filesystem for DriveFs {
         }
     }
 
-    fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, _owner: Owner, reply: ReplyEntry) {
+    fn mkdir(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _owner: Owner,
+        reply: ReplyEntry,
+    ) {
         let r = (|| {
             let parent = self.id_of(parent)?;
             let name = Self::name(name)?;
@@ -298,7 +345,8 @@ impl Filesystem for DriveFs {
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let r = (|| {
             let parent = self.id_of(parent)?;
-            let e = tree::lookup(&self.agent.files, parent, Self::name(name)?).ok_or(Errno::ENOENT)?;
+            let e =
+                tree::lookup(&self.agent.files, parent, Self::name(name)?).ok_or(Errno::ENOENT)?;
             if e.dir {
                 return Err(Errno::EISDIR);
             }
@@ -315,7 +363,8 @@ impl Filesystem for DriveFs {
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let r = (|| {
             let parent = self.id_of(parent)?;
-            let e = tree::lookup(&self.agent.files, parent, Self::name(name)?).ok_or(Errno::ENOENT)?;
+            let e =
+                tree::lookup(&self.agent.files, parent, Self::name(name)?).ok_or(Errno::ENOENT)?;
             if !tree::children(&self.agent.files, Some(e.id)).is_empty() {
                 return Err(Errno::ENOTEMPTY);
             }
@@ -343,7 +392,8 @@ impl Filesystem for DriveFs {
         let r = (|| {
             let from = self.id_of(parent)?;
             let to = self.id_of(newparent)?;
-            let e = tree::lookup(&self.agent.files, from, Self::name(name)?).ok_or(Errno::ENOENT)?;
+            let e =
+                tree::lookup(&self.agent.files, from, Self::name(name)?).ok_or(Errno::ENOENT)?;
             let newname = Self::name(newname)?;
             // Replacing an existing file (editors save this way).
             if let Some(old) = tree::lookup(&self.agent.files, to, newname)
@@ -379,7 +429,14 @@ impl Filesystem for DriveFs {
                 }
                 None
             };
-            self.open.lock().expect("open").insert(fh, Open { id: e.id, scratch, dirty: write && truncate });
+            self.open.lock().expect("open").insert(
+                fh,
+                Open {
+                    id: e.id,
+                    scratch,
+                    dirty: write && truncate,
+                },
+            );
             Ok(fh)
         })();
         match r {
@@ -411,8 +468,13 @@ impl Filesystem for DriveFs {
                         if e.hash.is_empty() {
                             0
                         } else {
-                            let path = self.rt.block_on(self.agent.fetch(&e.hash)).map_err(|_| Errno::EIO)?;
-                            File::open(path).and_then(|f| f.read_at(&mut buf, offset)).map_err(|_| Errno::EIO)?
+                            let path = self
+                                .rt
+                                .block_on(self.agent.fetch(&e.hash))
+                                .map_err(|_| Errno::EIO)?;
+                            File::open(path)
+                                .and_then(|f| f.read_at(&mut buf, offset))
+                                .map_err(|_| Errno::EIO)?
                         }
                     }
                 }
@@ -454,7 +516,14 @@ impl Filesystem for DriveFs {
         }
     }
 
-    fn flush(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _lock: LockOwner, reply: ReplyEmpty) {
+    fn flush(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _lock: LockOwner,
+        reply: ReplyEmpty,
+    ) {
         reply.ok();
     }
 
@@ -484,7 +553,14 @@ impl Filesystem for DriveFs {
         }
     }
 
-    fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+    fn readdir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectory,
+    ) {
         let id = match self.id_of(ino) {
             Ok(id) => id,
             Err(e) => return reply.error(e),
@@ -493,10 +569,16 @@ impl Filesystem for DriveFs {
             Some(p) => self.ino_of(p),
             None => INodeNo::ROOT,
         };
-        let mut rows: Vec<(INodeNo, FileType, String)> =
-            vec![(ino, FileType::Directory, ".".into()), (parent_ino, FileType::Directory, "..".into())];
+        let mut rows: Vec<(INodeNo, FileType, String)> = vec![
+            (ino, FileType::Directory, ".".into()),
+            (parent_ino, FileType::Directory, "..".into()),
+        ];
         for e in tree::children(&self.agent.files, id) {
-            let kind = if e.dir { FileType::Directory } else { FileType::RegularFile };
+            let kind = if e.dir {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            };
             rows.push((self.ino_of(e.id), kind, e.name));
         }
         for (i, (ino, kind, name)) in rows.into_iter().enumerate().skip(offset as usize) {
@@ -525,7 +607,8 @@ impl Filesystem for DriveFs {
             let id = match tree::lookup(&self.agent.files, parent, name) {
                 Some(e) => e.id,
                 None => {
-                    let id = tree::create_file(&self.agent.files, parent, name).map_err(|_| Errno::EIO)?;
+                    let id = tree::create_file(&self.agent.files, parent, name)
+                        .map_err(|_| Errno::EIO)?;
                     self.agent.commit_files();
                     id
                 }
@@ -533,11 +616,20 @@ impl Filesystem for DriveFs {
             let e = tree::entry(&self.agent.files, id).ok_or(Errno::EIO)?;
             let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
             let scratch = self.scratch_for(&e, true)?;
-            self.open.lock().expect("open").insert(fh, Open { id, scratch: Some(scratch), dirty: true });
+            self.open.lock().expect("open").insert(
+                fh,
+                Open {
+                    id,
+                    scratch: Some(scratch),
+                    dirty: true,
+                },
+            );
             Ok((self.attr(self.ino_of(id), Some(&e)), fh))
         })();
         match r {
-            Ok((a, fh)) => reply.created(&TTL, &a, Generation(0), FileHandle(fh), FopenFlags::empty()),
+            Ok((a, fh)) => {
+                reply.created(&TTL, &a, Generation(0), FileHandle(fh), FopenFlags::empty())
+            }
             Err(e) => reply.error(e),
         }
     }

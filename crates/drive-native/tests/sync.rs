@@ -52,7 +52,10 @@ async fn a_copy_on_disk_opens_and_syncs_later() {
     // Later, connected, the same folder: the copy opens, and reaches others.
     let a = Drive::connect(&url, "a", dir.path()).await;
     let da = a.open("test:doc").await;
-    assert!(da.get_map("m").get("k").is_some(), "the copy on disk opened");
+    assert!(
+        da.get_map("m").get("k").is_some(),
+        "the copy on disk opened"
+    );
     a.synced("test:doc").await;
     let b_dir = tempfile::tempdir().unwrap();
     let b = Drive::connect(&url, "b", b_dir.path()).await;

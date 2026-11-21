@@ -1,13 +1,15 @@
-//! The Drive app: the one inbox, the one calendar, notes, and everything
-//! every app keeps. It edits only the spine; app documents show as cards
-//! that open their app.
+//! The Drive app: the file browser for everything a space keeps (its own
+//! synced tree, every computer's locations, storages, the apps' documents),
+//! with its protection, its devices, and the spine (the one inbox, the one
+//! calendar, notes).
 
+mod browser;
 mod catalog;
 mod files;
 mod notes;
+mod projects;
 
 use dioxus::prelude::*;
-use drive_dioxus::ui::{Avatars, ConnectionStatus};
 use drive_dioxus::{DriveProvider, use_doc, use_docs, use_drive};
 use drive_spine as spine;
 
@@ -19,110 +21,17 @@ fn main() {
     dioxus::launch(App);
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Tab {
-    Inbox,
-    Calendar,
-    Notes,
-    Files,
-    Devices,
-    Storage,
-    Computers,
-    Protection,
-    Everything,
-}
-
 #[component]
 fn App() -> Element {
     rsx! {
         document::Title { "Drive" }
         document::Meta { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" }
         document::Stylesheet { href: STYLE }
-        DriveProvider { Shell {} }
+        DriveProvider { browser::Browser {} }
     }
 }
 
-#[component]
-fn Shell() -> Element {
-    let mut tab = use_signal(|| Tab::Inbox);
-    let spine_doc = use_doc(spine::SPINE);
-    let tabs = [
-        (Tab::Inbox, "Inbox"),
-        (Tab::Calendar, "Calendar"),
-        (Tab::Notes, "Notes"),
-        (Tab::Files, "Files"),
-        (Tab::Devices, "Devices"),
-        (Tab::Storage, "Storage"),
-        (Tab::Computers, "Computers"),
-        (Tab::Protection, "Protection"),
-        (Tab::Everything, "Everything"),
-    ];
-    rsx! {
-        div { class: "app",
-            header { class: "top",
-                div { class: "brand",
-                    span { class: "mark", "D" }
-                    b { "Drive" }
-                }
-                nav { class: "tabs",
-                    for (t , label) in tabs {
-                        button {
-                            key: "{label}",
-                            class: if tab() == t { "tab on" } else { "tab" },
-                            onclick: move |_| tab.set(t),
-                            "{label}"
-                        }
-                    }
-                }
-                div { class: "who",
-                    ConnectionStatus {}
-                    Avatars { doc: spine_doc.clone() }
-                }
-            }
-            main { class: "body",
-                match tab() {
-                    Tab::Inbox => rsx! {
-                        Inbox {}
-                    },
-                    Tab::Calendar => rsx! {
-                        Calendar {}
-                    },
-                    Tab::Notes => rsx! {
-                        notes::Notes {}
-                    },
-                    Tab::Files => rsx! {
-                        files::Spaces { which: "files" }
-                    },
-                    Tab::Devices => rsx! {
-                        files::Spaces { which: "devices" }
-                    },
-                    Tab::Storage => rsx! {
-                        files::Spaces { which: "storage" }
-                    },
-                    Tab::Computers => rsx! {
-                        files::Spaces { which: "computers" }
-                    },
-                    Tab::Protection => rsx! {
-                        files::Spaces { which: "protection" }
-                    },
-                    Tab::Everything => rsx! {
-                        Everything {}
-                    },
-                }
-            }
-        }
-    }
-}
-
-fn app_label(app: &str) -> &str {
-    match app {
-        "studio" => "Studio",
-        "meals" => "Meals",
-        "frame" => "Frame",
-        "drive" => "Drive",
-        other => other,
-    }
-}
+use browser::app_label;
 
 /// The one inbox: anything from anywhere, live for everyone.
 #[component]
@@ -398,12 +307,15 @@ fn Calendar() -> Element {
 fn Everything() -> Element {
     let docs = use_docs("");
     let list = docs();
-    let mut apps: Vec<&str> = list.iter().map(|d| d.id.split(':').next().unwrap_or("")).collect();
+    let mut apps: Vec<&str> = list
+        .iter()
+        .map(|d| d.id.split(':').next().unwrap_or(""))
+        .collect();
     apps.dedup();
     rsx! {
         section { class: "pane",
             div { class: "panehead",
-                h1 { "Everything" }
+                h1 { "Raw documents" }
                 span { class: "count", "{list.len()} documents" }
             }
             p { class: "hint", "Every document on this node, from every app. Live: the dot shows who has it open." }
@@ -435,22 +347,35 @@ fn link_for(id: &str) -> String {
     match (parts.next(), parts.next(), parts.next()) {
         (Some("studio"), Some("set"), Some(set)) => format!("/studio/set/{set}"),
         (Some("meals"), _, _) => "/meals/".into(),
-        (Some("frame"), Some(rest), more) => format!("/frame/?doc={}", more.map_or(rest.to_string(), |m| format!("{rest}:{m}"))),
+        (Some("frame"), Some(rest), more) => format!(
+            "/frame/?doc={}",
+            more.map_or(rest.to_string(), |m| format!("{rest}:{m}"))
+        ),
         _ => "/".into(),
     }
 }
 
 fn name_for(id: &str) -> String {
-    id.split_once(':').map_or(id.to_string(), |(_, rest)| rest.replace(':', " · "))
+    id.split_once(':')
+        .map_or(id.to_string(), |(_, rest)| rest.replace(':', " · "))
 }
 
 fn kb(bytes: u64) -> String {
-    if bytes < 1024 { format!("{bytes} B") } else { format!("{:.1} KB", bytes as f64 / 1024.0) }
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    }
 }
 
 fn today() -> String {
     let d = js_sys::Date::new_0();
-    format!("{:04}-{:02}-{:02}", d.get_full_year(), d.get_month() + 1, d.get_date())
+    format!(
+        "{:04}-{:02}-{:02}",
+        d.get_full_year(),
+        d.get_month() + 1,
+        d.get_date()
+    )
 }
 
 fn day_label(iso: &str) -> String {
@@ -458,8 +383,27 @@ fn day_label(iso: &str) -> String {
     if d.get_time().is_nan() {
         return iso.to_string();
     }
-    const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let label = format!("{}, {} {}", DAYS[d.get_day() as usize], MONTHS[d.get_month() as usize], d.get_date());
-    if iso == today() { format!("Today · {label}") } else { label }
+    const DAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let label = format!(
+        "{}, {} {}",
+        DAYS[d.get_day() as usize],
+        MONTHS[d.get_month() as usize],
+        d.get_date()
+    );
+    if iso == today() {
+        format!("Today · {label}")
+    } else {
+        label
+    }
 }

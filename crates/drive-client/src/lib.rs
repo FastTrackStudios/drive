@@ -52,9 +52,17 @@ pub enum Event {
     /// A document changed (here or elsewhere).
     Changed(DocId),
     /// A peer's presence in a document; `None` when they left.
-    Presence { doc: DocId, peer: Peer, name: String, json: Option<String> },
+    Presence {
+        doc: DocId,
+        peer: Peer,
+        name: String,
+        json: Option<String>,
+    },
     /// The node's answer to [`Drive::list`].
-    Docs { prefix: String, docs: Vec<DocInfo> },
+    Docs {
+        prefix: String,
+        docs: Vec<DocInfo>,
+    },
 }
 
 /// Who this browser is: a display name and a colour, kept in
@@ -111,14 +119,21 @@ impl Drive {
     pub fn connect(url: Option<String>) -> (Drive, mpsc::UnboundedReceiver<Event>) {
         let url = url.unwrap_or_else(|| {
             let loc = web_sys::window().expect("a window").location();
-            let proto = if loc.protocol().unwrap_or_default() == "https:" { "wss" } else { "ws" };
+            let proto = if loc.protocol().unwrap_or_default() == "https:" {
+                "wss"
+            } else {
+                "ws"
+            };
             format!("{proto}://{}/sync", loc.host().unwrap_or_default())
         });
         let (tx, rx) = mpsc::unbounded();
         let me = storage()
             .and_then(|s| s.get_item("drive:me").ok().flatten())
             .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_else(|| Me { name: guest_name(), hue: (js_sys::Math::random() * 360.0) as u32 });
+            .unwrap_or_else(|| Me {
+                name: guest_name(),
+                hue: (js_sys::Math::random() * 360.0) as u32,
+            });
         let drive = Drive(Rc::new(Inner {
             url,
             me: RefCell::new(me),
@@ -184,7 +199,14 @@ impl Drive {
         }));
         self.0.docs.borrow_mut().insert(
             id.to_string(),
-            OpenDoc { doc: doc.clone(), outbox, _sub: sub, my_presence: None, save_pending: false, synced: false },
+            OpenDoc {
+                doc: doc.clone(),
+                outbox,
+                _sub: sub,
+                my_presence: None,
+                save_pending: false,
+                synced: false,
+            },
         );
         if self.status() == Status::Online {
             self.join(id);
@@ -195,7 +217,9 @@ impl Drive {
     /// Close a document (it stays saved here).
     pub fn close(&self, id: &str) {
         if self.0.docs.borrow_mut().remove(id).is_some() {
-            self.send(&ToNode::Leave { doc: id.to_string() });
+            self.send(&ToNode::Leave {
+                doc: id.to_string(),
+            });
         }
     }
 
@@ -205,14 +229,21 @@ impl Drive {
             let docs = self.0.docs.borrow();
             let Some(d) = docs.get(id) else { return };
             d.doc.commit();
-            let mut o = d.outbox.lock().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default();
+            let mut o = d
+                .outbox
+                .lock()
+                .map(|mut o| std::mem::take(&mut *o))
+                .unwrap_or_default();
             o.retain(|u| !u.is_empty());
             o
         };
         if !pending.is_empty() {
             if self.status() == Status::Online {
                 for bytes in pending {
-                    self.send(&ToNode::Update { doc: id.to_string(), bytes });
+                    self.send(&ToNode::Update {
+                        doc: id.to_string(),
+                        bytes,
+                    });
                 }
             }
             self.changed(id);
@@ -228,9 +259,17 @@ impl Drive {
     /// Merge exported Loro bytes made elsewhere (a template, a file) into a
     /// document, and send them, as if they were edits made here.
     pub fn import_local(&self, id: &str, bytes: &[u8]) {
-        let ok = self.0.docs.borrow().get(id).map(|d| d.doc.import(bytes).is_ok());
+        let ok = self
+            .0
+            .docs
+            .borrow()
+            .get(id)
+            .map(|d| d.doc.import(bytes).is_ok());
         if ok == Some(true) {
-            self.send(&ToNode::Update { doc: id.to_string(), bytes: bytes.to_vec() });
+            self.send(&ToNode::Update {
+                doc: id.to_string(),
+                bytes: bytes.to_vec(),
+            });
             self.changed(id);
         }
     }
@@ -238,7 +277,12 @@ impl Drive {
     /// Say you are here, unless you already said something more: opening
     /// a document from a second component must not wipe your cursor.
     pub fn announce(&self, id: &str, json: String) {
-        let fresh = self.0.docs.borrow().get(id).is_some_and(|d| d.my_presence.is_none());
+        let fresh = self
+            .0
+            .docs
+            .borrow()
+            .get(id)
+            .is_some_and(|d| d.my_presence.is_none());
         if fresh {
             self.set_presence(id, json);
         }
@@ -249,13 +293,18 @@ impl Drive {
         if let Some(d) = self.0.docs.borrow_mut().get_mut(id) {
             d.my_presence = Some(json.clone());
         }
-        self.send(&ToNode::Presence { doc: id.to_string(), json });
+        self.send(&ToNode::Presence {
+            doc: id.to_string(),
+            json,
+        });
     }
 
     /// Ask the node which documents it holds under a prefix; the answer
     /// comes as [`Event::Docs`].
     pub fn list(&self, prefix: &str) {
-        self.send(&ToNode::List { prefix: prefix.to_string() });
+        self.send(&ToNode::List {
+            prefix: prefix.to_string(),
+        });
     }
 
     // ── internals ───────────────────────────────────────────────────────
@@ -280,9 +329,17 @@ impl Drive {
     }
 
     fn join(&self, id: &str) {
-        let vv = self.0.docs.borrow().get(id).map(|d| d.doc.oplog_vv().encode());
+        let vv = self
+            .0
+            .docs
+            .borrow()
+            .get(id)
+            .map(|d| d.doc.oplog_vv().encode());
         if let Some(vv) = vv {
-            self.send(&ToNode::Join { doc: id.to_string(), version_vector: vv });
+            self.send(&ToNode::Join {
+                doc: id.to_string(),
+                version_vector: vv,
+            });
         }
     }
 
@@ -330,7 +387,10 @@ impl Drive {
         let onopen = Closure::<dyn FnMut()>::new(move || {
             me.0.retry_ms.set(500);
             let name = me.0.me.borrow().name.clone();
-            me.send(&ToNode::Hello { version: drive_proto::VERSION, name });
+            me.send(&ToNode::Hello {
+                version: drive_proto::VERSION,
+                name,
+            });
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
@@ -376,7 +436,11 @@ impl Drive {
                     self.join(&id);
                 }
             }
-            ToClient::Synced { doc: id, bytes, version_vector } => {
+            ToClient::Synced {
+                doc: id,
+                bytes,
+                version_vector,
+            } => {
                 let (ours, presence) = {
                     let mut docs = self.0.docs.borrow_mut();
                     let Some(d) = docs.get_mut(&id) else { return };
@@ -386,28 +450,52 @@ impl Drive {
                     }
                     // Whatever was made here (offline too) that the node lacks.
                     let theirs = VersionVector::decode(&version_vector).unwrap_or_default();
-                    let ours = d.doc.export(ExportMode::updates(&theirs)).unwrap_or_default();
+                    let ours = d
+                        .doc
+                        .export(ExportMode::updates(&theirs))
+                        .unwrap_or_default();
                     if let Ok(mut o) = d.outbox.lock() {
                         o.clear();
                     }
                     (ours, d.my_presence.clone())
                 };
                 if !ours.is_empty() {
-                    self.send(&ToNode::Update { doc: id.clone(), bytes: ours });
+                    self.send(&ToNode::Update {
+                        doc: id.clone(),
+                        bytes: ours,
+                    });
                 }
                 if let Some(json) = presence {
-                    self.send(&ToNode::Presence { doc: id.clone(), json });
+                    self.send(&ToNode::Presence {
+                        doc: id.clone(),
+                        json,
+                    });
                 }
                 self.changed(&id);
             }
             ToClient::Update { doc: id, bytes } => {
-                let ok = self.0.docs.borrow().get(&id).map(|d| d.doc.import(&bytes).is_ok());
+                let ok = self
+                    .0
+                    .docs
+                    .borrow()
+                    .get(&id)
+                    .map(|d| d.doc.import(&bytes).is_ok());
                 if ok == Some(true) {
                     self.changed(&id);
                 }
             }
-            ToClient::Presence { doc, peer, name, json } => {
-                self.emit(Event::Presence { doc, peer, name, json });
+            ToClient::Presence {
+                doc,
+                peer,
+                name,
+                json,
+            } => {
+                self.emit(Event::Presence {
+                    doc,
+                    peer,
+                    name,
+                    json,
+                });
             }
             ToClient::Docs { prefix, docs } => self.emit(Event::Docs { prefix, docs }),
             ToClient::Error { .. } | ToClient::Fetch { .. } => {}
@@ -421,7 +509,8 @@ fn key(id: &str) -> String {
 
 fn guest_name() -> String {
     const N: [&str; 12] = [
-        "Otter", "Heron", "Lynx", "Robin", "Maple", "Comet", "Pike", "Wren", "Fern", "Juniper", "Basil", "Sage",
+        "Otter", "Heron", "Lynx", "Robin", "Maple", "Comet", "Pike", "Wren", "Fern", "Juniper",
+        "Basil", "Sage",
     ];
     let i = (js_sys::Math::random() * N.len() as f64) as usize % N.len();
     format!("Guest {}", N[i])

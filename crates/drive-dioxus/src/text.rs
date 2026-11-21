@@ -44,12 +44,14 @@ mod tests {
         set_text(&t, "hello world");
         a.commit();
         let b = LoroDoc::new();
-        b.import(&a.export(drive_client::loro::ExportMode::Snapshot).unwrap()).unwrap();
+        b.import(&a.export(drive_client::loro::ExportMode::Snapshot).unwrap())
+            .unwrap();
         set_text(&a.get_text("t"), "hello brave world");
         set_text(&b.get_text("t"), "hello world!");
         a.commit();
         b.commit();
-        a.import(&b.export(drive_client::loro::ExportMode::Snapshot).unwrap()).unwrap();
+        a.import(&b.export(drive_client::loro::ExportMode::Snapshot).unwrap())
+            .unwrap();
         assert_eq!(a.get_text("t").to_string(), "hello brave world!");
     }
 }

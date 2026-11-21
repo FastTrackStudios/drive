@@ -11,12 +11,25 @@ use drive_files::space::{self, Location, Volume};
 use crate::agent::Agent;
 
 /// Pseudo and system file systems: never volumes worth showing.
-const SKIP_FS: &[&str] =
-    &["tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs", "efivarfs", "ramfs", "fuse.drive", "fuse.portal", "nsfs"];
+const SKIP_FS: &[&str] = &[
+    "tmpfs",
+    "devtmpfs",
+    "overlay",
+    "squashfs",
+    "proc",
+    "sysfs",
+    "efivarfs",
+    "ramfs",
+    "fuse.drive",
+    "fuse.portal",
+    "nsfs",
+];
 
 /// The disks this device has now.
 pub fn volumes(device: &str) -> Vec<Volume> {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else { return Vec::new() };
+    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+        return Vec::new();
+    };
     let mut seen = std::collections::HashSet::new();
     disks
         .iter()
@@ -47,12 +60,16 @@ pub fn volumes(device: &str) -> Vec<Volume> {
 /// The volume a path is on: the longest mount point containing it, of all
 /// mounts (including the ones `volumes` leaves out, then mapped back).
 pub fn volume_of(path: &Path) -> String {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else { return "/".into() };
+    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+        return "/".into();
+    };
     disks
         .iter()
         .filter(|d| path.starts_with(d.mount_point()))
         .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map_or("/".into(), |d| d.mount_point().to_string_lossy().into_owned())
+        .map_or("/".into(), |d| {
+            d.mount_point().to_string_lossy().into_owned()
+        })
 }
 
 /// A path inside a location, made safe: relative, no `..`.
@@ -74,7 +91,10 @@ impl Agent {
     /// This device's own locations.
     pub fn my_locations(&self) -> Vec<Location> {
         let me = self.device_id();
-        space::locations(&self.space).into_iter().filter(|l| l.device == me).collect()
+        space::locations(&self.space)
+            .into_iter()
+            .filter(|l| l.device == me)
+            .collect()
     }
 
     fn index_cache(&self, location: &str) -> PathBuf {
@@ -83,7 +103,9 @@ impl Agent {
 
     /// A location's index as last downloaded or built here.
     pub fn cached_index(&self, location: &str) -> Option<LocationIndex> {
-        std::fs::read(self.index_cache(location)).ok().and_then(|b| index::decode(&b))
+        std::fs::read(self.index_cache(location))
+            .ok()
+            .and_then(|b| index::decode(&b))
     }
 
     /// Walk one of this device's locations, publish its index to the node
@@ -96,10 +118,19 @@ impl Agent {
                 .await
                 .map_err(|e| e.to_string())?
         } else {
-            let own = self.cfg.lock().expect("cfg").storages.iter().find(|s| s.id == loc.storage).cloned();
+            let own = self
+                .cfg
+                .lock()
+                .expect("cfg")
+                .storages
+                .iter()
+                .find(|s| s.id == loc.storage)
+                .cloned();
             let own = own.ok_or("this device does not run that location's storage")?;
             let op = own.config.operator().map_err(|e| e.to_string())?;
-            index::walk_storage(&loc.id, &op, &loc.path, previous.as_ref()).await.map_err(|e| e.to_string())?
+            index::walk_storage(&loc.id, &op, &loc.path, previous.as_ref())
+                .await
+                .map_err(|e| e.to_string())?
         };
         let bytes = index::encode(&idx);
         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
@@ -120,8 +151,14 @@ impl Agent {
         }
         let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
         let hash = v["hash"].as_str().unwrap_or_default();
-        space::set_index(&self.space, &loc.id, hash, stats.files as i64, stats.bytes as i64)
-            .map_err(|e| e.to_string())?;
+        space::set_index(
+            &self.space,
+            &loc.id,
+            hash,
+            stats.files as i64,
+            stats.bytes as i64,
+        )
+        .map_err(|e| e.to_string())?;
         self.commit_space();
         tracing::info!(
             location.name = %loc.name,
@@ -167,20 +204,50 @@ impl Agent {
     /// The node asks for a file in one of this device's locations: put its
     /// bytes on the node and say their hash.
     pub async fn answer_fetch(&self, location: &str, path: &str) -> Result<String, String> {
-        let loc = self.my_locations().into_iter().find(|l| l.id == location).ok_or("not one of this device's locations")?;
+        let loc = self
+            .my_locations()
+            .into_iter()
+            .find(|l| l.id == location)
+            .ok_or("not one of this device's locations")?;
         let bytes = if loc.storage.is_empty() {
             let p = inside(Path::new(&loc.path), path).ok_or("a path outside the location")?;
-            tokio::fs::read(&p).await.map_err(|e| format!("{path}: {e}"))?
+            tokio::fs::read(&p)
+                .await
+                .map_err(|e| format!("{path}: {e}"))?
         } else {
-            let own = self.cfg.lock().expect("cfg").storages.iter().find(|s| s.id == loc.storage).cloned();
-            let op = own.ok_or("its storage is not run here")?.config.operator().map_err(|e| e.to_string())?;
+            let own = self
+                .cfg
+                .lock()
+                .expect("cfg")
+                .storages
+                .iter()
+                .find(|s| s.id == loc.storage)
+                .cloned();
+            let op = own
+                .ok_or("its storage is not run here")?
+                .config
+                .operator()
+                .map_err(|e| e.to_string())?;
             inside(Path::new("/"), path).ok_or("a path outside the location")?;
-            let key = format!("{}/{}", loc.path.trim_matches('/'), path.trim_start_matches('/'));
-            op.read(key.trim_start_matches('/')).await.map_err(|e| e.to_string())?.to_vec()
+            let key = format!(
+                "{}/{}",
+                loc.path.trim_matches('/'),
+                path.trim_start_matches('/')
+            );
+            op.read(key.trim_start_matches('/'))
+                .await
+                .map_err(|e| e.to_string())?
+                .to_vec()
         };
         let h = drive_files::hash::of_bytes(&bytes);
         let url = format!("{}/blobs/{h}", self.cfg.lock().expect("cfg").node_http());
-        let r = self.http.put(&url).body(bytes).send().await.map_err(|e| e.to_string())?;
+        let r = self
+            .http
+            .put(&url)
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         if !r.status().is_success() {
             return Err(format!("the node refused the bytes ({})", r.status()));
         }

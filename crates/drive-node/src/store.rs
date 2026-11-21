@@ -41,9 +41,15 @@ fn int(v: Value) -> i64 {
 
 impl Store {
     pub async fn open(path: &Path) -> turso::Result<Store> {
-        let db = turso::Builder::new_local(&path.to_string_lossy()).build().await?;
+        let db = turso::Builder::new_local(&path.to_string_lossy())
+            .build()
+            .await?;
         let conn = db.connect()?;
-        conn.execute("CREATE TABLE IF NOT EXISTS docs (id TEXT PRIMARY KEY, snapshot BLOB NOT NULL)", ()).await?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS docs (id TEXT PRIMARY KEY, snapshot BLOB NOT NULL)",
+            (),
+        )
+        .await?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS entries (space TEXT NOT NULL, location TEXT NOT NULL, parent TEXT NOT NULL, \
              path TEXT NOT NULL, name TEXT NOT NULL, lname TEXT NOT NULL, dir INTEGER NOT NULL, size INTEGER NOT NULL, \
@@ -51,16 +57,35 @@ impl Store {
             (),
         )
         .await?;
-        conn.execute("CREATE INDEX IF NOT EXISTS entries_dir ON entries (space, location, parent)", ()).await?;
-        conn.execute("CREATE INDEX IF NOT EXISTS entries_name ON entries (space, lname)", ()).await?;
-        conn.execute("CREATE INDEX IF NOT EXISTS entries_content ON entries (space, sampled, size)", ()).await?;
-        Ok(Store { conn: Mutex::new(conn) })
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS entries_dir ON entries (space, location, parent)",
+            (),
+        )
+        .await?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS entries_name ON entries (space, lname)",
+            (),
+        )
+        .await?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS entries_content ON entries (space, sampled, size)",
+            (),
+        )
+        .await?;
+        Ok(Store {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// A document's last saved snapshot.
     pub async fn load(&self, id: &str) -> turso::Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().await;
-        let mut rows = conn.query("SELECT snapshot FROM docs WHERE id = ?1", vec![Value::Text(id.into())]).await?;
+        let mut rows = conn
+            .query(
+                "SELECT snapshot FROM docs WHERE id = ?1",
+                vec![Value::Text(id.into())],
+            )
+            .await?;
         match rows.next().await? {
             Some(row) => match row.get_value(0)? {
                 Value::Blob(b) => Ok(Some(b)),
@@ -84,10 +109,15 @@ impl Store {
     /// Every stored document id with its snapshot size.
     pub async fn list(&self) -> turso::Result<Vec<(String, u64)>> {
         let conn = self.conn.lock().await;
-        let mut rows = conn.query("SELECT id, length(snapshot) FROM docs", ()).await?;
+        let mut rows = conn
+            .query("SELECT id, length(snapshot) FROM docs", ())
+            .await?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
-            out.push((text(row.get_value(0)?), int(row.get_value(1)?).max(0) as u64));
+            out.push((
+                text(row.get_value(0)?),
+                int(row.get_value(1)?).max(0) as u64,
+            ));
         }
         Ok(out)
     }
@@ -160,22 +190,59 @@ impl Store {
         })
     }
 
-    /// Files and folders whose name contains every word of `q`.
-    pub async fn search(&self, space: &str, q: &str, limit: i64) -> turso::Result<Vec<Found>> {
-        let words: Vec<String> = q.split_whitespace().map(|w| w.to_lowercase()).take(6).collect();
-        if words.is_empty() {
+    /// Files and folders whose name contains every word of `q`, and (when
+    /// `exts` is not empty) files with one of those extensions.
+    pub async fn search(
+        &self,
+        space: &str,
+        q: &str,
+        exts: &[String],
+        limit: i64,
+    ) -> turso::Result<Vec<Found>> {
+        let words: Vec<String> = q
+            .split_whitespace()
+            .map(|w| w.to_lowercase())
+            .take(6)
+            .collect();
+        let exts: Vec<String> = exts
+            .iter()
+            .map(|e| {
+                e.trim()
+                    .trim_start_matches('.')
+                    .to_lowercase()
+                    .replace(['%', '_'], "")
+            })
+            .filter(|e| !e.is_empty())
+            .take(64)
+            .collect();
+        if words.is_empty() && exts.is_empty() {
             return Ok(Vec::new());
         }
         let mut sql = String::from(
             "SELECT location, path, name, dir, size, mtime, sampled FROM entries WHERE space = ?1",
         );
         let mut params = vec![Value::Text(space.into())];
-        for (i, w) in words.iter().enumerate() {
-            sql.push_str(&format!(" AND lname LIKE ?{}", i + 2));
+        for w in &words {
             params.push(Value::Text(format!("%{}%", w.replace(['%', '_'], ""))));
+            sql.push_str(&format!(" AND lname LIKE ?{}", params.len()));
         }
-        sql.push_str(&format!(" ORDER BY dir DESC, mtime DESC LIMIT ?{}", words.len() + 2));
-        params.push(Value::Integer(limit.clamp(1, 500)));
+        if !exts.is_empty() {
+            sql.push_str(" AND dir = 0 AND (");
+            for (i, e) in exts.iter().enumerate() {
+                params.push(Value::Text(format!("%.{e}")));
+                sql.push_str(&format!(
+                    "{}lname LIKE ?{}",
+                    if i > 0 { " OR " } else { "" },
+                    params.len()
+                ));
+            }
+            sql.push(')');
+        }
+        params.push(Value::Integer(limit.clamp(1, 1000)));
+        sql.push_str(&format!(
+            " ORDER BY dir DESC, mtime DESC LIMIT ?{}",
+            params.len()
+        ));
         let conn = self.conn.lock().await;
         let mut rows = conn.query(&sql, params).await?;
         let mut out = Vec::new();
@@ -185,14 +252,48 @@ impl Store {
         Ok(out)
     }
 
+    /// One entry of a location's index.
+    pub async fn entry(
+        &self,
+        space: &str,
+        location: &str,
+        path: &str,
+    ) -> turso::Result<Option<Found>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
+                 WHERE space = ?1 AND location = ?2 AND path = ?3 LIMIT 1",
+                vec![
+                    Value::Text(space.into()),
+                    Value::Text(location.into()),
+                    Value::Text(path.into()),
+                ],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some(Self::found(&row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// A folder's entries in a location's index (`""`: its root).
-    pub async fn list_dir(&self, space: &str, location: &str, dir: &str) -> turso::Result<Vec<Found>> {
+    pub async fn list_dir(
+        &self,
+        space: &str,
+        location: &str,
+        dir: &str,
+    ) -> turso::Result<Vec<Found>> {
         let conn = self.conn.lock().await;
         let mut rows = conn
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
                  WHERE space = ?1 AND location = ?2 AND parent = ?3 ORDER BY dir DESC, lname",
-                vec![Value::Text(space.into()), Value::Text(location.into()), Value::Text(dir.into())],
+                vec![
+                    Value::Text(space.into()),
+                    Value::Text(location.into()),
+                    Value::Text(dir.into()),
+                ],
             )
             .await?;
         let mut out = Vec::new();
@@ -230,7 +331,11 @@ impl Store {
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
                  WHERE space = ?1 AND sampled = ?2 AND size = ?3 AND dir = 0",
-                vec![Value::Text(space.into()), Value::Text(sampled.into()), Value::Integer(size)],
+                vec![
+                    Value::Text(space.into()),
+                    Value::Text(sampled.into()),
+                    Value::Integer(size),
+                ],
             )
             .await?;
         let mut out = Vec::new();

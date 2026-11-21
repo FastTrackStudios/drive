@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 drive-native = { path = "../drive-native" }
 drive-files = { path = "../drive-files" }
+drive-spine.workspace = true
 loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true

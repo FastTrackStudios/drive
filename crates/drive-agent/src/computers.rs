@@ -19,8 +19,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use drive_files::index::{IndexEntry, LocationIndex, Tree};
 use drive_files::space::Location;
 use fuser::{
-    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, LockOwner, OpenAccMode,
-    OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyXattr, Request,
+    Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, LockOwner,
+    OpenAccMode, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
+    ReplyStatfs, ReplyXattr, Request,
 };
 use tokio::runtime::Handle;
 
@@ -43,25 +44,57 @@ pub struct View {
 }
 
 impl View {
-    pub fn build(me: &str, devices: Vec<(String, String)>, locations: Vec<Location>, indexes: HashMap<String, LocationIndex>, online: HashSet<String>) -> View {
+    pub fn build(
+        me: &str,
+        devices: Vec<(String, String)>,
+        locations: Vec<Location>,
+        indexes: HashMap<String, LocationIndex>,
+        online: HashSet<String>,
+    ) -> View {
         let mut copies: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
         for idx in indexes.values() {
-            for e in idx.entries.iter().filter(|e| !e.dir && !e.sampled.is_empty()) {
-                copies.entry((e.sampled.clone(), e.size)).or_default().push((idx.location.clone(), e.path.clone()));
+            for e in idx
+                .entries
+                .iter()
+                .filter(|e| !e.dir && !e.sampled.is_empty())
+            {
+                copies
+                    .entry((e.sampled.clone(), e.size))
+                    .or_default()
+                    .push((idx.location.clone(), e.path.clone()));
             }
         }
-        let trees = indexes.into_iter().map(|(k, v)| (k, Tree::new(v))).collect();
+        let trees = indexes
+            .into_iter()
+            .map(|(k, v)| (k, Tree::new(v)))
+            .collect();
         // Only devices that have a location.
-        let devices = devices.into_iter().filter(|(id, _)| locations.iter().any(|l| &l.device == id)).collect();
-        View { me: me.to_string(), devices, locations, trees, online, copies }
+        let devices = devices
+            .into_iter()
+            .filter(|(id, _)| locations.iter().any(|l| &l.device == id))
+            .collect();
+        View {
+            me: me.to_string(),
+            devices,
+            locations,
+            trees,
+            online,
+            copies,
+        }
     }
 
     fn device_by_name(&self, name: &str) -> Option<&str> {
-        self.devices.iter().find(|(_, n)| n == name).map(|(id, _)| id.as_str())
+        self.devices
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(id, _)| id.as_str())
     }
 
     fn device_name(&self, id: &str) -> String {
-        self.devices.iter().find(|(d, _)| d == id).map_or(id.to_string(), |(_, n)| n.clone())
+        self.devices
+            .iter()
+            .find(|(d, _)| d == id)
+            .map_or(id.to_string(), |(_, n)| n.clone())
     }
 }
 
@@ -90,7 +123,14 @@ impl ComputersFs {
         let mut by_path = HashMap::new();
         by_ino.insert(1, String::new());
         by_path.insert(String::new(), 1);
-        ComputersFs { agent, view, rt, paths: Mutex::new((by_ino, by_path)), uid, gid }
+        ComputersFs {
+            agent,
+            view,
+            rt,
+            paths: Mutex::new((by_ino, by_path)),
+            uid,
+            gid,
+        }
     }
 
     fn ino(&self, path: &str) -> INodeNo {
@@ -105,7 +145,13 @@ impl ComputersFs {
     }
 
     fn path(&self, ino: INodeNo) -> Result<String, Errno> {
-        self.paths.lock().expect("paths").0.get(&ino.0).cloned().ok_or(Errno::ENOENT)
+        self.paths
+            .lock()
+            .expect("paths")
+            .0
+            .get(&ino.0)
+            .cloned()
+            .ok_or(Errno::ENOENT)
     }
 
     fn resolve(&self, path: &str) -> Result<Node, Errno> {
@@ -114,11 +160,28 @@ impl ComputersFs {
         }
         let v = self.view.read().expect("view");
         let mut parts = path.splitn(3, '/');
-        let dev = v.device_by_name(parts.next().unwrap_or_default()).ok_or(Errno::ENOENT)?.to_string();
-        let Some(lname) = parts.next() else { return Ok(Node::Device(dev)) };
-        let loc = v.locations.iter().find(|l| l.device == dev && l.name == lname).cloned().ok_or(Errno::ENOENT)?;
-        let Some(rel) = parts.next() else { return Ok(Node::Location(loc)) };
-        let e = v.trees.get(&loc.id).and_then(|t| t.get(rel)).cloned().ok_or(Errno::ENOENT)?;
+        let dev = v
+            .device_by_name(parts.next().unwrap_or_default())
+            .ok_or(Errno::ENOENT)?
+            .to_string();
+        let Some(lname) = parts.next() else {
+            return Ok(Node::Device(dev));
+        };
+        let loc = v
+            .locations
+            .iter()
+            .find(|l| l.device == dev && l.name == lname)
+            .cloned()
+            .ok_or(Errno::ENOENT)?;
+        let Some(rel) = parts.next() else {
+            return Ok(Node::Location(loc));
+        };
+        let e = v
+            .trees
+            .get(&loc.id)
+            .and_then(|t| t.get(rel))
+            .cloned()
+            .ok_or(Errno::ENOENT)?;
         Ok(Node::Entry(loc, e))
     }
 
@@ -126,16 +189,31 @@ impl ComputersFs {
         let v = self.view.read().expect("view");
         match node {
             Node::Root => v.devices.iter().map(|(_, n)| (n.clone(), true)).collect(),
-            Node::Device(d) => v.locations.iter().filter(|l| &l.device == d).map(|l| (l.name.clone(), true)).collect(),
+            Node::Device(d) => v
+                .locations
+                .iter()
+                .filter(|l| &l.device == d)
+                .map(|l| (l.name.clone(), true))
+                .collect(),
             Node::Location(l) => v
                 .trees
                 .get(&l.id)
-                .map(|t| t.list("").into_iter().map(|e| (e.name().to_string(), e.dir)).collect())
+                .map(|t| {
+                    t.list("")
+                        .into_iter()
+                        .map(|e| (e.name().to_string(), e.dir))
+                        .collect()
+                })
                 .unwrap_or_default(),
             Node::Entry(l, e) if e.dir => v
                 .trees
                 .get(&l.id)
-                .map(|t| t.list(&e.path).into_iter().map(|c| (c.name().to_string(), c.dir)).collect())
+                .map(|t| {
+                    t.list(&e.path)
+                        .into_iter()
+                        .map(|c| (c.name().to_string(), c.dir))
+                        .collect()
+                })
                 .unwrap_or_default(),
             Node::Entry(..) => {
                 let _ = path;
@@ -159,7 +237,11 @@ impl ComputersFs {
             mtime: t,
             ctime: t,
             crtime: t,
-            kind: if dir { FileType::Directory } else { FileType::RegularFile },
+            kind: if dir {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            },
             perm: if dir { 0o555 } else { 0o444 },
             nlink: if dir { 2 } else { 1 },
             uid: self.uid,
@@ -222,12 +304,16 @@ impl ComputersFs {
             })?;
         let _ = std::fs::create_dir_all(cached.parent().expect("a parent"));
         let tmp = cached.with_extension("part");
-        std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &cached)).map_err(|_| Errno::EIO)?;
+        std::fs::write(&tmp, &bytes)
+            .and_then(|_| std::fs::rename(&tmp, &cached))
+            .map_err(|_| Errno::EIO)?;
         Ok(cached)
     }
 
     fn xattr(&self, node: &Node, name: &str) -> Result<Vec<u8>, Errno> {
-        let Node::Entry(loc, e) = node else { return Err(Errno::ENODATA) };
+        let Node::Entry(loc, e) = node else {
+            return Err(Errno::ENODATA);
+        };
         match name {
             "user.drive.state" if !e.dir => Ok(self.state(loc, e).as_bytes().to_vec()),
             "user.drive.copies" if !e.dir => {
@@ -252,7 +338,11 @@ impl ComputersFs {
 }
 
 fn join(parent: &str, name: &str) -> String {
-    if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") }
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    }
 }
 
 fn reply_xattr(reply: ReplyXattr, size: u32, data: &[u8]) {
@@ -285,14 +375,31 @@ impl Filesystem for ComputersFs {
         }
     }
 
-    fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
-        let (path, node) = match self.path(ino).and_then(|p| self.resolve(&p).map(|n| (p, n))) {
+    fn readdir(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectory,
+    ) {
+        let (path, node) = match self
+            .path(ino)
+            .and_then(|p| self.resolve(&p).map(|n| (p, n)))
+        {
             Ok(x) => x,
             Err(e) => return reply.error(e),
         };
-        let mut rows = vec![(ino, FileType::Directory, ".".to_string()), (ino, FileType::Directory, "..".to_string())];
+        let mut rows = vec![
+            (ino, FileType::Directory, ".".to_string()),
+            (ino, FileType::Directory, "..".to_string()),
+        ];
         for (name, dir) in self.children(&path, &node) {
-            let kind = if dir { FileType::Directory } else { FileType::RegularFile };
+            let kind = if dir {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            };
             rows.push((self.ino(&join(&path, &name)), kind, name));
         }
         for (i, (ino, kind, name)) in rows.into_iter().enumerate().skip(offset as usize) {
@@ -329,10 +436,14 @@ impl Filesystem for ComputersFs {
         reply: ReplyData,
     ) {
         let r = (|| {
-            let Node::Entry(loc, e) = self.resolve(&self.path(ino)?)? else { return Err(Errno::EISDIR) };
+            let Node::Entry(loc, e) = self.resolve(&self.path(ino)?)? else {
+                return Err(Errno::EISDIR);
+            };
             let path = self.local_file(&loc, &e)?;
             let mut buf = vec![0u8; size as usize];
-            let n = File::open(path).and_then(|f| f.read_at(&mut buf, offset)).map_err(|_| Errno::EIO)?;
+            let n = File::open(path)
+                .and_then(|f| f.read_at(&mut buf, offset))
+                .map_err(|_| Errno::EIO)?;
             buf.truncate(n);
             Ok(buf)
         })();
@@ -343,7 +454,11 @@ impl Filesystem for ComputersFs {
     }
 
     fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
-        match self.path(ino).and_then(|p| self.resolve(&p)).and_then(|n| self.xattr(&n, &name.to_string_lossy())) {
+        match self
+            .path(ino)
+            .and_then(|p| self.resolve(&p))
+            .and_then(|n| self.xattr(&n, &name.to_string_lossy()))
+        {
             Ok(v) => reply_xattr(reply, size, &v),
             Err(e) => reply.error(e),
         }
@@ -357,4 +472,3 @@ impl Filesystem for ComputersFs {
         reply.statfs(1 << 30, 0, 0, 1 << 20, 0, 4096, 255, 4096);
     }
 }
-

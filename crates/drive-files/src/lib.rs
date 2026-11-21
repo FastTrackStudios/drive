@@ -8,6 +8,8 @@
 //!   (a blob's name, checked before anything is trusted).
 //! - [`index`]: a location's index (every file in a folder a device
 //!   keeps, where it is), built by walking it and published as one blob.
+//! - [`projects`]: projects whose parts are folders on any computer, and
+//!   what of them is kept on the node to be had from anywhere.
 //! - [`protect`]: copies across every index, and policies (3-2-1).
 //! - [`space`]: the space's registry (`drive:space:<space>`): its devices,
 //!   storages, pairing invites, and which device holds which blob.
@@ -20,6 +22,7 @@ pub mod hash;
 #[cfg(feature = "storage")]
 pub mod index;
 pub mod placement;
+pub mod projects;
 pub mod protect;
 pub mod space;
 #[cfg(feature = "storage")]
@@ -56,7 +59,8 @@ pub fn now_ms() -> i64 {
 pub(crate) fn entropy() -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        (js_sys::Math::random() * u64::MAX as f64) as u64 ^ (js_sys::Math::random() * 4_294_967_296.0) as u64
+        (js_sys::Math::random() * u64::MAX as f64) as u64
+            ^ (js_sys::Math::random() * 4_294_967_296.0) as u64
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

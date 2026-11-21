@@ -52,11 +52,24 @@ impl StorageConfig {
     pub fn public(&self) -> String {
         match self {
             StorageConfig::Fs { root } => root.clone(),
-            StorageConfig::S3 { bucket, endpoint, root, .. } => {
-                let host = if endpoint.is_empty() { "aws".to_string() } else { endpoint.clone() };
-                format!("{host} · {bucket}/{root}").trim_end_matches('/').to_string()
+            StorageConfig::S3 {
+                bucket,
+                endpoint,
+                root,
+                ..
+            } => {
+                let host = if endpoint.is_empty() {
+                    "aws".to_string()
+                } else {
+                    endpoint.clone()
+                };
+                format!("{host} · {bucket}/{root}")
+                    .trim_end_matches('/')
+                    .to_string()
             }
-            StorageConfig::Webdav { endpoint, root, .. } => format!("{endpoint}/{root}").trim_end_matches('/').to_string(),
+            StorageConfig::Webdav { endpoint, root, .. } => format!("{endpoint}/{root}")
+                .trim_end_matches('/')
+                .to_string(),
             StorageConfig::Memory => "memory".into(),
         }
     }
@@ -65,7 +78,14 @@ impl StorageConfig {
         use opendal::services;
         Ok(match self {
             StorageConfig::Fs { root } => Operator::new(services::Fs::default().root(root))?,
-            StorageConfig::S3 { bucket, region, endpoint, access_key_id, secret_access_key, root } => {
+            StorageConfig::S3 {
+                bucket,
+                region,
+                endpoint,
+                access_key_id,
+                secret_access_key,
+                root,
+            } => {
                 let mut b = services::S3::default()
                     .bucket(bucket)
                     .access_key_id(access_key_id)
@@ -77,8 +97,15 @@ impl StorageConfig {
                 }
                 Operator::new(b)?
             }
-            StorageConfig::Webdav { endpoint, username, password, root } => {
-                let mut b = services::Webdav::default().endpoint(endpoint).root(if root.is_empty() { "/" } else { root });
+            StorageConfig::Webdav {
+                endpoint,
+                username,
+                password,
+                root,
+            } => {
+                let mut b = services::Webdav::default()
+                    .endpoint(endpoint)
+                    .root(if root.is_empty() { "/" } else { root });
                 if !username.is_empty() {
                     b = b.username(username).password(password);
                 }

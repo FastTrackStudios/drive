@@ -75,7 +75,13 @@ pub fn children(doc: &LoroDoc, parent: Option<TreeID>) -> Vec<Entry> {
     let t = tree(doc);
     let ids = t.children(parent_id(parent)).unwrap_or_default();
     let mut out: Vec<Entry> = ids.into_iter().filter_map(|id| entry(doc, id)).collect();
-    out.sort_by(|a, b| (!a.dir, a.name.to_lowercase(), a.id.to_string()).cmp(&(!b.dir, b.name.to_lowercase(), b.id.to_string())));
+    out.sort_by(|a, b| {
+        (!a.dir, a.name.to_lowercase(), a.id.to_string()).cmp(&(
+            !b.dir,
+            b.name.to_lowercase(),
+            b.id.to_string(),
+        ))
+    });
     let mut seen: HashMap<String, u32> = HashMap::new();
     for e in &mut out {
         let c = seen.entry(e.name.clone()).or_insert(0);
@@ -169,7 +175,12 @@ pub fn set_content(doc: &LoroDoc, id: TreeID, size: u64, hash: &str) -> loro::Lo
 }
 
 /// Move and/or rename.
-pub fn rename(doc: &LoroDoc, id: TreeID, parent: Option<TreeID>, name: &str) -> loro::LoroResult<()> {
+pub fn rename(
+    doc: &LoroDoc,
+    id: TreeID,
+    parent: Option<TreeID>,
+    name: &str,
+) -> loro::LoroResult<()> {
     let t = tree(doc);
     if t.parent(id) != Some(parent_id(parent)) {
         t.mov(id, parent_id(parent))?;
@@ -191,7 +202,11 @@ pub fn files(doc: &LoroDoc) -> Vec<(String, Entry)> {
     let mut stack: Vec<(Option<TreeID>, String)> = vec![(None, String::new())];
     while let Some((p, prefix)) = stack.pop() {
         for e in children(doc, p) {
-            let path = if prefix.is_empty() { e.name.clone() } else { format!("{prefix}/{}", e.name) };
+            let path = if prefix.is_empty() {
+                e.name.clone()
+            } else {
+                format!("{prefix}/{}", e.name)
+            };
             if e.dir {
                 stack.push((Some(e.id), path));
             } else {
@@ -214,7 +229,11 @@ pub fn parse_id(s: &str) -> Option<TreeID> {
 
 /// A MIME type from a file name.
 pub fn mime_of(name: &str) -> &'static str {
-    match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).as_deref() {
+    match name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("wav") => "audio/wav",
         Some("mp3") => "audio/mpeg",
         Some("flac") => "audio/flac",
@@ -247,12 +266,14 @@ mod tests {
 
         // Two devices make "notes.txt" at once: both survive, told apart.
         let b = LoroDoc::new();
-        b.import(&a.export(loro::ExportMode::Snapshot).unwrap()).unwrap();
+        b.import(&a.export(loro::ExportMode::Snapshot).unwrap())
+            .unwrap();
         create_file(&a, None, "notes.txt").unwrap();
         create_file(&b, None, "notes.txt").unwrap();
         a.commit();
         b.commit();
-        a.import(&b.export(loro::ExportMode::Snapshot).unwrap()).unwrap();
+        a.import(&b.export(loro::ExportMode::Snapshot).unwrap())
+            .unwrap();
         let names: Vec<String> = children(&a, None).into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["Stems", "notes.txt", "notes (2).txt"]);
 

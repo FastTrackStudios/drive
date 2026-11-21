@@ -57,10 +57,14 @@ pub struct DriveCtx {
 
 impl DriveCtx {
     fn signals(&self, id: &str) -> DocSignals {
-        *self.docs.borrow_mut().entry(id.to_string()).or_insert_with(|| DocSignals {
-            rev: Signal::new_in_scope(0, ScopeId::ROOT),
-            presence: Signal::new_in_scope(Vec::new(), ScopeId::ROOT),
-        })
+        *self
+            .docs
+            .borrow_mut()
+            .entry(id.to_string())
+            .or_insert_with(|| DocSignals {
+                rev: Signal::new_in_scope(0, ScopeId::ROOT),
+                presence: Signal::new_in_scope(Vec::new(), ScopeId::ROOT),
+            })
     }
 
     /// Change your name and colour, in every app on this address.
@@ -105,7 +109,12 @@ fn pump(ctx: DriveCtx, mut rx: drive_client::EventStream) {
                     let mut rev = ctx.signals(&id).rev;
                     rev += 1;
                 }
-                Event::Presence { doc, peer, name, json } => {
+                Event::Presence {
+                    doc,
+                    peer,
+                    name,
+                    json,
+                } => {
                     let mut p = ctx.signals(&doc).presence;
                     let mut list = p.write();
                     list.retain(|x| x.peer != peer);
@@ -114,7 +123,12 @@ fn pump(ctx: DriveCtx, mut rx: drive_client::EventStream) {
                     {
                         let hue = v.get("hue").and_then(|h| h.as_u64()).unwrap_or(0) as u32;
                         let data = v.get("data").cloned().unwrap_or(serde_json::Value::Null);
-                        list.push(Presence { peer, name, hue, data });
+                        list.push(Presence {
+                            peer,
+                            name,
+                            hue,
+                            data,
+                        });
                         list.sort_by_key(|x| x.peer);
                     }
                 }
@@ -184,7 +198,10 @@ impl Doc {
     /// Everyone else here, live.
     pub fn others(&self) -> Vec<Presence> {
         let me = self.drive.peer();
-        (self.presence)().into_iter().filter(|p| Some(p.peer) != me).collect()
+        (self.presence)()
+            .into_iter()
+            .filter(|p| Some(p.peer) != me)
+            .collect()
     }
 
     /// Whether the node has answered (an empty document is really empty).
@@ -212,10 +229,20 @@ pub fn use_doc(id: impl Into<String>) -> Doc {
     use_hook(|| {
         let doc = ctx.drive.open(&id);
         let s = ctx.signals(&id);
-        let d = Doc { id: id.clone(), drive: ctx.drive.clone(), doc, rev: s.rev, presence: s.presence, me };
+        let d = Doc {
+            id: id.clone(),
+            drive: ctx.drive.clone(),
+            doc,
+            rev: s.rev,
+            presence: s.presence,
+            me,
+        };
         // Being here is presence too: others see you as soon as you open it.
         let me = d.me.peek().clone();
-        d.drive.announce(&d.id, serde_json::json!({ "hue": me.hue, "data": null }).to_string());
+        d.drive.announce(
+            &d.id,
+            serde_json::json!({ "hue": me.hue, "data": null }).to_string(),
+        );
         d
     })
 }

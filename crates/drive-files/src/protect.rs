@@ -68,26 +68,38 @@ impl<'a> Copies<'a> {
     pub fn new(rows: &'a [FileRow]) -> Copies<'a> {
         let mut by_content: HashMap<(String, u64), Vec<&FileRow>> = HashMap::new();
         for r in rows.iter().filter(|r| !r.sampled.is_empty()) {
-            by_content.entry((r.sampled.clone(), r.size)).or_default().push(r);
+            by_content
+                .entry((r.sampled.clone(), r.size))
+                .or_default()
+                .push(r);
         }
         Copies { by_content }
     }
 
     /// Where else a file is (itself included).
     pub fn of(&self, sampled: &str, size: u64) -> &[&'a FileRow] {
-        self.by_content.get(&(sampled.to_string(), size)).map_or(&[], |v| v.as_slice())
+        self.by_content
+            .get(&(sampled.to_string(), size))
+            .map_or(&[], |v| v.as_slice())
     }
 }
 
 /// How a file is kept, seen from its location `home`.
-pub fn kept(home: &Location, holders: &[&FileRow], locs: &HashMap<&str, &Location>, sites: &HashMap<String, String>) -> Kept {
+pub fn kept(
+    home: &Location,
+    holders: &[&FileRow],
+    locs: &HashMap<&str, &Location>,
+    sites: &HashMap<String, String>,
+) -> Kept {
     let site_of = |l: &Location| sites.get(l.holder()).cloned().unwrap_or_default();
     let home_site = site_of(home);
     let mut copies = HashSet::new();
     let mut media = HashSet::new();
     let mut offsite = HashSet::new();
     for r in holders {
-        let Some(l) = locs.get(r.location.as_str()) else { continue };
+        let Some(l) = locs.get(r.location.as_str()) else {
+            continue;
+        };
         copies.insert(r.location.as_str());
         let m = l.medium();
         if site_of(l) != home_site {
@@ -95,7 +107,11 @@ pub fn kept(home: &Location, holders: &[&FileRow], locs: &HashMap<&str, &Locatio
         }
         media.insert(m);
     }
-    Kept { copies: copies.len(), media: media.len(), offsite: offsite.len() }
+    Kept {
+        copies: copies.len(),
+        media: media.len(),
+        offsite: offsite.len(),
+    }
 }
 
 /// Check every policy against every file in its scope.
@@ -116,18 +132,27 @@ pub fn check(
             let mut short = Vec::new();
             let (mut files, mut ok, mut bytes, mut bytes_ok) = (0, 0, 0, 0);
             for r in rows.iter().filter(|r| in_scope(&r.location)) {
-                let Some(home) = locs.get(r.location.as_str()) else { continue };
-                let holders: Vec<&FileRow> =
-                    if r.sampled.is_empty() { vec![r] } else { copies.of(&r.sampled, r.size).to_vec() };
+                let Some(home) = locs.get(r.location.as_str()) else {
+                    continue;
+                };
+                let holders: Vec<&FileRow> = if r.sampled.is_empty() {
+                    vec![r]
+                } else {
+                    copies.of(&r.sampled, r.size).to_vec()
+                };
                 let k = kept(home, &holders, &locs, sites);
-                let good = k.copies as i64 >= p.copies && k.media as i64 >= p.media && k.offsite as i64 >= p.offsite;
-                let lr = per.entry(r.location.as_str()).or_insert_with(|| LocationReport {
-                    location: r.location.clone(),
-                    files: 0,
-                    ok: 0,
-                    bytes: 0,
-                    bytes_ok: 0,
-                });
+                let good = k.copies as i64 >= p.copies
+                    && k.media as i64 >= p.media
+                    && k.offsite as i64 >= p.offsite;
+                let lr = per
+                    .entry(r.location.as_str())
+                    .or_insert_with(|| LocationReport {
+                        location: r.location.clone(),
+                        files: 0,
+                        ok: 0,
+                        bytes: 0,
+                        bytes_ok: 0,
+                    });
                 files += 1;
                 bytes += r.size;
                 lr.files += 1;
@@ -138,14 +163,27 @@ pub fn check(
                     lr.ok += 1;
                     lr.bytes_ok += r.size;
                 } else {
-                    short.push(Short { location: r.location.clone(), path: r.path.clone(), size: r.size, kept: k });
+                    short.push(Short {
+                        location: r.location.clone(),
+                        path: r.path.clone(),
+                        size: r.size,
+                        kept: k,
+                    });
                 }
             }
             short.sort_by(|a, b| b.size.cmp(&a.size));
             short.truncate(limit);
             let mut locations: Vec<LocationReport> = per.into_values().collect();
             locations.sort_by(|a, b| a.location.cmp(&b.location));
-            Report { policy: p.clone(), files, ok, bytes, bytes_ok, locations, short }
+            Report {
+                policy: p.clone(),
+                files,
+                ok,
+                bytes,
+                bytes_ok,
+                locations,
+                short,
+            }
         })
         .collect()
 }
@@ -171,7 +209,12 @@ mod tests {
     }
 
     fn row(location: &str, path: &str, sampled: &str) -> FileRow {
-        FileRow { location: location.into(), path: path.into(), size: 100, sampled: sampled.into() }
+        FileRow {
+            location: location.into(),
+            path: path.into(),
+            size: 100,
+            sampled: sampled.into(),
+        }
     }
 
     #[test]
@@ -182,8 +225,9 @@ mod tests {
             loc("ext", "studio-pc", "/mnt/ext", ""),
             loc("deep", "nas", "/", "garage"),
         ];
-        let sites: HashMap<String, String> =
-            [("studio-pc", "studio"), ("garage", "offsite")].map(|(a, b)| (a.to_string(), b.to_string())).into();
+        let sites: HashMap<String, String> = [("studio-pc", "studio"), ("garage", "offsite")]
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .into();
         let rule = Policy {
             id: "321".into(),
             name: "3-2-1".into(),
@@ -205,8 +249,22 @@ mod tests {
         let r = &check(&[rule], &locations, &sites, &rows, 10)[0];
         assert_eq!((r.files, r.ok), (3, 1));
         let b = r.short.iter().find(|s| s.path == "b.wav").unwrap();
-        assert_eq!(b.kept, Kept { copies: 2, media: 1, offsite: 0 });
+        assert_eq!(
+            b.kept,
+            Kept {
+                copies: 2,
+                media: 1,
+                offsite: 0
+            }
+        );
         let c = r.short.iter().find(|s| s.path == "c.wav").unwrap();
-        assert_eq!(c.kept, Kept { copies: 1, media: 1, offsite: 0 });
+        assert_eq!(
+            c.kept,
+            Kept {
+                copies: 1,
+                media: 1,
+                offsite: 0
+            }
+        );
     }
 }

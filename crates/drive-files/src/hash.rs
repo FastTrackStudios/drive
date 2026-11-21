@@ -24,7 +24,10 @@ pub fn sample_ranges(len: u64) -> Vec<std::ops::Range<u64>> {
     if len <= SAMPLE {
         return vec![0..len];
     }
-    [0, len / 2, len - SAMPLE].into_iter().map(|at| at..(at + SAMPLE).min(len)).collect()
+    [0, len / 2, len - SAMPLE]
+        .into_iter()
+        .map(|at| at..(at + SAMPLE).min(len))
+        .collect()
 }
 
 /// A sampled hash from its ranges' bytes (read anywhere: a disk, a bucket).
@@ -49,7 +52,10 @@ pub fn sampled(path: &Path) -> std::io::Result<String> {
         f.read_exact(&mut buf)?;
         parts.push(buf);
     }
-    Ok(sampled_of(len, &parts.iter().map(Vec::as_slice).collect::<Vec<_>>()))
+    Ok(sampled_of(
+        len,
+        &parts.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+    ))
 }
 
 #[cfg(test)]

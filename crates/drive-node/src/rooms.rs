@@ -73,15 +73,29 @@ impl Rooms {
 
     /// Which devices have an agent connected in `space`.
     pub async fn agents_online(&self, space: &str) -> Vec<String> {
-        self.agents.lock().await.keys().filter(|(s, _)| s == space).map(|(_, d)| d.clone()).collect()
+        self.agents
+            .lock()
+            .await
+            .keys()
+            .filter(|(s, _)| s == space)
+            .map(|(_, d)| d.clone())
+            .collect()
     }
 
     /// Ask the device that owns `location` to put `path` on the node;
     /// returns the blob's hash.
-    pub async fn fetch(&self, space: &str, location: &str, path: &str) -> Result<String, FetchError> {
+    pub async fn fetch(
+        &self,
+        space: &str,
+        location: &str,
+        path: &str,
+    ) -> Result<String, FetchError> {
         let device = self
             .read(&drive_files::space_doc(space), |d| {
-                drive_files::space::locations(d).into_iter().find(|l| l.id == location).map(|l| l.device)
+                drive_files::space::locations(d)
+                    .into_iter()
+                    .find(|l| l.id == location)
+                    .map(|l| l.device)
             })
             .await
             .ok_or(FetchError::NoLocation)?;
@@ -95,7 +109,14 @@ impl Rooms {
         let req = self.next_req.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(req, tx);
-        if outbox.send(ToClient::Fetch { req, location: location.into(), path: path.into() }).is_err() {
+        if outbox
+            .send(ToClient::Fetch {
+                req,
+                location: location.into(),
+                path: path.into(),
+            })
+            .is_err()
+        {
             self.pending.lock().await.remove(&req);
             return Err(FetchError::Offline(device));
         }
@@ -120,11 +141,18 @@ impl Rooms {
                     }
                 }
                 Ok(None) => {}
-                Err(e) => tracing::warn!(doc.id = %id, error = %e, "the store could not load a document"),
+                Err(e) => {
+                    tracing::warn!(doc.id = %id, error = %e, "the store could not load a document")
+                }
             }
             rooms.insert(
                 id.to_string(),
-                Room { doc, peers: HashMap::new(), presence: HashMap::new(), dirty: false },
+                Room {
+                    doc,
+                    peers: HashMap::new(),
+                    presence: HashMap::new(),
+                    dirty: false,
+                },
             );
         }
         rooms.get_mut(id).expect("just inserted")
@@ -146,7 +174,10 @@ impl Rooms {
                 .filter(|(_, r)| r.dirty)
                 .filter_map(|(id, r)| {
                     r.dirty = false;
-                    r.doc.export(ExportMode::Snapshot).ok().map(|s| (id.clone(), s))
+                    r.doc
+                        .export(ExportMode::Snapshot)
+                        .ok()
+                        .map(|s| (id.clone(), s))
                 })
                 .collect()
         };
@@ -157,14 +188,27 @@ impl Rooms {
         }
     }
 
-    async fn handle(&self, peer: Peer, name: &str, out: &Outbox, joined: &mut HashSet<DocId>, msg: ToNode) {
+    async fn handle(
+        &self,
+        peer: Peer,
+        name: &str,
+        out: &Outbox,
+        joined: &mut HashSet<DocId>,
+        msg: ToNode,
+    ) {
         match msg {
             ToNode::Hello { .. } => {}
-            ToNode::Join { doc: id, version_vector } => {
+            ToNode::Join {
+                doc: id,
+                version_vector,
+            } => {
                 let mut rooms = self.rooms.lock().await;
                 let room = self.ensure(&mut rooms, &id).await;
                 let theirs = VersionVector::decode(&version_vector).unwrap_or_default();
-                let bytes = room.doc.export(ExportMode::updates(&theirs)).unwrap_or_default();
+                let bytes = room
+                    .doc
+                    .export(ExportMode::updates(&theirs))
+                    .unwrap_or_default();
                 let _ = out.send(ToClient::Synced {
                     doc: id.clone(),
                     bytes,
@@ -189,13 +233,18 @@ impl Rooms {
                         room.dirty = true;
                         for (p, o) in &room.peers {
                             if *p != peer {
-                                let _ = o.send(ToClient::Update { doc: id.clone(), bytes: bytes.clone() });
+                                let _ = o.send(ToClient::Update {
+                                    doc: id.clone(),
+                                    bytes: bytes.clone(),
+                                });
                             }
                         }
                     }
                     Err(e) => {
                         tracing::warn!(doc.id = %id, peer, error = %e, "an update did not import");
-                        let _ = out.send(ToClient::Error { message: format!("update refused: {e}") });
+                        let _ = out.send(ToClient::Error {
+                            message: format!("update refused: {e}"),
+                        });
                     }
                 }
             }
@@ -217,7 +266,10 @@ impl Rooms {
             }
             ToNode::Agent { space, device } => {
                 tracing::info!(agent.space = %space, agent.device = %device, peer, "an agent connected");
-                self.agents.lock().await.insert((space, device), (peer, out.clone()));
+                self.agents
+                    .lock()
+                    .await
+                    .insert((space, device), (peer, out.clone()));
             }
             ToNode::Fetched { req, result } => {
                 if let Some(tx) = self.pending.lock().await.remove(&req) {
@@ -231,19 +283,30 @@ impl Rooms {
             ToNode::List { prefix } => {
                 let open: HashMap<DocId, u32> = {
                     let rooms = self.rooms.lock().await;
-                    rooms.iter().map(|(id, r)| (id.clone(), r.peers.len() as u32)).collect()
+                    rooms
+                        .iter()
+                        .map(|(id, r)| (id.clone(), r.peers.len() as u32))
+                        .collect()
                 };
                 let mut docs: Vec<DocInfo> = match self.store.list().await {
                     Ok(list) => list
                         .into_iter()
                         .filter(|(id, _)| id.starts_with(&prefix))
-                        .map(|(id, bytes)| DocInfo { peers: open.get(&id).copied().unwrap_or(0), id, bytes })
+                        .map(|(id, bytes)| DocInfo {
+                            peers: open.get(&id).copied().unwrap_or(0),
+                            id,
+                            bytes,
+                        })
                         .collect(),
                     Err(_) => Vec::new(),
                 };
                 for (id, peers) in open {
                     if id.starts_with(&prefix) && !docs.iter().any(|d| d.id == id) {
-                        docs.push(DocInfo { id, peers, bytes: 0 });
+                        docs.push(DocInfo {
+                            id,
+                            peers,
+                            bytes: 0,
+                        });
                     }
                 }
                 docs.sort_by(|a, b| a.id.cmp(&b.id));
@@ -277,7 +340,11 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
     let (out, mut outbox) = mpsc::unbounded_channel::<ToClient>();
     let writer = tokio::spawn(async move {
         while let Some(msg) = outbox.recv().await {
-            if sink.send(Message::Binary(drive_proto::encode(&msg).into())).await.is_err() {
+            if sink
+                .send(Message::Binary(drive_proto::encode(&msg).into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -286,7 +353,9 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
     let mut name = String::from("Guest");
     let mut joined = HashSet::new();
     while let Some(Ok(frame)) = stream.next().await {
-        let Message::Binary(bytes) = frame else { continue };
+        let Message::Binary(bytes) = frame else {
+            continue;
+        };
         let msg = match drive_proto::decode::<ToNode>(&bytes) {
             Ok(m) => m,
             Err(e) => {
@@ -296,7 +365,9 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
         };
         if let ToNode::Hello { version, name: n } = &msg {
             if *version != drive_proto::VERSION {
-                let _ = out.send(ToClient::Error { message: "protocol version mismatch".into() });
+                let _ = out.send(ToClient::Error {
+                    message: "protocol version mismatch".into(),
+                });
                 break;
             }
             name = n.clone();

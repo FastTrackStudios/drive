@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
-use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use drive_files::blob::BlobStore;
@@ -26,26 +26,38 @@ use rooms::Rooms;
 /// web build under its prefix (`""` for the root).
 pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
     std::fs::create_dir_all(data).expect("the data folder can be made");
-    let store = store::Store::open(&data.join("drive.db")).await.expect("the document store opens");
+    let store = store::Store::open(&data.join("drive.db"))
+        .await
+        .expect("the document store opens");
     let rooms = Arc::new(Rooms::new(store));
     tokio::spawn(rooms.clone().flush_loop());
     // The node is a storage too: blobs on its disk, over HTTP.
-    let blobs = StorageConfig::Fs { root: data.join("blobs").to_string_lossy().into_owned() }
-        .blobs()
-        .expect("the node's blob folder opens");
+    let blobs = StorageConfig::Fs {
+        root: data.join("blobs").to_string_lossy().into_owned(),
+    }
+    .blobs()
+    .expect("the node's blob folder opens");
 
-    let catalog = catalog::Catalog { rooms: rooms.clone(), blobs: blobs.clone() };
+    let catalog = catalog::Catalog {
+        rooms: rooms.clone(),
+        blobs: blobs.clone(),
+    };
     let mut app = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
         .with_state(rooms)
         .merge(
             Router::new()
-                .route("/index/{space}/{location}", axum::routing::put(catalog::put_index))
+                .route(
+                    "/index/{space}/{location}",
+                    axum::routing::put(catalog::put_index),
+                )
                 .route("/search", get(catalog::search))
                 .route("/list", get(catalog::list))
                 .route("/copies", get(catalog::copies))
                 .route("/protection", get(catalog::protection))
+                .route("/at-risk", get(catalog::at_risk))
+                .route("/stats", get(catalog::stats))
                 .route("/fetch/{space}/{location}", get(catalog::fetch))
                 .layer(axum::extract::DefaultBodyLimit::max(512 << 20))
                 .with_state(catalog),
@@ -95,13 +107,21 @@ pub(crate) async fn get_blob(
     };
     let mut resp = axum::response::Response::new(axum::body::Body::from(bytes));
     let h = resp.headers_mut();
-    let _ = h.insert("cache-control", axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"));
+    let _ = h.insert(
+        "cache-control",
+        axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
     if let Some(name) = q.get("name") {
-        let safe: String = name.chars().filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n')).collect();
+        let safe: String = name
+            .chars()
+            .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+            .collect();
         if let Ok(v) = axum::http::HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
             h.insert("content-type", v);
         }
-        if let Ok(v) = axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{safe}\"")) {
+        if let Ok(v) =
+            axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{safe}\""))
+        {
             h.insert("content-disposition", v);
         }
     }
@@ -117,7 +137,11 @@ async fn head_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore
 }
 
 /// Keep a blob; refused unless the bytes match the hash in the path.
-async fn put_blob(UrlPath(hash): UrlPath<String>, State(blobs): State<BlobStore>, body: Bytes) -> StatusCode {
+async fn put_blob(
+    UrlPath(hash): UrlPath<String>,
+    State(blobs): State<BlobStore>,
+    body: Bytes,
+) -> StatusCode {
     match blobs.put_checked(&hash, body.to_vec()).await {
         Ok(()) => StatusCode::CREATED,
         Err(drive_files::blob::Error::Corrupt(_)) | Err(drive_files::blob::Error::BadHash(_)) => {

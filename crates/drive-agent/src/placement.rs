@@ -27,23 +27,33 @@ pub struct Done {
 
 /// Bytes this device may still fill on the disk holding `dir`.
 pub fn room(dir: &Path) -> u64 {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else { return 0 };
+    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+        return 0;
+    };
     disks
         .iter()
         .filter(|d| dir.starts_with(d.mount_point()))
         .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map_or(0, |d| d.available_space().saturating_sub((d.total_space() as f64 * RESERVE) as u64))
+        .map_or(0, |d| {
+            d.available_space()
+                .saturating_sub((d.total_space() as f64 * RESERVE) as u64)
+        })
 }
 
 impl Agent {
     pub fn role(&self) -> Role {
         let me = self.device_id();
-        space::devices(&self.space).into_iter().find(|d| d.id == me).map_or(Role::Workstation, |d| Role::of(&d.roles))
+        space::devices(&self.space)
+            .into_iter()
+            .find(|d| d.id == me)
+            .map_or(Role::Workstation, |d| Role::of(&d.roles))
     }
 
     fn cached(&self) -> HashMap<String, i64> {
         let ms = |t: std::io::Result<std::time::SystemTime>| {
-            t.ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as i64)
+            t.ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as i64)
         };
         std::fs::read_dir(self.dir.join("cache"))
             .into_iter()
@@ -86,12 +96,24 @@ impl Agent {
             now: drive_files::now_ms(),
             grace_ms: GRACE_MS,
         });
-        let mut done = Done { no_room: p.no_room, ..Done::default() };
-        let how = if role == Role::StorageServer { "stored" } else { "local" };
+        let mut done = Done {
+            no_room: p.no_room,
+            ..Done::default()
+        };
+        let how = if role == Role::StorageServer {
+            "stored"
+        } else {
+            "local"
+        };
         for h in &p.fetch {
             match self.fetch(h).await {
                 Ok(_) => {
-                    let _ = space::set_held(&self.space, &me, h, Some(if pinned.contains(h) { "pinned" } else { how }));
+                    let _ = space::set_held(
+                        &self.space,
+                        &me,
+                        h,
+                        Some(if pinned.contains(h) { "pinned" } else { how }),
+                    );
                     done.fetched += 1;
                 }
                 Err(e) => tracing::debug!(blob.hash = %h, error = %e, "not fetched this pass"),
@@ -100,7 +122,10 @@ impl Agent {
         // Already here before this device became a storage server: say so.
         if role == Role::StorageServer {
             for h in cached.keys() {
-                if space::holders(&self.space, h).iter().any(|(w, how)| *w == me && how == "local") {
+                if space::holders(&self.space, h)
+                    .iter()
+                    .any(|(w, how)| *w == me && how == "local")
+                {
                     let _ = space::set_held(&self.space, &me, h, Some("stored"));
                 }
             }
@@ -142,13 +167,20 @@ impl Agent {
         };
         let mut copied = 0;
         let all = space::locations(&self.space);
-        for src in all.iter().filter(|l| l.device != me && l.mirror_of.is_empty() && online.contains(&l.device)) {
-            let Some(idx) = indexes.get(&src.id) else { continue };
+        for src in all
+            .iter()
+            .filter(|l| l.device != me && l.mirror_of.is_empty() && online.contains(&l.device))
+        {
+            let Some(idx) = indexes.get(&src.id) else {
+                continue;
+            };
             let root = self.dir.join("mirror").join(&src.id);
             let mut room_left = room(&self.dir);
             let mut changed = false;
             for e in idx.entries.iter().filter(|e| !e.dir) {
-                let Some(dest) = crate::places::inside(&root, &e.path) else { continue };
+                let Some(dest) = crate::places::inside(&root, &e.path) else {
+                    continue;
+                };
                 if std::fs::metadata(&dest).is_ok_and(|m| m.len() == e.size) {
                     continue;
                 }
@@ -174,7 +206,10 @@ impl Agent {
                     Ok(bytes) => {
                         let _ = std::fs::create_dir_all(dest.parent().expect("a parent"));
                         let tmp = dest.with_extension("drive-part");
-                        if std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, &dest)).is_ok() {
+                        if std::fs::write(&tmp, &bytes)
+                            .and_then(|_| std::fs::rename(&tmp, &dest))
+                            .is_ok()
+                        {
                             room_left = room_left.saturating_sub(e.size);
                             copied += 1;
                             changed = true;
@@ -186,7 +221,10 @@ impl Agent {
                     }
                 }
             }
-            let existing = all.iter().find(|l| l.mirror_of == src.id && l.device == me).cloned();
+            let existing = all
+                .iter()
+                .find(|l| l.mirror_of == src.id && l.device == me)
+                .cloned();
             let loc = match existing {
                 Some(l) => l,
                 None if changed => {

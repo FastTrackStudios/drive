@@ -7,6 +7,8 @@
 //! reordered); `events` is a map of event id → event map (so an app can
 //! update its own event by id).
 
+pub mod kinds;
+
 use loro::{LoroDoc, LoroMap, LoroMovableList, LoroValue, ValueOrContainer};
 
 /// The spine document's id.
@@ -47,7 +49,10 @@ fn s(m: &LoroMap, k: &str) -> String {
 }
 
 fn b(m: &LoroMap, k: &str) -> bool {
-    matches!(m.get(k), Some(ValueOrContainer::Value(LoroValue::Bool(true))))
+    matches!(
+        m.get(k),
+        Some(ValueOrContainer::Value(LoroValue::Bool(true)))
+    )
 }
 
 fn inbox(doc: &LoroDoc) -> LoroMovableList {
@@ -98,7 +103,11 @@ pub fn add_task(doc: &LoroDoc, title: &str, app: &str, link: &str, by: &str) -> 
 
 fn task_index(doc: &LoroDoc, id: &str) -> Option<(usize, LoroMap)> {
     let list = inbox(doc);
-    (0..list.len()).find_map(|i| child_map(list.get(i)).filter(|m| s(m, "id") == id).map(|m| (i, m)))
+    (0..list.len()).find_map(|i| {
+        child_map(list.get(i))
+            .filter(|m| s(m, "id") == id)
+            .map(|m| (i, m))
+    })
 }
 
 pub fn set_done(doc: &LoroDoc, id: &str, done: bool) {
@@ -182,7 +191,11 @@ pub fn new_id(doc: &LoroDoc, prefix: &str) -> String {
     // take a number of their own.
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}{:x}-{:x}-{n:x}", doc.peer_id(), doc.oplog_vv().get(&doc.peer_id()).copied().unwrap_or(0))
+    format!(
+        "{prefix}{:x}-{:x}-{n:x}",
+        doc.peer_id(),
+        doc.oplog_vv().get(&doc.peer_id()).copied().unwrap_or(0)
+    )
 }
 
 #[cfg(test)]
@@ -198,12 +211,37 @@ mod tests {
         set_done(&d, &a, true);
         move_task(&d, &a, -1);
         let t = tasks(&d);
-        assert_eq!(t.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["Book the drummer", "Buy rice"]);
+        assert_eq!(
+            t.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(),
+            ["Book the drummer", "Buy rice"]
+        );
         assert!(t[0].done && !t[1].done);
         assert_ne!(a, b);
         assert_ne!(new_id(&d, "x"), new_id(&d, "x"));
-        put_event(&d, &Event { id: "e1".into(), title: "CYA".into(), app: "studio".into(), link: String::new(), date: "2026-11-19".into(), time: "7:30 PM".into(), place: "Chapel".into() });
-        put_event(&d, &Event { id: "e1".into(), title: "CYA set".into(), app: "studio".into(), link: String::new(), date: "2026-11-19".into(), time: "7:30 PM".into(), place: "Chapel".into() });
+        put_event(
+            &d,
+            &Event {
+                id: "e1".into(),
+                title: "CYA".into(),
+                app: "studio".into(),
+                link: String::new(),
+                date: "2026-11-19".into(),
+                time: "7:30 PM".into(),
+                place: "Chapel".into(),
+            },
+        );
+        put_event(
+            &d,
+            &Event {
+                id: "e1".into(),
+                title: "CYA set".into(),
+                app: "studio".into(),
+                link: String::new(),
+                date: "2026-11-19".into(),
+                time: "7:30 PM".into(),
+                place: "Chapel".into(),
+            },
+        );
         assert_eq!(events(&d).len(), 1);
         assert_eq!(events(&d)[0].title, "CYA set");
     }

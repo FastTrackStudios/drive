@@ -23,7 +23,11 @@ pub enum Role {
 
 impl Role {
     pub fn of(roles: &[String]) -> Role {
-        if roles.iter().any(|r| r == STORAGE_SERVER) { Role::StorageServer } else { Role::Workstation }
+        if roles.iter().any(|r| r == STORAGE_SERVER) {
+            Role::StorageServer
+        } else {
+            Role::Workstation
+        }
     }
 }
 
@@ -73,7 +77,9 @@ pub fn plan(i: &Inputs) -> Plan {
         }
         let keep = match i.role {
             Role::StorageServer => true,
-            Role::Workstation => i.pinned.contains(&e.hash) || i.active.iter().any(|f| under(path, f)),
+            Role::Workstation => {
+                i.pinned.contains(&e.hash) || i.active.iter().any(|f| under(path, f))
+            }
         };
         if keep {
             want.push((&e.hash, e.size));
@@ -99,7 +105,11 @@ pub fn plan(i: &Inputs) -> Plan {
             .cached
             .iter()
             .filter(|(h, used)| !wanted.contains(h.as_str()) && i.now - **used > i.grace_ms)
-            .filter(|(h, _)| (i.holders)(h).iter().any(|(who, how)| who != i.me && how == "stored"))
+            .filter(|(h, _)| {
+                (i.holders)(h)
+                    .iter()
+                    .any(|(who, how)| who != i.me && how == "stored")
+            })
             .map(|(h, _)| h.clone())
             .collect();
         evict.sort();
@@ -119,13 +129,23 @@ mod tests {
         let songs = crate::tree::mkdir(&d, None, "Songs").unwrap();
         let a = crate::tree::mkdir(&d, Some(songs), "Song A").unwrap();
         let b = crate::tree::mkdir(&d, Some(songs), "Song B").unwrap();
-        for (dir, name, h, size) in [(a, "drums.wav", "ha", 10u64), (b, "bass.wav", "hb", 20), (b, "keys.wav", "hc", 500)] {
+        for (dir, name, h, size) in [
+            (a, "drums.wav", "ha", 10u64),
+            (b, "bass.wav", "hb", 20),
+            (b, "keys.wav", "hc", 500),
+        ] {
             let f = crate::tree::create_file(&d, Some(dir), name).unwrap();
             crate::tree::set_content(&d, f, size, h).unwrap();
         }
         let files = crate::tree::files(&d);
         let none = HashSet::new();
-        let stored_on_nas = |h: &str| if h == "hb" { vec![("nas".to_string(), "stored".to_string())] } else { vec![] };
+        let stored_on_nas = |h: &str| {
+            if h == "hb" {
+                vec![("nas".to_string(), "stored".to_string())]
+            } else {
+                vec![]
+            }
+        };
 
         // The NAS: everything that fits, smallest first.
         let cached = HashMap::new();

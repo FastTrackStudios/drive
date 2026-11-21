@@ -12,6 +12,7 @@ drive-spine.workspace = true
 drive-files = { path = "../../crates/drive-files", default-features = false }
 gloo-net = { version = "0.8", default-features = false, features = ["http"] }
 serde_json.workspace = true
+loro.workspace = true
 js-sys = "0.3"
 
 [features]

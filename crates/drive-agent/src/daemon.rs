@@ -23,7 +23,9 @@ pub fn online_devices(a: &Agent) -> HashSet<String> {
         .others(&a.space_id)
         .into_iter()
         .filter_map(|(_, _, json)| {
-            serde_json::from_str::<serde_json::Value>(&json).ok()?["data"]["device"].as_str().map(str::to_string)
+            serde_json::from_str::<serde_json::Value>(&json).ok()?["data"]["device"]
+                .as_str()
+                .map(str::to_string)
         })
         .collect();
     on.insert(a.device_id());
@@ -32,8 +34,17 @@ pub fn online_devices(a: &Agent) -> HashSet<String> {
 
 pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
     let indexes = a.refresh_indexes().await;
-    let devices = space::devices(&a.space).into_iter().map(|d| (d.id, d.name)).collect();
-    let built = View::build(&a.device_id(), devices, space::locations(&a.space), indexes, online_devices(a));
+    let devices = space::devices(&a.space)
+        .into_iter()
+        .map(|d| (d.id, d.name))
+        .collect();
+    let built = View::build(
+        &a.device_id(),
+        devices,
+        space::locations(&a.space),
+        indexes,
+        online_devices(a),
+    );
     *view.write().expect("view") = built;
 }
 
@@ -50,7 +61,11 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // Changes under a local location: reindex it a few seconds after they stop.
     let (changed_tx, mut changed) = mpsc::unbounded_channel::<String>();
     let mut watchers = Vec::new();
-    for loc in a.my_locations().into_iter().filter(|l| l.storage.is_empty()) {
+    for loc in a
+        .my_locations()
+        .into_iter()
+        .filter(|l| l.storage.is_empty())
+    {
         let tx = changed_tx.clone();
         let id = loc.id.clone();
         match notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
@@ -58,9 +73,14 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 let _ = tx.send(id.clone());
             }
         }) {
-            Ok(mut w) => match w.watch(std::path::Path::new(&loc.path), notify::RecursiveMode::Recursive) {
+            Ok(mut w) => match w.watch(
+                std::path::Path::new(&loc.path),
+                notify::RecursiveMode::Recursive,
+            ) {
                 Ok(()) => watchers.push(w),
-                Err(e) => tracing::warn!(location.name = %loc.name, error = %e, "a location cannot be watched; it is rescanned every ten minutes"),
+                Err(e) => {
+                    tracing::warn!(location.name = %loc.name, error = %e, "a location cannot be watched; it is rescanned every ten minutes")
+                }
             },
             Err(e) => tracing::warn!(error = %e, "no file watcher"),
         }
@@ -125,6 +145,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 if now.duration_since(last_place) > Duration::from_secs(60) {
                     last_place = now;
                     a.place().await;
+                    a.make_available().await;
                 }
                 if now.duration_since(last_view) > Duration::from_secs(30) {
                     last_view = now;

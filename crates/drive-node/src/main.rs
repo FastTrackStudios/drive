@@ -28,8 +28,11 @@ fn args() -> Result<Args, String> {
             "--listen" => a.listen = value.parse().map_err(|e| format!("--listen: {e}"))?,
             "--data" => a.data = value.into(),
             "--app" => {
-                let (prefix, dir) = value.split_once('=').ok_or("--app takes PREFIX=DIR".to_string())?;
-                a.apps.push((prefix.trim_end_matches('/').to_string(), dir.into()));
+                let (prefix, dir) = value
+                    .split_once('=')
+                    .ok_or("--app takes PREFIX=DIR".to_string())?;
+                a.apps
+                    .push((prefix.trim_end_matches('/').to_string(), dir.into()));
             }
             other => return Err(format!("unknown flag {other}")),
         }
@@ -53,7 +56,9 @@ async fn main() {
         }
     };
     let app = drive_node::router(&args.data, args.apps).await;
-    let listener = tokio::net::TcpListener::bind(args.listen).await.expect("the address is free");
+    let listener = tokio::net::TcpListener::bind(args.listen)
+        .await
+        .expect("the address is free");
     tracing::info!(node.listen = %args.listen, "drive-node listening");
     axum::serve(listener, app).await.expect("the server runs");
 }

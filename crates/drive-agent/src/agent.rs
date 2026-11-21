@@ -40,15 +40,23 @@ pub struct Config {
 
 impl Config {
     pub fn load(dir: &Path) -> Result<Config, String> {
-        let text = std::fs::read_to_string(dir.join("config.json"))
-            .map_err(|_| format!("no config in {}: run `drive-agent init` or `join` first", dir.display()))?;
+        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|_| {
+            format!(
+                "no config in {}: run `drive-agent init` or `join` first",
+                dir.display()
+            )
+        })?;
         serde_json::from_str(&text).map_err(|e| format!("config: {e}"))
     }
 
     pub fn save(&self, dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join("config.json");
-        std::fs::write(&path, serde_json::to_string_pretty(self).expect("a config serializes")).map_err(|e| e.to_string())?;
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(self).expect("a config serializes"),
+        )
+        .map_err(|e| e.to_string())?;
         // Credentials inside: readable by this user only.
         #[cfg(unix)]
         {
@@ -118,6 +126,8 @@ pub struct Agent {
     pub drive: Drive,
     pub files: LoroDoc,
     pub space: LoroDoc,
+    /// The spine: the kinds apps register (which of them to keep available).
+    pub spine: LoroDoc,
     pub files_id: String,
     pub space_id: String,
     stores: Vec<(String, BlobStore)>,
@@ -134,6 +144,7 @@ impl Agent {
         let space_id = space_doc(&cfg.space);
         let files = drive.open(&files_id).await;
         let space = drive.open(&space_id).await;
+        let spine = drive.open(drive_spine::SPINE).await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(4), async {
             drive.synced(&files_id).await;
             drive.synced(&space_id).await;
@@ -151,6 +162,7 @@ impl Agent {
             drive,
             files,
             space,
+            spine,
             files_id,
             space_id,
             stores,
@@ -166,7 +178,8 @@ impl Agent {
         let cfg = self.cfg.lock().expect("cfg").clone();
         self.drive.set_presence(
             &self.space_id,
-            serde_json::json!({ "hue": 175, "data": { "device": cfg.device_id, "agent": true } }).to_string(),
+            serde_json::json!({ "hue": 175, "data": { "device": cfg.device_id, "agent": true } })
+                .to_string(),
         );
     }
 
@@ -194,8 +207,17 @@ impl Agent {
     /// command line and every app agree), or this device's own config.
     pub fn is_pinned(&self, e: &Entry) -> bool {
         let me = self.device_id();
-        (!e.hash.is_empty() && space::holders(&self.space, &e.hash).iter().any(|(who, how)| *who == me && how == "pinned"))
-            || self.cfg.lock().expect("cfg").pins.contains(&tree::id_string(e.id))
+        (!e.hash.is_empty()
+            && space::holders(&self.space, &e.hash)
+                .iter()
+                .any(|(who, how)| *who == me && how == "pinned"))
+            || space::pins(&self.space, &me).contains(&tree::id_string(e.id))
+            || self
+                .cfg
+                .lock()
+                .expect("cfg")
+                .pins
+                .contains(&tree::id_string(e.id))
     }
 
     fn mark(&self, key: &str, state: State, on: bool) {
@@ -208,7 +230,10 @@ impl Agent {
     }
 
     fn is_busy(&self, key: &str, state: State) -> bool {
-        self.busy.lock().expect("busy").contains(&(key.to_string(), state))
+        self.busy
+            .lock()
+            .expect("busy")
+            .contains(&(key.to_string(), state))
     }
 
     /// A file's state on this device.
@@ -267,8 +292,12 @@ impl Agent {
         self.mark(hash, State::Downloading, false);
         let bytes = result?;
         let tmp = path.with_extension("part");
-        tokio::fs::write(&tmp, &bytes).await.map_err(|e| e.to_string())?;
-        tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
+        tokio::fs::write(&tmp, &bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::rename(&tmp, &path)
+            .await
+            .map_err(|e| e.to_string())?;
         let _ = space::set_held(&self.space, &self.device_id(), hash, Some("local"));
         self.commit_space();
         Ok(path)
@@ -281,7 +310,12 @@ impl Agent {
             }
         }
         let url = format!("{}/blobs/{hash}", self.cfg.lock().expect("cfg").node_http());
-        let resp = self.http.get(&url).send().await.map_err(|e| format!("the node: {e}"))?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("the node: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("no storage has blob {hash} ({})", resp.status()));
         }
@@ -309,7 +343,9 @@ impl Agent {
         let size = bytes.len() as u64;
         let cached = self.cache_path(&h);
         if !cached.exists() {
-            tokio::fs::write(&cached, &bytes).await.map_err(|e| e.to_string())?;
+            tokio::fs::write(&cached, &bytes)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         let me = self.device_id();
         let _ = space::set_held(&self.space, &me, &h, Some("local"));
@@ -353,7 +389,9 @@ impl Agent {
             let _ = space::set_held(&self.space, &me, &e.hash, Some("pinned"));
         } else {
             // Unpinned and evicted: back to the cloud (if a storage has it).
-            let stored = space::holders(&self.space, &e.hash).iter().any(|(_, how)| how == "stored");
+            let stored = space::holders(&self.space, &e.hash)
+                .iter()
+                .any(|(_, how)| how == "stored");
             if stored {
                 let _ = std::fs::remove_file(self.cache_path(&e.hash));
                 let _ = space::set_held(&self.space, &me, &e.hash, None);
@@ -364,7 +402,12 @@ impl Agent {
     }
 
     /// Add a file from this computer into the space.
-    pub async fn put(&self, src: &Path, parent: Option<TreeID>, name: &str) -> Result<Entry, String> {
+    pub async fn put(
+        &self,
+        src: &Path,
+        parent: Option<TreeID>,
+        name: &str,
+    ) -> Result<Entry, String> {
         let id = match tree::lookup(&self.files, parent, name) {
             Some(e) if !e.dir => e.id,
             Some(_) => return Err(format!("{name} is a folder")),

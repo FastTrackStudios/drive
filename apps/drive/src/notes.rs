@@ -75,7 +75,10 @@ fn NoteTitle(id: String) -> Element {
 
 /// The caret of each other person, from their presence.
 fn caret_of(p: &Presence) -> Option<usize> {
-    p.data.get("caret").and_then(|c| c.as_u64()).map(|c| c as usize)
+    p.data
+        .get("caret")
+        .and_then(|c| c.as_u64())
+        .map(|c| c as usize)
 }
 
 #[component]
@@ -123,7 +126,10 @@ fn Editor(id: String) -> Element {
                     let a = arr.first().and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                     let b = arr.get(1).and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                     let text = doc.peek().get_text("body");
-                    if let (Some(ca), Some(cb)) = (text.get_cursor(a, Side::Middle), text.get_cursor(b, Side::Middle)) {
+                    if let (Some(ca), Some(cb)) = (
+                        text.get_cursor(a, Side::Middle),
+                        text.get_cursor(b, Side::Middle),
+                    ) {
                         mine.set(Some((ca, cb)));
                     }
                     doc.set_presence(&serde_json::json!({ "caret": b }));
@@ -133,7 +139,10 @@ fn Editor(id: String) -> Element {
     };
 
     // The text with a marker at each other person's caret.
-    let mut marks: Vec<(usize, Presence)> = others.iter().filter_map(|p| caret_of(p).map(|c| (c, p.clone()))).collect();
+    let mut marks: Vec<(usize, Presence)> = others
+        .iter()
+        .filter_map(|p| caret_of(p).map(|c| (c, p.clone())))
+        .collect();
     marks.sort_by_key(|m| m.0);
     let chars: Vec<char> = body.chars().collect();
     let mut pieces: Vec<(String, Option<Presence>)> = Vec::new();

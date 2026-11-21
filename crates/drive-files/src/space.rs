@@ -81,7 +81,12 @@ fn getrandom_fill(buf: &mut [u8]) {
     // BLAKE3 of the time and a counter: unique enough for ids here.
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    let seed = format!("{}{}{:p}", crate::entropy(), N.fetch_add(1, Ordering::Relaxed), buf);
+    let seed = format!(
+        "{}{}{:p}",
+        crate::entropy(),
+        N.fetch_add(1, Ordering::Relaxed),
+        buf
+    );
     let h = blake3::hash(seed.as_bytes());
     buf.copy_from_slice(&h.as_bytes()[..buf.len()]);
 }
@@ -90,7 +95,16 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 pub fn add_device(doc: &LoroDoc, d: &Device) -> loro::LoroResult<()> {
     let m = doc.get_map("devices").ensure_mergeable_map(&d.id)?;
-    put(&m, &[("id", &d.id), ("name", &d.name), ("kind", &d.kind), ("os", &d.os), ("approved_by", &d.approved_by)])?;
+    put(
+        &m,
+        &[
+            ("id", &d.id),
+            ("name", &d.name),
+            ("kind", &d.kind),
+            ("os", &d.os),
+            ("approved_by", &d.approved_by),
+        ],
+    )?;
     m.insert("roles", d.roles.join(","))?;
     m.insert("added", d.added)?;
     Ok(())
@@ -106,7 +120,11 @@ pub fn devices(doc: &LoroDoc) -> Vec<Device> {
             name: s(&m, "name"),
             kind: s(&m, "kind"),
             os: s(&m, "os"),
-            roles: s(&m, "roles").split(',').filter(|r| !r.is_empty()).map(str::to_string).collect(),
+            roles: s(&m, "roles")
+                .split(',')
+                .filter(|r| !r.is_empty())
+                .map(str::to_string)
+                .collect(),
             approved_by: s(&m, "approved_by"),
             added: n(&m, "added"),
         })
@@ -117,7 +135,9 @@ pub fn devices(doc: &LoroDoc) -> Vec<Device> {
 
 /// Replace a device's roles (`storage-server`, `workstation`, `client`).
 pub fn set_roles(doc: &LoroDoc, device: &str, roles: &[String]) -> loro::LoroResult<()> {
-    doc.get_map("devices").ensure_mergeable_map(device)?.insert("roles", roles.join(","))?;
+    doc.get_map("devices")
+        .ensure_mergeable_map(device)?
+        .insert("roles", roles.join(","))?;
     Ok(())
 }
 
@@ -134,8 +154,31 @@ pub fn set_active(doc: &LoroDoc, device: &str, path: &str, on: bool) -> loro::Lo
 }
 
 pub fn active(doc: &LoroDoc, device: &str) -> Vec<String> {
-    let mut out: Vec<String> =
-        child(&doc.get_map("active"), device).map(|m| m.keys().map(|k| k.to_string()).collect()).unwrap_or_default();
+    let mut out: Vec<String> = child(&doc.get_map("active"), device)
+        .map(|m| m.keys().map(|k| k.to_string()).collect())
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
+/// Keep a file of the tree on a device (`pins`: device → tree id → true),
+/// asked from anywhere (the Drive app): that device's agent fetches it and
+/// never lets it go.
+pub fn set_pin(doc: &LoroDoc, device: &str, file: &str, on: bool) -> loro::LoroResult<()> {
+    let m = doc.get_map("pins").ensure_mergeable_map(device)?;
+    if on {
+        m.insert(file, true)?;
+    } else if m.get(file).is_some() {
+        m.delete(file)?;
+    }
+    Ok(())
+}
+
+/// The tree ids a device has been asked to keep.
+pub fn pins(doc: &LoroDoc, device: &str) -> Vec<String> {
+    let mut out: Vec<String> = child(&doc.get_map("pins"), device)
+        .map(|m| m.keys().map(|k| k.to_string()).collect())
+        .unwrap_or_default();
     out.sort();
     out
 }
@@ -153,7 +196,10 @@ pub fn invite(doc: &LoroDoc, by_device: &str) -> loro::LoroResult<String> {
     const ALPHA: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut b = [0u8; 6];
     getrandom_fill(&mut b);
-    let code: String = b.iter().map(|x| ALPHA[*x as usize % ALPHA.len()] as char).collect();
+    let code: String = b
+        .iter()
+        .map(|x| ALPHA[*x as usize % ALPHA.len()] as char)
+        .collect();
     let m = doc.get_map("invites").ensure_mergeable_map(&code)?;
     m.insert("by", by_device)?;
     m.insert("expires", crate::now_ms() + 10 * 60 * 1000)?;
@@ -186,7 +232,16 @@ pub fn join(doc: &LoroDoc, code: &str, mut d: Device) -> Result<Device, JoinErro
 
 pub fn add_storage(doc: &LoroDoc, st: &Storage) -> loro::LoroResult<()> {
     let m = doc.get_map("storages").ensure_mergeable_map(&st.id)?;
-    put(&m, &[("id", &st.id), ("name", &st.name), ("scheme", &st.scheme), ("location", &st.location), ("device", &st.device)])?;
+    put(
+        &m,
+        &[
+            ("id", &st.id),
+            ("name", &st.name),
+            ("scheme", &st.scheme),
+            ("location", &st.location),
+            ("device", &st.device),
+        ],
+    )?;
     m.insert("added", st.added)?;
     Ok(())
 }
@@ -255,7 +310,13 @@ pub fn add_location(doc: &LoroDoc, l: &Location) -> loro::LoroResult<()> {
 }
 
 /// Record a location's new index.
-pub fn set_index(doc: &LoroDoc, location: &str, hash: &str, files: i64, bytes: i64) -> loro::LoroResult<()> {
+pub fn set_index(
+    doc: &LoroDoc,
+    location: &str,
+    hash: &str,
+    files: i64,
+    bytes: i64,
+) -> loro::LoroResult<()> {
     let m = doc.get_map("locations").ensure_mergeable_map(location)?;
     m.insert("index", hash)?;
     m.insert("files", files)?;
@@ -284,7 +345,9 @@ pub fn locations(doc: &LoroDoc) -> Vec<Location> {
         })
         .filter(|l| !l.id.is_empty())
         .collect();
-    out.sort_by(|a, b| (a.device.as_str(), a.name.as_str()).cmp(&(b.device.as_str(), b.name.as_str())));
+    out.sort_by(|a, b| {
+        (a.device.as_str(), a.name.as_str()).cmp(&(b.device.as_str(), b.name.as_str()))
+    });
     out
 }
 
@@ -296,12 +359,20 @@ impl Location {
     /// The medium its bytes are on: the storage, or the device's disk. Two
     /// locations on one medium are one copy's worth of safety.
     pub fn medium(&self) -> String {
-        if self.storage.is_empty() { format!("{}:{}", self.device, self.volume) } else { self.storage.clone() }
+        if self.storage.is_empty() {
+            format!("{}:{}", self.device, self.volume)
+        } else {
+            self.storage.clone()
+        }
     }
 
     /// Who holds its bytes, for sites: the storage, or the device.
     pub fn holder(&self) -> &str {
-        if self.storage.is_empty() { &self.device } else { &self.storage }
+        if self.storage.is_empty() {
+            &self.device
+        } else {
+            &self.storage
+        }
     }
 }
 
@@ -317,7 +388,9 @@ pub fn sites(doc: &LoroDoc) -> std::collections::HashMap<String, String> {
     let map = doc.get_map("sites");
     map.keys()
         .filter_map(|k| match map.get(&k) {
-            Some(ValueOrContainer::Value(LoroValue::String(v))) => Some((k.to_string(), v.to_string())),
+            Some(ValueOrContainer::Value(LoroValue::String(v))) => {
+                Some((k.to_string(), v.to_string()))
+            }
             _ => None,
         })
         .collect()
@@ -341,7 +414,14 @@ pub struct Policy {
 
 pub fn set_policy(doc: &LoroDoc, p: &Policy) -> loro::LoroResult<()> {
     let m = doc.get_map("policies").ensure_mergeable_map(&p.id)?;
-    put(&m, &[("id", &p.id), ("name", &p.name), ("scope", &p.scope.join(","))])?;
+    put(
+        &m,
+        &[
+            ("id", &p.id),
+            ("name", &p.name),
+            ("scope", &p.scope.join(",")),
+        ],
+    )?;
     m.insert("copies", p.copies)?;
     m.insert("media", p.media)?;
     m.insert("offsite", p.offsite)?;
@@ -356,7 +436,11 @@ pub fn policies(doc: &LoroDoc) -> Vec<Policy> {
         .map(|m| Policy {
             id: s(&m, "id"),
             name: s(&m, "name"),
-            scope: s(&m, "scope").split(',').filter(|x| !x.is_empty()).map(str::to_string).collect(),
+            scope: s(&m, "scope")
+                .split(',')
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+                .collect(),
             copies: n(&m, "copies"),
             media: n(&m, "media"),
             offsite: n(&m, "offsite"),
@@ -393,7 +477,15 @@ pub fn report_volumes(doc: &LoroDoc, device: &str, vols: &[Volume]) -> loro::Lor
     let map = doc.get_map("volumes");
     for v in vols {
         let m = map.ensure_mergeable_map(&format!("{device}:{}", v.mount))?;
-        put(&m, &[("device", device), ("name", &v.name), ("mount", &v.mount), ("fs", &v.fs)])?;
+        put(
+            &m,
+            &[
+                ("device", device),
+                ("name", &v.name),
+                ("mount", &v.mount),
+                ("fs", &v.fs),
+            ],
+        )?;
         m.insert("total", v.total)?;
         m.insert("free", v.free)?;
         m.insert("removable", v.removable)?;
@@ -414,11 +506,16 @@ pub fn volumes(doc: &LoroDoc) -> Vec<Volume> {
             fs: s(&m, "fs"),
             total: n(&m, "total"),
             free: n(&m, "free"),
-            removable: matches!(m.get("removable"), Some(ValueOrContainer::Value(LoroValue::Bool(true)))),
+            removable: matches!(
+                m.get("removable"),
+                Some(ValueOrContainer::Value(LoroValue::Bool(true)))
+            ),
             seen: n(&m, "seen"),
         })
         .collect();
-    out.sort_by(|a, b| (a.device.as_str(), a.mount.as_str()).cmp(&(b.device.as_str(), b.mount.as_str())));
+    out.sort_by(|a, b| {
+        (a.device.as_str(), a.mount.as_str()).cmp(&(b.device.as_str(), b.mount.as_str()))
+    });
     out
 }
 
@@ -426,7 +523,12 @@ pub fn volumes(doc: &LoroDoc) -> Vec<Volume> {
 
 /// What a device keeps, or a storage holds: `holder` → hash → state
 /// (`local`, `pinned`, or for storages `stored`).
-pub fn set_held(doc: &LoroDoc, holder: &str, hash: &str, state: Option<&str>) -> loro::LoroResult<()> {
+pub fn set_held(
+    doc: &LoroDoc,
+    holder: &str,
+    hash: &str,
+    state: Option<&str>,
+) -> loro::LoroResult<()> {
     let m = doc.get_map("holdings").ensure_mergeable_map(holder)?;
     match state {
         Some(st) => {
@@ -479,7 +581,18 @@ mod tests {
         assert_eq!(devices(&d).len(), 2);
         assert_eq!(join(&d, &code, dev("third")), Err(JoinError::NoSuchCode));
 
-        add_storage(&d, &Storage { id: "nas".into(), name: "NAS".into(), scheme: "fs".into(), location: "/mnt/nas".into(), device: "first".into(), added: 1 }).unwrap();
+        add_storage(
+            &d,
+            &Storage {
+                id: "nas".into(),
+                name: "NAS".into(),
+                scheme: "fs".into(),
+                location: "/mnt/nas".into(),
+                device: "first".into(),
+                added: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(storages(&d)[0].name, "NAS");
 
         let h = "b".repeat(64);
@@ -487,8 +600,24 @@ mod tests {
         set_held(&d, "nas", &h, Some("stored")).unwrap();
         let mut who = holders(&d, &h);
         who.sort();
-        assert_eq!(who, [("nas".to_string(), "stored".to_string()), ("second".to_string(), "pinned".to_string())]);
+        assert_eq!(
+            who,
+            [
+                ("nas".to_string(), "stored".to_string()),
+                ("second".to_string(), "pinned".to_string())
+            ]
+        );
         set_held(&d, "second", &h, None).unwrap();
         assert_eq!(holders(&d, &h).len(), 1);
+    }
+
+    #[test]
+    fn pins_asked_from_anywhere() {
+        let d = LoroDoc::new();
+        set_pin(&d, "laptop", "12@3", true).unwrap();
+        set_pin(&d, "laptop", "7@3", true).unwrap();
+        set_pin(&d, "laptop", "12@3", false).unwrap();
+        assert_eq!(pins(&d, "laptop"), ["7@3"]);
+        assert!(pins(&d, "nas").is_empty());
     }
 }

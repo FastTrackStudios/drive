@@ -1,0 +1,305 @@
+//! Projects in the browser: a project's parts (folders on whichever
+//! computer has them; nobody needs the whole set), its app documents, and
+//! which parts are kept available on the node.
+
+use dioxus::prelude::*;
+use drive_dioxus::{Doc, use_doc, use_docs};
+use drive_files::projects as proj;
+use drive_files::{space, space_doc};
+use drive_spine as spine;
+use drive_spine::kinds::Kinds;
+
+use crate::browser::{Item, Items, Place, Src, app_label, icon, online, project_icon, use_nav};
+
+/// The schema.org types a project can be.
+const KINDS: [(&str, &str); 5] = [
+    ("Project", "Project"),
+    ("MusicRecording", "Song"),
+    ("MusicAlbum", "Album"),
+    ("Movie", "Video"),
+    ("Collection", "Sample library"),
+];
+
+#[component]
+pub fn ProjectView(space: String, id: String) -> Element {
+    let nav = use_nav();
+    let reg = use_doc(space_doc(&space));
+    let spine_doc = use_doc(spine::SPINE);
+    let docs = use_docs("");
+    let r = reg.loro();
+    let Some(p) = proj::projects(&r).into_iter().find(|p| p.id == id) else {
+        return rsx! {
+            div { class: "pane",
+                p { class: "empty", "This project is gone." }
+            }
+        };
+    };
+    let locations = space::locations(&r);
+    let devices = space::devices(&r);
+    let storages = space::storages(&r);
+    let up = online(&reg);
+    let kinds = Kinds::load(&spine_doc.loro());
+    let doc_items: Vec<Item> = p
+        .docs
+        .iter()
+        .map(|d| {
+            let kind = kinds.of_doc(d).clone();
+            let info = docs().into_iter().find(|x| &x.id == d);
+            Item {
+                name: if kind.doc_prefix.is_empty() {
+                    d.clone()
+                } else {
+                    d.trim_start_matches(&kind.doc_prefix).replace('-', " ")
+                },
+                dir: false,
+                size: info.as_ref().map_or(0, |i| i.bytes),
+                mtime: 0,
+                at: app_label(&kind.app),
+                online: true,
+                copies: 1,
+                kept: None,
+                available: None,
+                src: Src::Doc {
+                    id: d.clone(),
+                    peers: info.map_or(0, |i| i.peers),
+                },
+                kind,
+            }
+        })
+        .collect();
+    let holders: Vec<String> = {
+        let mut h: Vec<String> = p
+            .parts
+            .iter()
+            .filter_map(|part| locations.iter().find(|l| l.id == part.location))
+            .filter_map(|l| {
+                devices
+                    .iter()
+                    .find(|d| d.id == l.device)
+                    .map(|d| d.name.clone())
+            })
+            .collect();
+        h.sort();
+        h.dedup();
+        h
+    };
+    let pid = p.id.clone();
+    rsx! {
+        div { class: "pane wide",
+            div { class: "projhead",
+                img { src: icon(project_icon(&p.kind)), alt: "" }
+                div { class: "pmain",
+                    input {
+                        class: "pname",
+                        value: "{p.name}",
+                        onchange: {
+                            let reg = reg.clone();
+                            let pid = pid.clone();
+                            move |e: FormEvent| {
+                                let v = e.value();
+                                if !v.trim().is_empty() {
+                                    reg.edit(|d| {
+                                        let _ = proj::rename_project(d, &pid, v.trim());
+                                    });
+                                }
+                            }
+                        },
+                    }
+                    span { class: "s1",
+                        "{p.parts.len()} parts on {holders.len()} computers · {p.docs.len()} documents"
+                    }
+                }
+                select {
+                    class: "sortpick",
+                    onchange: {
+                        let reg = reg.clone();
+                        let pid = pid.clone();
+                        move |e: FormEvent| {
+                            let v = e.value();
+                            reg.edit(|d| {
+                                if let Ok(m) = d.get_map("projects").ensure_mergeable_map(&pid) {
+                                    let _ = m.insert("kind", v.as_str());
+                                }
+                            });
+                        }
+                    },
+                    for (k , label) in KINDS {
+                        option { key: "{k}", value: "{k}", selected: p.kind == k, "{label}" }
+                    }
+                }
+            }
+            h2 { class: "sec", "Parts" }
+            if p.parts.is_empty() {
+                p { class: "empty",
+                    "No parts yet. Open a folder under a computer (or a storage) and choose “Add to project”: the audio on the engineer's computer, the footage on the editor's."
+                }
+            }
+            div { class: "parts",
+                for part in p.parts.iter() {
+                    {
+                        let l = locations.iter().find(|l| l.id == part.location);
+                        let owner = l
+                            .map(|l| {
+                                if l.storage.is_empty() {
+                                    devices.iter().find(|d| d.id == l.device).map_or(String::new(), |d| d.name.clone())
+                                } else {
+                                    storages.iter().find(|s| s.id == l.storage).map_or(String::new(), |s| s.name.clone())
+                                }
+                            })
+                            .unwrap_or_else(|| "a location that is gone".into());
+                        let lname = l.map_or(String::new(), |l| l.name.clone());
+                        let live = l.is_some_and(|l| up.contains(&l.device));
+                        let go = Place::Location { loc: part.location.clone(), path: part.path.clone() };
+                        let (reg_a, reg_r) = (reg.clone(), reg.clone());
+                        let (pa, pr) = (pid.clone(), pid.clone());
+                        let (ia, ir) = (part.id.clone(), part.id.clone());
+                        rsx! {
+                            div { key: "{part.id}", class: "part",
+                                button { class: "partmain", onclick: move |_| nav.go(go.clone()),
+                                    img { src: icon("Folder"), alt: "" }
+                                    div { class: "pmain",
+                                        b { "{part.label}" }
+                                        span { class: "s1", "{owner} · {lname} /{part.path}" }
+                                    }
+                                    span { class: if live { "dot on" } else { "dot" }, title: if live { "online" } else { "offline" } }
+                                }
+                                label { class: "pin", title: "Keep every file of this part on the node, reachable and shareable while its computer is off",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: part.available,
+                                        onchange: move |e: FormEvent| {
+                                            let on = e.checked();
+                                            reg_a.edit(|d| {
+                                                let _ = proj::set_part_available(d, &pa, &ia, on);
+                                            });
+                                        },
+                                    }
+                                    span { "Available anywhere" }
+                                }
+                                button {
+                                    class: "x",
+                                    title: "Take this part out of the project (its files stay where they are)",
+                                    onclick: move |_| {
+                                        reg_r.edit(|d| {
+                                            let _ = proj::remove_part(d, &pr, &ir);
+                                        });
+                                    },
+                                    "✕"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            p { class: "hint",
+                "Parts stay on the computers that have them. A part marked available is copied to the node by its computer, so the client mixes can be shared while it is off; charts and documents are kept available wherever they are."
+            }
+            h2 { class: "sec", "Documents" }
+            if doc_items.is_empty() {
+                p { class: "empty", "No documents yet. Pick a song in Apps › Studio and tick this project." }
+            } else {
+                Items { items: doc_items, show_at: true, empty: "", loading: false }
+            }
+            div { class: "danger",
+                button {
+                    class: "primary ghost",
+                    onclick: {
+                        let reg = reg.clone();
+                        let pid = pid.clone();
+                        move |_| {
+                            reg.edit(|d| {
+                                let _ = proj::remove_project(d, &pid);
+                            });
+                            nav.go(Place::Drive(None));
+                        }
+                    },
+                    "Delete project"
+                }
+                span { class: "hint", "Only the project goes; every file stays where it is." }
+            }
+        }
+    }
+}
+
+/// "Add to project" for the folder being browsed.
+#[component]
+pub fn AddToProject(reg: Doc, location: String, path: String, label: String) -> Element {
+    let r = reg.loro();
+    let projects = proj::projects(&r);
+    let mut note = use_signal(String::new);
+    let inside: Vec<String> = projects
+        .iter()
+        .filter(|p| {
+            p.parts
+                .iter()
+                .any(|x| x.location == location && x.path == path.trim_matches('/'))
+        })
+        .map(|p| p.name.clone())
+        .collect();
+    if projects.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        if !inside.is_empty() {
+            span { class: "chip ok", "In {inside.join(\", \")}" }
+        }
+        select {
+            class: "sortpick",
+            onchange: move |e: FormEvent| {
+                let pid = e.value();
+                if pid.is_empty() {
+                    return;
+                }
+                let name = projects.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_default();
+                reg.edit(|d| {
+                    let _ = proj::add_part(d, &pid, &label, &location, &path);
+                });
+                note.set(format!("Added to {name}"));
+            },
+            option { value: "", selected: true, "Add to project…" }
+            for p in projects.iter() {
+                option { key: "{p.id}", value: "{p.id}", "{p.name}" }
+            }
+        }
+        if !note().is_empty() {
+            span { class: "count", "{note}" }
+        }
+    }
+}
+
+/// Which projects an app document is in, in the inspector.
+#[component]
+pub fn DocProjects(reg: Doc, doc_id: String) -> Element {
+    let r = reg.loro();
+    let projects = proj::projects(&r);
+    if projects.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        section { class: "isec",
+            h4 { "Projects" }
+            for p in projects {
+                {
+                    let on = p.docs.contains(&doc_id);
+                    let (reg, pid, did) = (reg.clone(), p.id.clone(), doc_id.clone());
+                    rsx! {
+                        label { key: "{p.id}", class: "pin",
+                            input {
+                                r#type: "checkbox",
+                                checked: on,
+                                onchange: move |e: FormEvent| {
+                                    let v = e.checked();
+                                    reg.edit(|d| {
+                                        let _ = proj::link_doc(d, &pid, &did, v);
+                                    });
+                                },
+                            }
+                            img { class: "sicon", src: icon(project_icon(&p.kind)), alt: "" }
+                            span { "{p.name}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

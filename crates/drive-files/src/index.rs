@@ -73,9 +73,14 @@ pub struct WalkStats {
 
 /// Walk a location. Files unchanged since `previous` (same size and time)
 /// keep their hash; only new or changed files are read.
-pub fn walk(location: &str, root: &Path, previous: Option<&LocationIndex>) -> (LocationIndex, WalkStats) {
-    let old: HashMap<&str, &IndexEntry> =
-        previous.map(|p| p.entries.iter().map(|e| (e.path.as_str(), e)).collect()).unwrap_or_default();
+pub fn walk(
+    location: &str,
+    root: &Path,
+    previous: Option<&LocationIndex>,
+) -> (LocationIndex, WalkStats) {
+    let old: HashMap<&str, &IndexEntry> = previous
+        .map(|p| p.entries.iter().map(|e| (e.path.as_str(), e)).collect())
+        .unwrap_or_default();
     let mut overrides = ignore::overrides::OverrideBuilder::new(root);
     for pat in DEFAULT_IGNORES {
         let _ = overrides.add(&format!("!{pat}"));
@@ -87,17 +92,25 @@ pub fn walk(location: &str, root: &Path, previous: Option<&LocationIndex>) -> (L
         .git_exclude(false)
         .ignore(true)
         .add_custom_ignore_filename(".driveignore")
-        .overrides(overrides.build().unwrap_or_else(|_| ignore::overrides::Override::empty()))
+        .overrides(
+            overrides
+                .build()
+                .unwrap_or_else(|_| ignore::overrides::Override::empty()),
+        )
         .follow_links(false)
         .build();
     let mut stats = WalkStats::default();
     let mut entries = Vec::new();
     for dent in walker.flatten() {
-        let Ok(rel) = dent.path().strip_prefix(root) else { continue };
+        let Ok(rel) = dent.path().strip_prefix(root) else {
+            continue;
+        };
         if rel.as_os_str().is_empty() {
             continue;
         }
-        let Some(rel) = rel.to_str().map(|s| s.replace('\\', "/")) else { continue };
+        let Some(rel) = rel.to_str().map(|s| s.replace('\\', "/")) else {
+            continue;
+        };
         let Ok(meta) = dent.metadata() else { continue };
         let mtime = meta
             .modified()
@@ -106,7 +119,13 @@ pub fn walk(location: &str, root: &Path, previous: Option<&LocationIndex>) -> (L
             .map_or(0, |d| d.as_millis() as i64);
         if meta.is_dir() {
             stats.dirs += 1;
-            entries.push(IndexEntry { path: rel, dir: true, size: 0, mtime, sampled: String::new() });
+            entries.push(IndexEntry {
+                path: rel,
+                dir: true,
+                size: 0,
+                mtime,
+                sampled: String::new(),
+            });
             continue;
         }
         if !meta.is_file() {
@@ -116,13 +135,21 @@ pub fn walk(location: &str, root: &Path, previous: Option<&LocationIndex>) -> (L
         stats.files += 1;
         stats.bytes += size;
         let sampled = match old.get(rel.as_str()) {
-            Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => o.sampled.clone(),
+            Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
+                o.sampled.clone()
+            }
             _ => {
                 stats.hashed += 1;
                 crate::hash::sampled(dent.path()).unwrap_or_default()
             }
         };
-        entries.push(IndexEntry { path: rel, dir: false, size, mtime, sampled });
+        entries.push(IndexEntry {
+            path: rel,
+            dir: false,
+            size,
+            mtime,
+            sampled,
+        });
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     let index = LocationIndex {
@@ -143,22 +170,33 @@ pub async fn walk_storage(
     root: &str,
     previous: Option<&LocationIndex>,
 ) -> opendal::Result<(LocationIndex, WalkStats)> {
-    let old: HashMap<&str, &IndexEntry> =
-        previous.map(|p| p.entries.iter().map(|e| (e.path.as_str(), e)).collect()).unwrap_or_default();
-    let base = format!("{}/", root.trim_matches('/')).trim_start_matches('/').to_string();
+    let old: HashMap<&str, &IndexEntry> = previous
+        .map(|p| p.entries.iter().map(|e| (e.path.as_str(), e)).collect())
+        .unwrap_or_default();
+    let base = format!("{}/", root.trim_matches('/'))
+        .trim_start_matches('/')
+        .to_string();
     let mut globs = ignore::gitignore::GitignoreBuilder::new("");
     for pat in DEFAULT_IGNORES {
         let _ = globs.add_line(None, pat);
     }
-    let globs = globs.build().unwrap_or_else(|_| ignore::gitignore::Gitignore::empty());
+    let globs = globs
+        .build()
+        .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty());
     let mut stats = WalkStats::default();
     let mut entries = Vec::new();
     let mut dirs = std::collections::BTreeSet::new();
     for e in op.list_with(&base).recursive(true).await? {
         let full = e.path();
-        let Some(rel) = full.strip_prefix(&base) else { continue };
+        let Some(rel) = full.strip_prefix(&base) else {
+            continue;
+        };
         let rel = rel.trim_end_matches('/');
-        if rel.is_empty() || rel.split('/').any(|seg| seg.starts_with('.') || globs.matched(seg, false).is_ignore()) {
+        if rel.is_empty()
+            || rel
+                .split('/')
+                .any(|seg| seg.starts_with('.') || globs.matched(seg, false).is_ignore())
+        {
             continue;
         }
         // Every ancestor is a folder, listed or not (buckets have no folders).
@@ -173,11 +211,15 @@ pub async fn walk_storage(
             continue;
         }
         let size = meta.content_length();
-        let mtime = meta.last_modified().map_or(0, |t| t.into_inner().as_millisecond());
+        let mtime = meta
+            .last_modified()
+            .map_or(0, |t| t.into_inner().as_millisecond());
         stats.files += 1;
         stats.bytes += size;
         let sampled = match old.get(rel) {
-            Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => o.sampled.clone(),
+            Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
+                o.sampled.clone()
+            }
             _ => {
                 stats.hashed += 1;
                 let mut parts = Vec::new();
@@ -187,13 +229,29 @@ pub async fn walk_storage(
                 crate::hash::sampled_of(size, &parts.iter().map(Vec::as_slice).collect::<Vec<_>>())
             }
         };
-        entries.push(IndexEntry { path: rel.to_string(), dir: false, size, mtime, sampled });
+        entries.push(IndexEntry {
+            path: rel.to_string(),
+            dir: false,
+            size,
+            mtime,
+            sampled,
+        });
     }
     stats.dirs = dirs.len();
-    entries.extend(dirs.into_iter().map(|d| IndexEntry { path: d, dir: true, size: 0, mtime: 0, sampled: String::new() }));
+    entries.extend(dirs.into_iter().map(|d| IndexEntry {
+        path: d,
+        dir: true,
+        size: 0,
+        mtime: 0,
+        sampled: String::new(),
+    }));
     entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let index =
-        LocationIndex { location: location.to_string(), root: root.to_string(), built: crate::now_ms(), entries };
+    let index = LocationIndex {
+        location: location.to_string(),
+        root: root.to_string(),
+        built: crate::now_ms(),
+        entries,
+    };
     Ok((index, stats))
 }
 
@@ -229,12 +287,19 @@ impl Tree {
                 (!x.dir, x.name().to_lowercase()).cmp(&(!y.dir, y.name().to_lowercase()))
             });
         }
-        Tree { index, children, by_path }
+        Tree {
+            index,
+            children,
+            by_path,
+        }
     }
 
     /// A folder's entries (`""`: the location's root).
     pub fn list(&self, dir: &str) -> Vec<&IndexEntry> {
-        self.children.get(dir).map(|v| v.iter().map(|i| &self.index.entries[*i]).collect()).unwrap_or_default()
+        self.children
+            .get(dir)
+            .map(|v| v.iter().map(|i| &self.index.entries[*i]).collect())
+            .unwrap_or_default()
     }
 
     pub fn get(&self, path: &str) -> Option<&IndexEntry> {
@@ -261,7 +326,15 @@ mod tests {
 
         let (idx, st) = walk("loc", r, None);
         let paths: Vec<&str> = idx.entries.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, ["Sessions", "Sessions/Song A", "Sessions/Song A/kick.wav", "Sessions/notes.txt"]);
+        assert_eq!(
+            paths,
+            [
+                "Sessions",
+                "Sessions/Song A",
+                "Sessions/Song A/kick.wav",
+                "Sessions/notes.txt"
+            ]
+        );
         assert_eq!((st.files, st.dirs, st.hashed), (2, 2, 2));
 
         // Nothing changed: nothing re-hashed.
@@ -273,8 +346,17 @@ mod tests {
         assert_eq!(back, idx);
         let t = Tree::new(back);
         assert_eq!(t.list("").len(), 1);
-        assert_eq!(t.list("Sessions").iter().map(|e| e.name()).collect::<Vec<_>>(), ["Song A", "notes.txt"]);
-        assert!(t.get("Sessions/Song A/kick.wav").is_some_and(|e| e.size == 5000));
+        assert_eq!(
+            t.list("Sessions")
+                .iter()
+                .map(|e| e.name())
+                .collect::<Vec<_>>(),
+            ["Song A", "notes.txt"]
+        );
+        assert!(
+            t.get("Sessions/Song A/kick.wav")
+                .is_some_and(|e| e.size == 5000)
+        );
     }
 
     #[tokio::test]
@@ -285,7 +367,11 @@ mod tests {
         let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(r.join("lib/Strings/legato.wav"), &big).unwrap();
         std::fs::write(r.join("lib/x.tmp"), b"t").unwrap();
-        let op = crate::storage::StorageConfig::Fs { root: r.to_string_lossy().into() }.operator().unwrap();
+        let op = crate::storage::StorageConfig::Fs {
+            root: r.to_string_lossy().into(),
+        }
+        .operator()
+        .unwrap();
         let (idx, st) = walk_storage("s", &op, "lib", None).await.unwrap();
         let paths: Vec<&str> = idx.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, ["Strings", "Strings/legato.wav"]);

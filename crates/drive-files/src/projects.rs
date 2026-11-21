@@ -1,0 +1,332 @@
+//! Projects: one piece of work (a song, its music video, a sample library)
+//! whose parts can be anywhere. Each part is a folder in some location on
+//! some computer: the editor's machine has the footage, the mixing
+//! engineer's the audio, and nobody needs the whole set. A project also
+//! links app documents (Studio's song session, a lighting show).
+//!
+//! Some of a project should be reachable whatever is switched on: its
+//! documents, its charts, the client mixes. A part marked available has
+//! every file kept on the node by the device that has it (and so, when the
+//! node's blobs live in S3, there); kinds an app marks available are kept
+//! the same way wherever they are. [`available`] records what has been put
+//! there, so the node can hand a file out while its computer is off.
+//!
+//! Layout, in the space's registry: `projects`: id → { id, name, kind,
+//! created, parts: part id → { id, label, location, path, available },
+//! docs: doc id → true }; `available`: location → path → { hash, size,
+//! mtime }.
+
+use loro::{LoroDoc, LoroMap, LoroValue, ValueOrContainer};
+use serde::Serialize;
+
+/// A piece of work.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    /// What it is, as a schema.org type: `MusicRecording`, `Movie`,
+    /// `Collection` (a sample library), or plain `Project`.
+    pub kind: String,
+    pub created: i64,
+    pub parts: Vec<Part>,
+    /// App documents in it (`studio:song:amazing-grace`).
+    pub docs: Vec<String>,
+}
+
+/// A folder of a project, on whichever computer (or storage) has it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Part {
+    pub id: String,
+    /// `Audio`, `Footage`, `Client mixes`.
+    pub label: String,
+    pub location: String,
+    /// Inside the location (`""`: all of it).
+    pub path: String,
+    /// Keep every file of it on the node, reachable when its computer is off.
+    pub available: bool,
+}
+
+/// A file put on the node so it can be had from anywhere.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Available {
+    pub hash: String,
+    pub size: i64,
+    pub mtime: i64,
+}
+
+fn s(m: &LoroMap, k: &str) -> String {
+    match m.get(k) {
+        Some(ValueOrContainer::Value(LoroValue::String(v))) => v.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn n(m: &LoroMap, k: &str) -> i64 {
+    match m.get(k) {
+        Some(ValueOrContainer::Value(LoroValue::I64(v))) => v,
+        Some(ValueOrContainer::Value(LoroValue::Double(v))) => v as i64,
+        _ => 0,
+    }
+}
+
+fn child(m: &LoroMap, k: &str) -> Option<LoroMap> {
+    match m.get(k) {
+        Some(ValueOrContainer::Container(c)) => c.into_map().ok(),
+        _ => None,
+    }
+}
+
+fn project_map(doc: &LoroDoc, id: &str) -> loro::LoroResult<LoroMap> {
+    doc.get_map("projects").ensure_mergeable_map(id)
+}
+
+/// Start a project; returns its id.
+pub fn add_project(doc: &LoroDoc, name: &str, kind: &str) -> loro::LoroResult<String> {
+    let id = crate::space::new_id();
+    let m = project_map(doc, &id)?;
+    m.insert("id", id.as_str())?;
+    m.insert("name", name)?;
+    m.insert("kind", if kind.is_empty() { "Project" } else { kind })?;
+    m.insert("created", crate::now_ms())?;
+    Ok(id)
+}
+
+pub fn rename_project(doc: &LoroDoc, id: &str, name: &str) -> loro::LoroResult<()> {
+    project_map(doc, id)?.insert("name", name)
+}
+
+pub fn remove_project(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
+    doc.get_map("projects").delete(id)
+}
+
+/// Add a folder to a project; returns the part's id.
+pub fn add_part(
+    doc: &LoroDoc,
+    project: &str,
+    label: &str,
+    location: &str,
+    path: &str,
+) -> loro::LoroResult<String> {
+    let id = crate::space::new_id();
+    let m = project_map(doc, project)?
+        .ensure_mergeable_map("parts")?
+        .ensure_mergeable_map(&id)?;
+    m.insert("id", id.as_str())?;
+    m.insert("label", label)?;
+    m.insert("location", location)?;
+    m.insert("path", path.trim_matches('/'))?;
+    m.insert("available", false)?;
+    Ok(id)
+}
+
+pub fn set_part_available(
+    doc: &LoroDoc,
+    project: &str,
+    part: &str,
+    on: bool,
+) -> loro::LoroResult<()> {
+    project_map(doc, project)?
+        .ensure_mergeable_map("parts")?
+        .ensure_mergeable_map(part)?
+        .insert("available", on)
+}
+
+pub fn remove_part(doc: &LoroDoc, project: &str, part: &str) -> loro::LoroResult<()> {
+    let parts = project_map(doc, project)?.ensure_mergeable_map("parts")?;
+    if parts.get(part).is_some() {
+        parts.delete(part)?;
+    }
+    Ok(())
+}
+
+/// Put an app document in a project (or take it out).
+pub fn link_doc(doc: &LoroDoc, project: &str, doc_id: &str, on: bool) -> loro::LoroResult<()> {
+    let docs = project_map(doc, project)?.ensure_mergeable_map("docs")?;
+    if on {
+        docs.insert(doc_id, true)?;
+    } else if docs.get(doc_id).is_some() {
+        docs.delete(doc_id)?;
+    }
+    Ok(())
+}
+
+pub fn projects(doc: &LoroDoc) -> Vec<Project> {
+    let map = doc.get_map("projects");
+    let mut out: Vec<Project> = map
+        .keys()
+        .filter_map(|k| child(&map, &k))
+        .map(|m| {
+            let mut parts: Vec<Part> = child(&m, "parts")
+                .map(|p| {
+                    p.keys()
+                        .filter_map(|k| child(&p, &k))
+                        .map(|x| Part {
+                            id: s(&x, "id"),
+                            label: s(&x, "label"),
+                            location: s(&x, "location"),
+                            path: s(&x, "path"),
+                            available: matches!(
+                                x.get("available"),
+                                Some(ValueOrContainer::Value(LoroValue::Bool(true)))
+                            ),
+                        })
+                        .filter(|x| !x.id.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            parts.sort_by(|a, b| a.label.cmp(&b.label));
+            let mut docs: Vec<String> = child(&m, "docs")
+                .map(|d| d.keys().map(|k| k.to_string()).collect())
+                .unwrap_or_default();
+            docs.sort();
+            Project {
+                id: s(&m, "id"),
+                name: s(&m, "name"),
+                kind: s(&m, "kind"),
+                created: n(&m, "created"),
+                parts,
+                docs,
+            }
+        })
+        .filter(|p| !p.id.is_empty())
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+/// Whether a file of a location is inside a part marked available.
+pub fn in_available_part(projects: &[Project], location: &str, path: &str) -> bool {
+    projects.iter().flat_map(|p| &p.parts).any(|part| {
+        part.available
+            && part.location == location
+            && (part.path.is_empty()
+                || path == part.path
+                || path.starts_with(&format!("{}/", part.path)))
+    })
+}
+
+/// Record that a location's file is on the node.
+pub fn set_available(
+    doc: &LoroDoc,
+    location: &str,
+    path: &str,
+    a: Option<&Available>,
+) -> loro::LoroResult<()> {
+    let loc = doc.get_map("available").ensure_mergeable_map(location)?;
+    match a {
+        Some(a) => {
+            let m = loc.ensure_mergeable_map(path)?;
+            m.insert("hash", a.hash.as_str())?;
+            m.insert("size", a.size)?;
+            m.insert("mtime", a.mtime)?;
+        }
+        None => {
+            if loc.get(path).is_some() {
+                loc.delete(path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What of a location is on the node: path → its record.
+pub fn available(doc: &LoroDoc, location: &str) -> std::collections::HashMap<String, Available> {
+    child(&doc.get_map("available"), location)
+        .map(|loc| {
+            loc.keys()
+                .filter_map(|k| {
+                    child(&loc, &k).map(|m| {
+                        (
+                            k.to_string(),
+                            Available {
+                                hash: s(&m, "hash"),
+                                size: n(&m, "size"),
+                                mtime: n(&m, "mtime"),
+                            },
+                        )
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_project_whose_parts_are_on_different_computers() {
+        let d = LoroDoc::new();
+        let p = add_project(&d, "Amazing Grace", "MusicRecording").unwrap();
+        let audio = add_part(&d, &p, "Audio", "engineer-projects", "Amazing Grace").unwrap();
+        let mixes = add_part(
+            &d,
+            &p,
+            "Client mixes",
+            "engineer-projects",
+            "Amazing Grace/Mixes",
+        )
+        .unwrap();
+        add_part(&d, &p, "Footage", "editor-footage", "AG video").unwrap();
+        set_part_available(&d, &p, &mixes, true).unwrap();
+        link_doc(&d, &p, "studio:song:amazing-grace", true).unwrap();
+        d.commit();
+
+        let all = projects(&d);
+        assert_eq!(all.len(), 1);
+        assert_eq!(
+            all[0]
+                .parts
+                .iter()
+                .map(|x| x.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Audio", "Client mixes", "Footage"]
+        );
+        assert_eq!(all[0].docs, ["studio:song:amazing-grace"]);
+
+        // Only the mixes are kept on the node.
+        assert!(in_available_part(
+            &all,
+            "engineer-projects",
+            "Amazing Grace/Mixes/v3.wav"
+        ));
+        assert!(!in_available_part(
+            &all,
+            "engineer-projects",
+            "Amazing Grace/Kick.wav"
+        ));
+        assert!(!in_available_part(
+            &all,
+            "engineer-projects",
+            "Amazing Grace/Mixes2/x.wav"
+        ));
+        assert!(!in_available_part(
+            &all,
+            "editor-footage",
+            "AG video/A001.mov"
+        ));
+
+        remove_part(&d, &p, &audio).unwrap();
+        assert_eq!(projects(&d)[0].parts.len(), 2);
+
+        let a = Available {
+            hash: "h".into(),
+            size: 3,
+            mtime: 9,
+        };
+        set_available(
+            &d,
+            "engineer-projects",
+            "Amazing Grace/Mixes/v3.wav",
+            Some(&a),
+        )
+        .unwrap();
+        assert_eq!(
+            available(&d, "engineer-projects").get("Amazing Grace/Mixes/v3.wav"),
+            Some(&a)
+        );
+        set_available(&d, "engineer-projects", "Amazing Grace/Mixes/v3.wav", None).unwrap();
+        assert!(available(&d, "engineer-projects").is_empty());
+    }
+}

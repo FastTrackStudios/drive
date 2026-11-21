@@ -98,7 +98,9 @@ mod tests {
     #[tokio::test]
     async fn blobs_round_trip_and_are_checked() {
         let dir = tempfile::tempdir().unwrap();
-        let op = Operator::new(opendal::services::Fs::default().root(&dir.path().to_string_lossy())).unwrap();
+        let op =
+            Operator::new(opendal::services::Fs::default().root(&dir.path().to_string_lossy()))
+                .unwrap();
         let s = BlobStore::new(op.clone());
         let h = s.put(b"a stem".to_vec()).await.unwrap();
         assert!(s.has(&h).await.unwrap());
@@ -107,6 +109,9 @@ mod tests {
         // Bytes changed behind its back are refused.
         op.write(&key(&h), b"tampered".to_vec()).await.unwrap();
         assert!(matches!(s.get(&h).await, Err(Error::Corrupt(_))));
-        assert!(matches!(s.put_checked(&h, b"wrong".to_vec()).await, Err(Error::Corrupt(_))));
+        assert!(matches!(
+            s.put_checked(&h, b"wrong".to_vec()).await,
+            Err(Error::Corrupt(_))
+        ));
     }
 }

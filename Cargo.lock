@@ -1737,6 +1737,7 @@ version = "0.1.0"
 dependencies = [
  "drive-files",
  "drive-native",
+ "drive-spine",
  "fuser",
  "libc",
  "loro",
@@ -1760,6 +1761,7 @@ dependencies = [
  "drive-spine",
  "gloo-net 0.8.0",
  "js-sys",
+ "loro",
  "serde_json",
 ]
 
