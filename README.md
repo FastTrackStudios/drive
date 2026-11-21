@@ -15,6 +15,7 @@ installed.
 - [PLAN.md](PLAN.md): the prototype plan.
 - [docs/apps/meals.md](docs/apps/meals.md): the Meals app.
 - [docs/sites.md](docs/sites.md): static sites from folders of Markdown (dodeca).
+- [docs/tags.md](docs/tags.md): tags, fields and tag search.
 - [PROTOTYPE.md](PROTOTYPE.md): the running prototype (Drive and four apps, live).
 
 Status: a working prototype (see PROTOTYPE.md); the plan is the way to the

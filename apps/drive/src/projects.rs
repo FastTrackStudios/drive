@@ -128,6 +128,13 @@ pub fn ProjectView(space: String, id: String) -> Element {
                     }
                 }
             }
+            h2 { class: "sec", "Tags" }
+            crate::tags::TargetTags {
+                key: "{pid}",
+                space: space.clone(),
+                target: drive_spine::tags::Target::Project(pid.clone()),
+                note: None,
+            }
             h2 { class: "sec", "Parts" }
             if p.parts.is_empty() {
                 p { class: "empty",

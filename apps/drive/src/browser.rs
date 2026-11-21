@@ -53,6 +53,10 @@ pub enum Place {
     Calendar,
     Notes,
     Everything,
+    /// Everything carrying a tag (or a tag under it).
+    Tag(String),
+    /// The tag manager.
+    Tags,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -192,7 +196,7 @@ pub struct Item {
 }
 
 impl Item {
-    fn key(&self) -> String {
+    pub fn key(&self) -> String {
         match &self.src {
             Src::Tree { id, .. } => format!("t{id}"),
             Src::Index { location, path, .. } => format!("i{location}/{path}"),
@@ -251,7 +255,7 @@ pub fn online(reg: &Doc) -> Vec<String> {
         .collect()
 }
 
-fn tree_item(
+pub fn tree_item(
     e: &tree::Entry,
     path: &str,
     reg: &loro::LoroDoc,
@@ -636,6 +640,7 @@ fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -
                         }
                     }
                 }
+                crate::tags::SidebarTags { space: space.clone() }
                 if !apps.is_empty() {
                     h3 { "Apps" }
                 }
@@ -677,6 +682,8 @@ fn title_of(p: &Place) -> &'static str {
         Place::Calendar => "Calendar",
         Place::Notes => "Notes",
         Place::Everything => "Raw documents",
+        Place::Tag(_) => "Tag",
+        Place::Tags => "Tags",
     }
 }
 
@@ -689,6 +696,7 @@ fn browsable(p: &Place) -> bool {
             | Place::App(_)
             | Place::AtRisk(_)
             | Place::Project(_)
+            | Place::Tag(_)
     )
 }
 
@@ -708,7 +716,7 @@ fn Toolbar() -> Element {
                 input {
                     class: "search",
                     r#type: "search",
-                    placeholder: "Search every computer",
+                    placeholder: "Search names, or tags: drums NOT archived",
                     value: "{nav.query}",
                     oninput: move |e| {
                         nav.query.set(e.value());
@@ -779,7 +787,7 @@ fn Content(space: String) -> Element {
     }
     if !q.trim().is_empty() && (browsable(&place) || place == Place::Overview) {
         return rsx! {
-            Search { space, q }
+            crate::tags::SearchView { space, q }
         };
     }
     match place {
@@ -827,6 +835,12 @@ fn Content(space: String) -> Element {
         },
         Place::Everything => rsx! {
             crate::Everything {}
+        },
+        Place::Tag(id) => rsx! {
+            crate::tags::TagView { space, id }
+        },
+        Place::Tags => rsx! {
+            crate::tags::TagManager { space }
         },
     }
 }
@@ -1262,59 +1276,6 @@ fn KindView(space: String, kind: String) -> Element {
     }
 }
 
-/// Search the Drive and every computer's index.
-#[component]
-fn Search(space: String, q: String) -> Element {
-    let spine_doc = use_doc(spine::SPINE);
-    let files = use_doc(files_doc(&space));
-    let reg = use_doc(space_doc(&space));
-    let kinds = Kinds::load(&spine_doc.loro());
-    let (sp, qq) = (space.clone(), q.clone());
-    let rows = use_resource(use_reactive!(|(sp, qq)| async move {
-        get(format!(
-            "/search?space={}&q={}&limit=200",
-            enc(&sp),
-            enc(qq.trim())
-        ))
-        .await
-    }));
-    let words: Vec<String> = q.split_whitespace().map(|w| w.to_lowercase()).collect();
-    let f = files.loro();
-    let r = reg.loro();
-    let up = online(&reg);
-    let mut items: Vec<Item> = tree::files(&f)
-        .iter()
-        .filter(|(_, e)| {
-            let n = e.name.to_lowercase();
-            words.iter().all(|w| n.contains(w))
-        })
-        .map(|(p, e)| tree_item(e, p, &r, &up, &kinds))
-        .collect();
-    items.extend(
-        rows()
-            .flatten()
-            .and_then(|v| v["results"].as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .map(|h| hit_item(h, &kinds)),
-    );
-    rsx! {
-        div { class: "viewhead",
-            div { class: "kindtitle",
-                img { src: icon("Search"), alt: "" }
-                h1 { "“{q.trim()}”" }
-                span { class: "count", "{items.len()} found" }
-            }
-        }
-        Items {
-            items,
-            show_at: true,
-            empty: "Nothing by that name in the Drive or on any computer.",
-            loading: rows().is_none(),
-        }
-    }
-}
-
 /// An app's documents, each with its kind and a way to open it.
 #[component]
 fn AppDocs(app: String) -> Element {
@@ -1460,6 +1421,7 @@ fn Inspector(space: String) -> Element {
                 },
                 _ => rsx! {},
             }
+            crate::tags::ItemTags { key: "{item.key()}", space: space.clone(), item: item.clone() }
             if !item.dir {
                 ItemComments { item: item.clone(), download: download.clone() }
             }
