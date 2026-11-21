@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+    {% if config.description %}<meta name="description" content="{{ config.description }}">{% endif %}
+    <script>
+        (function () {
+            var t = null;
+            try { t = localStorage.getItem("site-theme"); } catch (e) {}
+            if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+        })();
+    </script>
+    <link rel="stylesheet" href="{{ get_url(path='main.css') }}">
+    {% block head %}{% endblock head %}
+</head>
+<body>
+    <header class="site-header">
+        <a class="site-title" href="/">{{ config.title }}</a>
+        <div id="search" class="site-search"></div>
+        <button class="theme-toggle" type="button" aria-label="Switch between dark and light"
+            onclick="var d=document.documentElement,m=window.matchMedia('(prefers-color-scheme: dark)').matches,c=d.dataset.theme||(m?'dark':'light'),n=c==='dark'?'light':'dark';d.dataset.theme=n;try{localStorage.setItem('site-theme',n)}catch(e){}">
+            <span class="icon-dark">☾</span><span class="icon-light">☀</span>
+        </button>
+    </header>
+    <div class="layout">
+        <nav class="site-nav" aria-label="Sections">
+            <details class="nav-menu" open>
+                <summary>Contents</summary>
+                <ul class="nav-root">
+                    <li><a href="/">Home</a></li>
+                    {% for sub in root.subsections %}
+                    <li class="nav-section">
+                        <a class="nav-section-title" href="{{ sub.permalink }}">{{ sub.title }}</a>
+                        {% if sub.pages %}
+                        <ul>
+                            {% for p in sub.pages %}
+                            <li><a href="{{ p.permalink }}">{{ p.title }}</a></li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                    {% for p in root.pages %}
+                    <li><a href="{{ p.permalink }}">{{ p.title }}</a></li>
+                    {% endfor %}
+                </ul>
+            </details>
+        </nav>
+        <main class="content">
+            {% block content %}{% endblock content %}
+        </main>
+    </div>
+    <footer class="site-footer">
+        {% block footer %}{{ config.title }} · published with Drive{% endblock footer %}
+    </footer>
+</body>
+</html>

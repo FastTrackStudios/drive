@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.title }}{% endblock title %}
+
+{% block content %}
+<article class="prose">
+    {{ section.content | safe }}
+</article>
+{% if section.subsections %}
+<ul class="card-list">
+    {% for sub in section.subsections %}
+    <li class="card">
+        <a class="card-title" href="{{ sub.permalink }}">{{ sub.title }}</a>
+        {% if sub.pages %}<span class="card-meta">{{ sub.pages | length }} pages</span>{% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% endif %}
+{% if section.pages %}
+<h2 class="list-heading">Pages</h2>
+<ul class="page-list">
+    {% for p in section.pages %}
+    <li>
+        <a href="{{ p.permalink }}">{{ p.title }}</a>
+        {% if p.description %}<span class="page-desc">{{ p.description }}</span>{% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% endif %}
+{% endblock content %}
