@@ -9,6 +9,7 @@ license.workspace = true
 drive-proto.workspace = true
 drive-files = { path = "../drive-files" }
 drive-spine.workspace = true
+drive-view = { workspace = true, features = ["edit"] }
 zip = { version = "5", default-features = false }
 zstd = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
