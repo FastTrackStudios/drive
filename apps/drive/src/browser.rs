@@ -349,6 +349,12 @@ pub fn Content(space: String) -> Element {
         Place::Tags => rsx! {
             crate::tags::TagManager { space }
         },
+        Place::Rules => rsx! {
+            crate::rules::RulesPage { space }
+        },
+        Place::Rule(id) => rsx! {
+            crate::rules::RulePage { key: "{id}", space, id }
+        },
     }
 }
 

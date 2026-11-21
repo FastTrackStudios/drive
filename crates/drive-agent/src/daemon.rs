@@ -96,6 +96,15 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     }
     refresh_view(&a, &view).await;
 
+    // File rules (crate::rules): after a location is indexed, on their
+    // schedules and when asked; the first pass catches what changed while
+    // the agent was off.
+    let rules = Arc::new(crate::rules::Engine::open(&a).await);
+    crate::rules::claim(&a.dir);
+    let ruling = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut rules_due: Vec<String> = a.my_locations().into_iter().map(|l| l.id).collect();
+    let mut last_rules = tokio::time::Instant::now();
+
     // Sites: checked a few seconds after their pages, theme or settings
     // change, and every minute (new sites, builds asked for elsewhere).
     let building = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -188,11 +197,29 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 let due: Vec<String> = pending.iter().filter(|(_, t)| **t <= now).map(|(k, _)| k.clone()).collect();
                 for id in due {
                     pending.remove(&id);
-                    if let Some(loc) = a.my_locations().into_iter().find(|l| l.id == id)
-                        && let Err(e) = a.index_location(&loc).await
-                    {
-                        tracing::warn!(location.name = %loc.name, error = %e, "a location did not reindex");
+                    if let Some(loc) = a.my_locations().into_iter().find(|l| l.id == id) {
+                        match a.index_location(&loc).await {
+                            Ok(_) => rules_due.push(loc.id.clone()),
+                            Err(e) => tracing::warn!(location.name = %loc.name, error = %e, "a location did not reindex"),
+                        }
                     }
+                }
+                if (!rules_due.is_empty() || now.duration_since(last_rules) > Duration::from_secs(10))
+                    && !ruling.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    last_rules = now;
+                    let locs = std::mem::take(&mut rules_due);
+                    let (a, rules, ruling) = (a.clone(), rules.clone(), ruling.clone());
+                    tokio::spawn(async move {
+                        let mut locs = locs;
+                        locs.sort();
+                        locs.dedup();
+                        if !locs.is_empty() {
+                            rules.after_index(&a, &locs).await;
+                        }
+                        rules.tick(&a).await;
+                        ruling.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
                 }
                 if now.duration_since(last_full) > Duration::from_secs(600) {
                     last_full = now;

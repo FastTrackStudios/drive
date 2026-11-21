@@ -57,6 +57,12 @@ pub struct Config {
     /// `DRIVE_RELAY` overrides it.
     #[serde(default)]
     pub relay: Option<String>,
+    /// Whether file rules may move or rename files in this device's
+    /// locations (docs/rules.md). Off unless turned on by hand; even on, a
+    /// move is a verified copy and the original goes to the location's
+    /// `.drive-trash`, never deleted.
+    #[serde(default)]
+    pub allow_rule_moves: bool,
 }
 
 impl Config {

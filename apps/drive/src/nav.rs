@@ -52,6 +52,10 @@ pub enum Place {
     Tag(String),
     /// The tag manager.
     Tags,
+    /// File rules (docs/rules.md).
+    Rules,
+    /// One rule: what it would do, what it did, its editor.
+    Rule(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

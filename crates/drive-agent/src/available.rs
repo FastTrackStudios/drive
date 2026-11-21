@@ -14,6 +14,8 @@ impl Agent {
     pub async fn make_available(&self) -> usize {
         let kinds = Kinds::load(&self.spine);
         let all = projects::projects(&self.space);
+        // Files a rule asked to keep highly available (docs/rules.md).
+        let wished = self.rule_wishes().await;
         let mut put = 0;
         for loc in self.my_locations() {
             let Some(index) = self.cached_index(&loc.id) else {
@@ -28,7 +30,8 @@ impl Agent {
             {
                 let name = e.path.rsplit('/').next().unwrap_or_default();
                 let wanted = projects::in_available_part(&all, &loc.id, &e.path)
-                    || kinds.of_file(name, false).keeps_available(e.size);
+                    || kinds.of_file(name, false).keeps_available(e.size)
+                    || wished.contains(&(loc.id.clone(), e.path.clone()));
                 let rec = have.get(&e.path);
                 if !wanted {
                     if rec.is_some() {
@@ -119,5 +122,23 @@ impl Agent {
             self.commit_space();
         }
         put
+    }
+}
+
+impl Agent {
+    /// (location, path) of every file a rule wants highly available.
+    async fn rule_wishes(&self) -> std::collections::HashSet<(String, String)> {
+        let space = self.cfg.lock().expect("cfg").space.clone();
+        let doc = self
+            .drive
+            .open(&drive_rules::journal::journal_doc(&space))
+            .await;
+        drive_rules::journal::wished_available(&doc)
+            .into_iter()
+            .filter_map(|i| match i {
+                drive_rules::Item::Location { location, path, .. } => Some((location, path)),
+                drive_rules::Item::Drive { .. } => None,
+            })
+            .collect()
     }
 }

@@ -268,6 +268,8 @@ pub fn title_of(p: &Place) -> &'static str {
         Place::Everything => "Raw documents",
         Place::Tag(_) => "Tag",
         Place::Tags => "Tags",
+        Place::Rules => "Rules",
+        Place::Rule(_) => "Rule",
     }
 }
 
@@ -276,6 +278,7 @@ fn use_crumbs(space: &str, place: &Place) -> Vec<(String, Option<Place>)> {
     let files = use_doc(files_doc(space));
     let reg = use_doc(space_doc(space));
     let tag_doc = use_doc(spine::tags::tags_doc(space));
+    let rules_doc = use_doc(drive_rules::doc::rules_doc(space));
     let spine_doc = use_doc(spine::SPINE);
     match place {
         Place::Drive(folder) => {
@@ -349,6 +352,11 @@ fn use_crumbs(space: &str, place: &Place) -> Vec<(String, Option<Place>)> {
                 .get(id)
                 .map_or_else(|| "Tag".to_string(), |t| t.name.clone());
             vec![("Tags".into(), Some(Place::Tags)), (name, None)]
+        }
+        Place::Rule(id) => {
+            let name = drive_rules::doc::rule(&rules_doc.loro(), id)
+                .map_or_else(|| "Rule".to_string(), |r| r.name);
+            vec![("Rules".into(), Some(Place::Rules)), (name, None)]
         }
         Place::Kind(k) => {
             let kinds = Kinds::load(&spine_doc.loro());
@@ -824,6 +832,7 @@ fn DriveSidebar(space: String, spaces: Vec<String>, on_space: EventHandler<Strin
                 PlaceRow { at: here(Place::Protection), label: "Protection", icon: "Lock" }
                 PlaceRow { at: here(Place::Devices), label: "Devices & storage", icon: "Devices" }
                 PlaceRow { at: here(Place::Sites), label: "Sites", icon: "Globe" }
+                crate::rules::SidebarRules {}
             }
             SidebarSection { title: "Spine",
                 PlaceRow { at: here(Place::Inbox), label: "Inbox", icon: "Document" }
