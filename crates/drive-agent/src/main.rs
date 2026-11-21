@@ -4,6 +4,7 @@
 //! drive-agent [--dir DIR] init  --node ws://host:8096/sync --space home --name "Studio PC"
 //! drive-agent [--dir DIR] invite                       # a pairing code for another device
 //! drive-agent [--dir DIR] sign-in | sign-out             # this device signs in as its person (the node's issuer)
+drive-agent [--dir DIR] sign-in --node URL --space NAME  # before joining a node that asks for a sign-in
 //! drive-agent [--dir DIR] join  --node URL --space home --name Laptop --code K7Q2XM
 //! drive-agent [--dir DIR] devices | storages
 //! drive-agent [--dir DIR] device rm NAME                # forget a device, its locations and storages
@@ -160,7 +161,24 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         }
         "sign-in" => {
             // The node's issuer, from the node itself.
-            let mut cfg = Config::load(dir)?;
+            // Before joining (a node that asks for a sign-in first), the
+            // node and space come as flags and the config starts here.
+            let mut cfg = match (Config::load(dir), flag(args, "--node"), flag(args, "--space")) {
+                (Ok(c), _, _) => c,
+                (Err(_), Some(node), Some(space)) => Config {
+                    node,
+                    space,
+                    device_id: space::new_id(),
+                    device_name: flag(args, "--name").unwrap_or_else(|| "Another computer".into()),
+                    storages: Vec::new(),
+                    pins: Vec::new(),
+                    token: None,
+                    token_expires: None,
+                    signed_in_as: None,
+                    allow_evict: false,
+                },
+                (Err(e), _, _) => return Err(format!("{e} (before joining: sign-in --node URL --space NAME)")),
+            };
             let http = reqwest::Client::new();
             let orgs: serde_json::Value = http
                 .get(format!("{}/orgs", cfg.node_http()))
@@ -250,16 +268,19 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             let space_name = flag(args, "--space").ok_or("--space NAME")?;
             let name = flag(args, "--name").unwrap_or_else(|| "Another computer".into());
             let code = flag(args, "--code").ok_or("--code CODE")?;
+            // A node that asks for a sign-in: `sign-in` first (it writes a
+            // config with this node and the session), then `join` keeps it.
+            let prior = Config::load(dir).ok().filter(|c| c.node == node);
             let cfg = Config {
                 node,
                 space: space_name,
-                device_id: space::new_id(),
+                device_id: prior.as_ref().map_or_else(space::new_id, |c| c.device_id.clone()),
                 device_name: name.clone(),
                 storages: Vec::new(),
                 pins: Vec::new(),
-                token: None,
-                token_expires: None,
-                signed_in_as: None,
+                token: prior.as_ref().and_then(|c| c.token.clone()),
+                token_expires: prior.as_ref().and_then(|c| c.token_expires.clone()),
+                signed_in_as: prior.as_ref().and_then(|c| c.signed_in_as.clone()),
                 allow_evict: false,
             };
             let a = Agent::start(dir, cfg.clone()).await;
