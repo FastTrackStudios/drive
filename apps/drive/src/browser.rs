@@ -8,7 +8,6 @@
 //! its copies are, and what can be done with it.
 
 use dioxus::prelude::*;
-use drive_dioxus::ui::{Avatars, ConnectionStatus};
 use drive_dioxus::{Doc, use_doc, use_docs};
 use drive_files::{files_doc, space, space_doc, tree};
 use drive_spine as spine;
@@ -22,140 +21,8 @@ pub fn icon(name: &str) -> String {
     format!("{ICONS}/{name}.webp")
 }
 
-// ── navigation ──────────────────────────────────────────────────────────
-
-/// Where the browser is.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Place {
-    Overview,
-    /// The space's synced tree, at a folder (`None`: its root).
-    Drive(Option<String>),
-    /// A location's index, at a path inside it.
-    Location {
-        loc: String,
-        path: String,
-    },
-    /// Every file of a kind, on every computer.
-    Kind(String),
-    /// An app's documents.
-    App(String),
-    /// The files a policy finds short of copies.
-    AtRisk(String),
-    /// A project: its parts, wherever they are, and its documents.
-    Project(String),
-    /// Every org you are in, at a glance.
-    AllOrgs,
-    Protection,
-    Devices,
-    /// Static sites built from folders.
-    Sites,
-    Inbox,
-    Calendar,
-    Notes,
-    Everything,
-    /// Everything carrying a tag (or a tag under it).
-    Tag(String),
-    /// The tag manager.
-    Tags,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum View {
-    Grid,
-    List,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Sort {
-    Name,
-    Size,
-    Modified,
-}
-
-/// The browser's state, shared by its parts.
-#[derive(Clone, Copy)]
-pub struct Nav {
-    pub place: Signal<Place>,
-    back: Signal<Vec<Place>>,
-    fwd: Signal<Vec<Place>>,
-    pub selected: Signal<Option<Item>>,
-    pub query: Signal<String>,
-    pub view: Signal<View>,
-    pub sort: Signal<(Sort, bool)>,
-    pub sidebar: Signal<bool>,
-    pub inspector: Signal<bool>,
-    /// The picked file, full screen.
-    pub preview: Signal<bool>,
-    /// The items on screen, in their order (what the arrow keys walk).
-    pub visible: CopyValue<Vec<Item>>,
-    pub debug: Signal<bool>,
-    /// Another org whose project (shared with this one) is being viewed;
-    /// `None`: this org.
-    pub within: Signal<Option<String>>,
-}
-
-impl Nav {
-    fn new() -> Nav {
-        Nav {
-            place: Signal::new(Place::Drive(None)),
-            back: Signal::new(Vec::new()),
-            fwd: Signal::new(Vec::new()),
-            selected: Signal::new(None),
-            query: Signal::new(String::new()),
-            view: Signal::new(View::Grid),
-            sort: Signal::new((Sort::Name, false)),
-            sidebar: Signal::new(false),
-            inspector: Signal::new(true),
-            preview: Signal::new(false),
-            visible: CopyValue::new(Vec::new()),
-            debug: Signal::new(false),
-            within: Signal::new(None),
-        }
-    }
-
-    pub fn go(mut self, p: Place) {
-        if *self.place.peek() != p {
-            let cur = self.place.peek().clone();
-            self.back.write().push(cur);
-            self.fwd.write().clear();
-            self.place.set(p);
-        }
-        self.selected.set(None);
-        self.preview.set(false);
-        self.query.set(String::new());
-        self.sidebar.set(false);
-    }
-
-    /// Go somewhere in this org (the sidebar: leaves any other org's project).
-    pub fn go_home(mut self, p: Place) {
-        self.go(p);
-        self.within.set(None);
-    }
-
-    /// Go somewhere in another org (a project it shared with this one);
-    /// moving around inside it (its parts, their folders) stays there.
-    pub fn go_in(mut self, org: &str, p: Place) {
-        self.go(p);
-        self.within.set(Some(org.to_string()));
-    }
-
-    fn step(mut self, forward: bool) {
-        let (mut from, mut to) = if forward {
-            (self.fwd, self.back)
-        } else {
-            (self.back, self.fwd)
-        };
-        let Some(p) = from.write().pop() else { return };
-        let cur = self.place.peek().clone();
-        to.write().push(cur);
-        self.place.set(p);
-        self.selected.set(None);
-    }
-}
-
-pub fn use_nav() -> Nav {
-    use_context::<Nav>()
-}
+pub use crate::nav::{Nav, Place, Sort, View, use_nav};
+use crate::shell::browsable;
 
 // ── items ───────────────────────────────────────────────────────────────
 
@@ -348,7 +215,7 @@ pub fn app_label(app: &str) -> String {
 }
 
 /// A device's icon: a server, a phone, a laptop or a desktop.
-fn device_icon(d: &space::Device) -> &'static str {
+pub fn device_icon(d: &space::Device) -> &'static str {
     let name = d.name.to_lowercase();
     if drive_files::placement::Role::of(&d.roles) == drive_files::placement::Role::StorageServer
         || d.kind == "server"
@@ -383,17 +250,6 @@ pub fn project_icon(kind: &str) -> &'static str {
     }
 }
 
-/// The kinds shown in the sidebar, in order.
-const SIDEBAR_KINDS: [&str; 7] = [
-    "audio",
-    "instrument",
-    "project",
-    "chart",
-    "video",
-    "image",
-    "document",
-];
-
 /// A colour per top-level kind, for the overview's breakdown.
 pub fn kind_hue(id: &str) -> u32 {
     match id {
@@ -411,367 +267,8 @@ pub fn kind_hue(id: &str) -> u32 {
     }
 }
 
-// ── the shell ───────────────────────────────────────────────────────────
-
 #[component]
-pub fn Browser() -> Element {
-    let nav = use_context_provider(Nav::new);
-    use_quick_look(nav);
-    let ctx = drive_dioxus::use_drive();
-    // The space is the org this browser is in; the others the node keeps
-    // can be switched to.
-    let orgs = use_resource(|| async {
-        get("/orgs".to_string())
-            .await
-            .and_then(|v| v["orgs"].as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|o| o.as_str().map(str::to_string))
-            .collect::<Vec<String>>()
-    });
-    let space = ctx.org.clone();
-    let mut list = orgs().unwrap_or_default();
-    if !list.contains(&space) {
-        list.push(space.clone());
-    }
-    let switch = ctx.clone();
-    rsx! {
-        Shell { space: space.clone(), spaces: list, on_space: move |s: String| switch.set_org(&s) }
-    }
-}
-
-#[component]
-fn Shell(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -> Element {
-    let nav = use_nav();
-    // A project another org shared is shown in its own org's registry.
-    let view = (nav.within)().unwrap_or_else(|| space.clone());
-    let open = (nav.sidebar)();
-    let has_sel = (nav.selected)().is_some();
-    let shell = format!(
-        "shell{}{}{}",
-        if open { " drawer" } else { "" },
-        if (nav.inspector)() { " inspecting" } else { "" },
-        if has_sel { " picked" } else { "" }
-    );
-    rsx! {
-        div { class: "{shell}",
-            div { class: "scrim", onclick: move |_| nav.sidebar.clone().set(false) }
-            Sidebar { space: space.clone(), spaces, on_space }
-            div { class: "main",
-                Toolbar {}
-                div { class: "content",
-                    Content { key: "{view}", space: view.clone() }
-                }
-            }
-            Inspector { key: "{view}", space: view.clone() }
-            if (nav.preview)() && has_sel {
-                Preview { key: "{view}", space: view.clone() }
-            }
-        }
-    }
-}
-
-#[component]
-fn Sidebar(space: String, spaces: Vec<String>, on_space: EventHandler<String>) -> Element {
-    let nav = use_nav();
-    let reg = use_doc(space_doc(&space));
-    let spine_doc = use_doc(spine::SPINE);
-    let docs = use_docs("");
-    let r = reg.loro();
-    let devices = space::devices(&r);
-    let locations = space::locations(&r);
-    let storages = space::storages(&r);
-    let up = online(&reg);
-    let kinds = Kinds::load(&spine_doc.loro());
-    let projects = drive_files::projects::projects(&r);
-    let mut new_project = use_signal(String::new);
-    let place = (nav.place)();
-    let mut apps: Vec<String> = docs()
-        .iter()
-        .filter_map(|d| d.id.split(':').next().map(str::to_string))
-        .filter(|a| a != "drive")
-        .collect();
-    apps.sort();
-    apps.dedup();
-    let here = place.clone();
-    let item = move |p: Place, label: String, ic: String, extra: Option<(bool, String)>| {
-        let on = here == p;
-        rsx! {
-            button {
-                class: if on { "side on" } else { "side" },
-                onclick: move |_| nav.go_home(p.clone()),
-                img { class: "sicon", src: icon(&ic), alt: "" }
-                span { class: "slabel", "{label}" }
-                if let Some((live, note)) = extra {
-                    if !note.is_empty() {
-                        span { class: "snote", "{note}" }
-                    }
-                    span { class: if live { "dot on" } else { "dot" } }
-                }
-            }
-        }
-    };
-    rsx! {
-        aside { class: "sidebar",
-            div { class: "brand",
-                span { class: "mark", "D" }
-                b { "Drive" }
-                if spaces.len() > 1 {
-                    select {
-                        class: "spacepick",
-                        onchange: move |e| {
-                            if e.value() == "*" {
-                                nav.go_home(Place::AllOrgs);
-                            } else {
-                                on_space.call(e.value());
-                            }
-                        },
-                        for sp in spaces.iter() {
-                            option { key: "{sp}", value: "{sp}", selected: *sp == space && place != Place::AllOrgs, "{sp}" }
-                        }
-                        option { value: "*", selected: place == Place::AllOrgs, "All orgs" }
-                    }
-                }
-            }
-            nav { class: "places",
-                {item(Place::Overview, "Overview".into(), "Globe".into(), None)}
-                {item(Place::Drive(None), if space.is_empty() { "Drive".into() } else { space.clone() }, "Home".into(), None)}
-                {item(Place::AllOrgs, "All orgs".into(), "Devices".into(), None)}
-                h3 { "Projects" }
-                for p in projects.iter() {
-                    Fragment { key: "{p.id}",
-                        {item(Place::Project(p.id.clone()), p.name.clone(), project_icon(&p.kind).into(), None)}
-                    }
-                }
-                SharedWithUs { org: space.clone() }
-                input {
-                    class: "sidenew",
-                    placeholder: "+ New project",
-                    value: "{new_project}",
-                    oninput: move |e| new_project.set(e.value()),
-                    onkeydown: {
-                        let reg = reg.clone();
-                        move |e: KeyboardEvent| {
-                            let name = new_project().trim().to_string();
-                            if e.key().to_string() == "Enter" && !name.is_empty() {
-                                let id = reg.edit(|d| drive_files::projects::add_project(d, &name, "Project").ok());
-                                new_project.set(String::new());
-                                if let Some(id) = id {
-                                    nav.go_home(Place::Project(id));
-                                }
-                            }
-                        }
-                    },
-                }
-                if !devices.is_empty() {
-                    h3 { "Computers" }
-                }
-                for d in devices.iter() {
-                    {
-                        let live = up.contains(&d.id);
-                        let locs: Vec<&space::Location> = locations.iter().filter(|l| l.device == d.id && l.storage.is_empty()).collect();
-                        let first = locs.first().map(|l| Place::Location { loc: l.id.clone(), path: String::new() });
-                        rsx! {
-                            div { key: "{d.id}", class: "devgroup",
-                                {item(first.unwrap_or(Place::Devices), d.name.clone(), device_icon(d).into(), Some((live, String::new())))}
-                                for l in locs {
-                                    {
-                                        let p = Place::Location { loc: l.id.clone(), path: String::new() };
-                                        let on = matches!(&place, Place::Location { loc, .. } if *loc == l.id);
-                                        let ic = if l.mirror_of.is_empty() { "Location" } else { "LocationReplica" };
-                                        rsx! {
-                                            button {
-                                                key: "{l.id}",
-                                                class: if on { "side sub on" } else { "side sub" },
-                                                onclick: move |_| nav.go_home(p.clone()),
-                                                img { class: "sicon", src: icon(ic), alt: "" }
-                                                span { class: "slabel", "{l.name}" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if !storages.is_empty() {
-                    h3 { "Storages" }
-                }
-                for st in storages.iter() {
-                    {
-                        let live = up.contains(&st.device);
-                        let locs: Vec<&space::Location> = locations.iter().filter(|l| l.storage == st.id).collect();
-                        let ic = match st.scheme.as_str() {
-                            "s3" => "Drive-AmazonS3",
-                            "webdav" => "Drive-DAV",
-                            _ => "HDD",
-                        };
-                        let first = locs.first().map(|l| Place::Location { loc: l.id.clone(), path: String::new() });
-                        rsx! {
-                            div { key: "{st.id}", class: "devgroup",
-                                {item(first.unwrap_or(Place::Devices), st.name.clone(), ic.into(), Some((live, String::new())))}
-                                for l in locs {
-                                    {
-                                        let p = Place::Location { loc: l.id.clone(), path: String::new() };
-                                        let on = matches!(&place, Place::Location { loc, .. } if *loc == l.id);
-                                        rsx! {
-                                            button {
-                                                key: "{l.id}",
-                                                class: if on { "side sub on" } else { "side sub" },
-                                                onclick: move |_| nav.go_home(p.clone()),
-                                                img { class: "sicon", src: icon("LocationReplica"), alt: "" }
-                                                span { class: "slabel", "{l.name}" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                h3 { "Kinds" }
-                for k in SIDEBAR_KINDS {
-                    {
-                        let kind = kinds.get(k);
-                        rsx! {
-                            Fragment { key: "{k}",
-                                {item(Place::Kind(k.into()), plural(&kind.name), kind.icon.clone(), None)}
-                            }
-                        }
-                    }
-                }
-                crate::tags::SidebarTags { space: space.clone() }
-                if !apps.is_empty() {
-                    h3 { "Apps" }
-                }
-                for a in apps {
-                    Fragment { key: "{a}",
-                        {item(Place::App(a.clone()), app_label(&a), "Widget".into(), None)}
-                    }
-                }
-                h3 { "Space" }
-                {item(Place::Protection, "Protection".into(), "Lock".into(), None)}
-                {item(Place::Devices, "Devices & storage".into(), "Devices".into(), None)}
-                {item(Place::Sites, "Sites".into(), "Globe".into(), None)}
-                h3 { "Spine" }
-                {item(Place::Inbox, "Inbox".into(), "Document".into(), None)}
-                {item(Place::Calendar, "Calendar".into(), "Book".into(), None)}
-                {item(Place::Notes, "Notes".into(), "Text_txt".into(), None)}
-                if (nav.debug)() {
-                    {item(Place::Everything, "Raw documents".into(), "Database".into(), None)}
-                }
-            }
-        }
-    }
-}
-
-fn title_of(p: &Place) -> &'static str {
-    match p {
-        Place::Overview => "Overview",
-        Place::Drive(_) => "Drive",
-        Place::Location { .. } => "Computers",
-        Place::Kind(_) => "Kind",
-        Place::App(_) => "App",
-        Place::AtRisk(_) => "At risk",
-        Place::Project(_) => "Project",
-        Place::AllOrgs => "All orgs",
-        Place::Protection => "Protection",
-        Place::Devices => "Devices & storage",
-        Place::Sites => "Sites",
-        Place::Inbox => "Inbox",
-        Place::Calendar => "Calendar",
-        Place::Notes => "Notes",
-        Place::Everything => "Raw documents",
-        Place::Tag(_) => "Tag",
-        Place::Tags => "Tags",
-    }
-}
-
-fn browsable(p: &Place) -> bool {
-    matches!(
-        p,
-        Place::Drive(_)
-            | Place::Location { .. }
-            | Place::Kind(_)
-            | Place::App(_)
-            | Place::AtRisk(_)
-            | Place::Project(_)
-            | Place::Tag(_)
-    )
-}
-
-#[component]
-fn Toolbar() -> Element {
-    let mut nav = use_nav();
-    let spine_doc = use_doc(spine::SPINE);
-    let place = (nav.place)();
-    let files = browsable(&place) || place == Place::Overview || !(nav.query)().is_empty();
-    rsx! {
-        header { class: "toolbar",
-            button { class: "tb menu", title: "Places", onclick: move |_| nav.sidebar.set(true), "☰" }
-            button { class: "tb", title: "Back", disabled: nav.back.read().is_empty(), onclick: move |_| nav.step(false), "‹" }
-            button { class: "tb", title: "Forward", disabled: nav.fwd.read().is_empty(), onclick: move |_| nav.step(true), "›" }
-            span { class: "tbtitle", "{title_of(&place)}" }
-            if files {
-                input {
-                    class: "search",
-                    r#type: "search",
-                    placeholder: "Search names, or tags: drums NOT archived",
-                    value: "{nav.query}",
-                    oninput: move |e| {
-                        nav.query.set(e.value());
-                        nav.selected.set(None);
-                    },
-                }
-                div { class: "seg",
-                    button {
-                        class: if (nav.view)() == View::Grid { "on" } else { "" },
-                        title: "Grid",
-                        onclick: move |_| nav.view.set(View::Grid),
-                        "▦"
-                    }
-                    button {
-                        class: if (nav.view)() == View::List { "on" } else { "" },
-                        title: "List",
-                        onclick: move |_| nav.view.set(View::List),
-                        "☰"
-                    }
-                }
-                select {
-                    class: "sortpick",
-                    title: "Sort",
-                    onchange: move |e| {
-                        let s = match e.value().as_str() {
-                            "size" => (Sort::Size, true),
-                            "modified" => (Sort::Modified, true),
-                            _ => (Sort::Name, false),
-                        };
-                        nav.sort.set(s);
-                    },
-                    option { value: "name", "Name" }
-                    option { value: "size", "Size" }
-                    option { value: "modified", "Modified" }
-                }
-                button {
-                    class: if (nav.inspector)() { "tb on wide" } else { "tb wide" },
-                    title: "Details",
-                    onclick: move |_| {
-                        let v = !(nav.inspector)();
-                        nav.inspector.set(v);
-                    },
-                    "ⓘ"
-                }
-            }
-            div { class: "who",
-                ConnectionStatus {}
-                Avatars { doc: spine_doc.clone() }
-            }
-        }
-    }
-}
-
-#[component]
-fn Content(space: String) -> Element {
+pub fn Content(space: String) -> Element {
     let nav = use_nav();
     let place = (nav.place)();
     let q = (nav.query)();
@@ -804,7 +301,7 @@ fn Content(space: String) -> Element {
             KindView { space, kind }
         },
         Place::App(app) => rsx! {
-            AppDocs { app }
+            AppDocs { key: "{app}", app }
         },
         Place::AtRisk(policy) => rsx! {
             crate::catalog::AtRisk { space, policy }
@@ -867,13 +364,17 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
     });
     let sel = (nav.selected)().map(|i| i.key());
     nav.visible.set(items.clone());
-    let mut open = move |i: Item| match &i.src {
-        Src::Tree { id, .. } if i.dir => nav.go(Place::Drive(Some(id.clone()))),
-        Src::Index { location, path, .. } if i.dir => nav.go(Place::Location {
-            loc: location.clone(),
-            path: path.clone(),
-        }),
-        _ => nav.selected.set(Some(i)),
+    let shell = app_shell::ui::use_shell();
+    // A folder in a new tab (the context menu, or ⌘/Ctrl-click).
+    let in_tab = move |i: &Item| {
+        if let Some(place) = folder_place(i) {
+            let within = nav.within.peek().clone();
+            crate::shell::open_tab(shell, crate::nav::At { place, within }, &i.name);
+        }
+    };
+    let mut open = move |i: Item| match folder_place(&i) {
+        Some(p) => nav.go(p),
+        None => nav.selected.set(Some(i)),
     };
     if items.is_empty() {
         return rsx! {
@@ -904,7 +405,14 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
                         div {
                             key: "{key}",
                             class: format!("{}{}{}", if grid { "cell" } else { "row" }, if on { " on" } else { "" }, if !i.online && i.available.is_none() && !i.dir && !matches!(i.src, Src::Doc { .. }) { " away" } else { "" }),
-                            onclick: move |_| open(it.clone()),
+                            onclick: move |e: MouseEvent| {
+                                let m = e.modifiers();
+                                if it.dir && (m.meta() || m.ctrl()) {
+                                    in_tab(&it);
+                                } else {
+                                    open(it.clone());
+                                }
+                            },
                             ondoubleclick: {
                                 let it = i.clone();
                                 move |_| {
@@ -914,9 +422,23 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
                                     }
                                 }
                             },
-                            oncontextmenu: move |e| {
+                            oncontextmenu: move |e: MouseEvent| {
                                 e.prevent_default();
-                                nav.selected.set(Some(it2.clone()));
+                                let p = e.client_coordinates();
+                                let it = it2.clone();
+                                nav.selected.set(Some(it.clone()));
+                                let mut rows = Vec::new();
+                                if it.dir {
+                                    let (a, b) = (it.clone(), it.clone());
+                                    let mut open = open;
+                                    rows.push(app_shell::ui::MenuItem::call("Open", Callback::new(move |()| open(a.clone()))).icon(app_shell::ui::icons::FOLDER));
+                                    rows.push(app_shell::ui::MenuItem::call("Open in new tab", Callback::new(move |()| in_tab(&b))).icon(app_shell::ui::icons::PLUS));
+                                } else if viewable(&it) {
+                                    rows.push(app_shell::ui::MenuItem::call("Quick Look", Callback::new(move |()| nav.preview.set(true))).icon(app_shell::ui::icons::MAXIMIZE));
+                                }
+                                if !rows.is_empty() {
+                                    shell.menu(p.x, p.y, rows);
+                                }
                             },
                             KindIcon { icon: ic.clone(), thumb: sidecar_url(&i, &space, drive_sidecars::Kind::Thumb256) }
                             if grid {
@@ -954,6 +476,18 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
     }
 }
 
+/// Where a folder goes when opened (`None`: not a folder).
+fn folder_place(i: &Item) -> Option<Place> {
+    match &i.src {
+        Src::Tree { id, .. } if i.dir => Some(Place::Drive(Some(id.clone()))),
+        Src::Index { location, path, .. } if i.dir => Some(Place::Location {
+            loc: location.clone(),
+            path: path.clone(),
+        }),
+        _ => None,
+    }
+}
+
 fn copies_label(i: &Item) -> Option<(String, &'static str)> {
     if i.dir || matches!(i.src, Src::Doc { .. }) {
         return None;
@@ -974,30 +508,6 @@ fn copies_label(i: &Item) -> Option<(String, &'static str)> {
         1 => ("1 copy".into(), "warn"),
         n => (format!("{n} copies"), "ok"),
     })
-}
-
-#[component]
-fn Crumbs(parts: Vec<(String, Option<Place>)>) -> Element {
-    let nav = use_nav();
-    rsx! {
-        div { class: "crumbs",
-            for (i , (name , p)) in parts.into_iter().enumerate() {
-                Fragment { key: "{i}",
-                    if i > 0 {
-                        span { class: "sep", "›" }
-                    }
-                    match p {
-                        Some(p) => rsx! {
-                            button { onclick: move |_| nav.go(p.clone()), "{name}" }
-                        },
-                        None => rsx! {
-                            span { class: "crumbtext", "{name}" }
-                        },
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// The space's synced tree at a folder: upload here, make folders.
@@ -1030,16 +540,6 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
             )
         })
         .collect();
-    let mut crumbs: Vec<(String, Option<Place>)> = Vec::new();
-    let mut c = cur;
-    while let Some(id) = c {
-        if let Some(e) = tree::entry(&f, id) {
-            crumbs.push((e.name, Some(Place::Drive(Some(tree::id_string(id))))));
-        }
-        c = tree::parent_of(&f, id);
-    }
-    crumbs.push((space.clone(), Some(Place::Drive(None))));
-    crumbs.reverse();
 
     let upload = {
         let files = files.clone();
@@ -1089,7 +589,6 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
     };
     rsx! {
         div { class: "viewhead",
-            Crumbs { parts: crumbs }
             div { class: "actions",
                 input {
                     class: "newfolder",
@@ -1135,8 +634,6 @@ fn LocationFolder(space: String, loc: String, path: String) -> Element {
     let r = reg.loro();
     let kinds = Kinds::load(&spine_doc.loro());
     let locations = space::locations(&r);
-    let devices = space::devices(&r);
-    let storages = space::storages(&r);
     let l = locations.iter().find(|x| x.id == loc).cloned();
     // Refetched whenever the location's index changes.
     let index = l.as_ref().map(|l| l.index.clone()).unwrap_or_default();
@@ -1163,43 +660,7 @@ fn LocationFolder(space: String, loc: String, path: String) -> Element {
             p { class: "empty", "This location is gone." }
         };
     };
-    let owner = if l.storage.is_empty() {
-        devices
-            .iter()
-            .find(|d| d.id == l.device)
-            .map_or(String::new(), |d| d.name.clone())
-    } else {
-        storages
-            .iter()
-            .find(|s| s.id == l.storage)
-            .map_or(String::new(), |s| s.name.clone())
-    };
     let holder_up = online(&reg).contains(&l.device);
-    let mut crumbs = vec![
-        (owner, None),
-        (
-            l.name.clone(),
-            Some(Place::Location {
-                loc: loc.clone(),
-                path: String::new(),
-            }),
-        ),
-    ];
-    let mut acc = String::new();
-    for p in path.split('/').filter(|p| !p.is_empty()) {
-        acc = if acc.is_empty() {
-            p.to_string()
-        } else {
-            format!("{acc}/{p}")
-        };
-        crumbs.push((
-            p.to_string(),
-            Some(Place::Location {
-                loc: loc.clone(),
-                path: acc.clone(),
-            }),
-        ));
-    }
     let folder_name = path
         .rsplit('/')
         .next()
@@ -1207,7 +668,6 @@ fn LocationFolder(space: String, loc: String, path: String) -> Element {
         .map_or(l.name.clone(), str::to_string);
     rsx! {
         div { class: "viewhead",
-            Crumbs { parts: crumbs }
             div { class: "actions",
                 crate::projects::AddToProject { reg: reg.clone(), location: loc.clone(), path: path.clone(), label: folder_name }
                 span { class: if holder_up { "badge on" } else { "badge" },
@@ -1330,7 +790,7 @@ fn AppDocs(app: String) -> Element {
 // ── the inspector ───────────────────────────────────────────────────────
 
 #[component]
-fn Inspector(space: String) -> Element {
+pub fn Inspector(space: String) -> Element {
     let mut nav = use_nav();
     let reg = use_doc(space_doc(&space));
     let Some(item) = (nav.selected)() else {
@@ -1546,7 +1006,7 @@ const QUICK_LOOK_JS: &str = r#"
 const keys = [' ', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 const own = (t) => t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(t.tagName));
 const columns = () => {
-  const cells = document.querySelectorAll('.grid > .cell');
+  const cells = document.querySelectorAll('[data-active-tab="1"] .grid > .cell');
   if (!cells.length) return 1;
   const top = cells[0].offsetTop;
   let n = 0;
@@ -1559,7 +1019,7 @@ const onKey = (e) => {
   if (e.key !== 'Escape') e.preventDefault();
   dioxus.send(e.key + ':' + columns());
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    const on = document.querySelector('.cell.on, .row.on');
+    const on = document.querySelector('[data-active-tab="1"] :is(.cell.on, .row.on)');
     if (on) on.scrollIntoView({ block: 'nearest' });
   }));
 };
@@ -1569,19 +1029,20 @@ window.addEventListener('keydown', onKey);
 await new Promise(() => {});
 "#;
 
-fn use_quick_look(nav: Nav) {
+/// Quick Look on the active tab.
+pub fn use_quick_look(navs: crate::nav::Navs) {
     use_hook(move || {
         spawn(async move {
             let mut keys = document::eval(QUICK_LOOK_JS);
             while let Ok(k) = keys.recv::<String>().await {
                 let (key, cols) = k.rsplit_once(':').unwrap_or((k.as_str(), "1"));
-                quick_look_key(nav, key, cols.parse().unwrap_or(1));
+                quick_look_key(navs.active_now(), key, cols.parse().unwrap_or(1));
             }
         });
     });
     // The page's keys act only while something is picked.
     use_effect(move || {
-        let picked = (nav.selected)().is_some();
+        let picked = (navs.active().selected)().is_some();
         let _ = js_sys::eval(if picked {
             "document.body.dataset.picked = '1'"
         } else {
@@ -1686,7 +1147,7 @@ async fn edit_pdf(hash: &str, edits: &[drive_view::PageEdit]) -> Result<(String,
 /// The picked file, full screen: its viewer, with quick edits for files of
 /// the space's own tree (a new version of the file, as an upload makes).
 #[component]
-fn Preview(space: String) -> Element {
+pub fn Preview(space: String) -> Element {
     let mut nav = use_nav();
     let files = use_doc(files_doc(&space));
     let reg = use_doc(space_doc(&space));
@@ -1954,43 +1415,6 @@ fn TreeCopies(
                 }
             }
             p { class: "hint", "That device fetches it and keeps it, even when it is short on room." }
-        }
-    }
-}
-
-/// Projects other orgs have shared with this one.
-#[component]
-fn SharedWithUs(org: String) -> Element {
-    let nav = use_nav();
-    let o = org.clone();
-    let shared = use_resource(use_reactive!(|o| async move {
-        get(format!("/shared?org={}", enc(&o)))
-            .await
-            .and_then(|v| v["shared"].as_array().cloned())
-            .unwrap_or_default()
-    }));
-    let list = shared().unwrap_or_default();
-    let within = (nav.within)();
-    let place = (nav.place)();
-    rsx! {
-        for x in list {
-            {
-                let owner = s(&x, "org");
-                let p = &x["project"];
-                let (id, name, kind) = (s(p, "id"), s(p, "name"), s(p, "kind"));
-                let on = within.as_deref() == Some(owner.as_str()) && place == Place::Project(id.clone());
-                rsx! {
-                    button {
-                        key: "{owner}/{id}",
-                        class: if on { "side on" } else { "side" },
-                        title: "Shared by {owner}",
-                        onclick: move |_| nav.go_in(&owner, Place::Project(id.clone())),
-                        img { class: "sicon", src: icon(project_icon(&kind)), alt: "" }
-                        span { class: "slabel", "{name}" }
-                        span { class: "snote", "{s(&x, \"org\")}" }
-                    }
-                }
-            }
         }
     }
 }
