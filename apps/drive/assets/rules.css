@@ -1,14 +1,14 @@
 /* Rules: the list, a rule's page, the editor (docs/rules.md). */
-.rules .primary.small { height: 30px; padding: 0 12px; border-radius: 9px; font-size: 13px; }
+.rules .primary.small, .redit .primary.small, .editorfoot .primary.small { height: 30px; padding: 0 12px; border-radius: 9px; font-size: 13px; }
 .rules .primary.ruledanger { color: #fca5a5; }
-.rules select, .rules input:not([type=checkbox]) {
+.rules select, .rules input:not([type=checkbox]), .redit select, .redit input:not([type=checkbox]) {
   height: 32px; border-radius: 9px; border: 1px solid var(--rule); background: var(--surface);
   padding: 0 10px; color: var(--ink); color-scheme: dark; outline: none; min-width: 0; font-size: 13.5px;
 }
-.rules input:focus, .rules select:focus { border-color: var(--accent); }
-.rules input.num { width: 76px; }
-.rules input.short { width: 110px; }
-.rules .muted { color: var(--ink-3); }
+.rules input:focus, .rules select:focus, .redit input:focus, .redit select:focus { border-color: var(--accent); }
+.rules input.num, .redit input.num { width: 76px; }
+.rules input.short, .redit input.short { width: 110px; }
+.rules .muted, .redit .muted { color: var(--ink-3); }
 .rules .hint.warn { color: #f5d68a; }
 
 .rulelist { display: flex; flex-direction: column; gap: 8px; }
@@ -25,7 +25,7 @@
 .segmented { display: inline-flex; padding: 3px; border-radius: 11px; background: var(--surface-2); }
 .segmented .seg { height: 26px; padding: 0 12px; border-radius: 8px; color: var(--ink-3); font-size: 13px; font-weight: 650; }
 .segmented .seg.on { background: var(--surface); color: var(--ink); }
-.segmented .seg.on.live { background: rgba(240,194,75,.2); color: #f5d68a; }
+.segmented .seg.on.golive { background: rgba(240,194,75,.2); color: #f5d68a; }
 .confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; background: rgba(240,194,75,.1); border: 1px solid rgba(240,194,75,.3); color: #f5d68a; font-size: 13.5px; margin: 8px 0; flex-basis: 100%; }
 
 .rulehead .back { color: var(--ink-2); font-weight: 600; font-size: 14px; }
@@ -95,6 +95,7 @@
   .redit .act .albl { min-width: 0; flex-basis: calc(100% - 30px); }
   .redit .act .moves { margin-left: 0; }
   .redit .cond select, .redit .act select { max-width: 100%; }
-  .rules input.short { flex: 1 1 100px; }
+  .rules input.short, .redit input.short { flex: 1 1 100px; }
 }
 .redit fieldset > button, .redit .rgroup > button { align-self: flex-start; }
+.segmented, .segmented .seg, .toggle { flex: none; }

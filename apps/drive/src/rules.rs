@@ -177,7 +177,7 @@ fn Switches(space: String, rule: Rule) -> Element {
             div { class: "segmented",
                 button { class: if !live { "seg on" } else { "seg" }, onclick: dry, "Dry run" }
                 button {
-                    class: if live { "seg on live" } else { "seg" },
+                    class: if live { "seg on golive" } else { "seg" },
                     onclick: move |_| if !live { confirming.set(true) },
                     "Live"
                 }

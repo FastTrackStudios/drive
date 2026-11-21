@@ -16,6 +16,7 @@ installed.
 - [docs/apps/meals.md](docs/apps/meals.md): the Meals app.
 - [docs/sites.md](docs/sites.md): static sites from folders of Markdown (dodeca).
 - [docs/tags.md](docs/tags.md): tags, fields and tag search.
+- [docs/rules.md](docs/rules.md): file rules, synced and run by every device (dry run first; nothing deleted).
 - [docs/sidecars.md](docs/sidecars.md): thumbnails and waveforms, derived once per file content.
 - [docs/browse.md](docs/browse.md): every computer's disks, browsed live and read-only.
 - [PROTOTYPE.md](PROTOTYPE.md): the running prototype (Drive and four apps, live).
