@@ -17,7 +17,8 @@ use crate::browser::{
     Item, Items, Place, Src, app_label, enc, get, hit_item, icon, online, tree_item, use_nav,
 };
 
-const STYLE: Asset = asset!("/assets/tags.css");
+/// Tags' sheet, loaded once by the app (a sheet a component loads goes with it).
+pub const STYLE: Asset = asset!("/assets/tags.css");
 
 fn now() -> i64 {
     js_sys::Date::now() as i64
@@ -94,7 +95,6 @@ pub fn TargetTags(space: String, target: Target, note: Option<String>) -> Elemen
     let groups = lib.grouped(&on.tag_ids());
     let mut adding = use_signal(|| false);
     rsx! {
-        document::Stylesheet { href: STYLE }
         div { class: "tagbox",
             for (cat , ids) in groups {
                 div { key: "{cat.clone().unwrap_or_default()}", class: "taggroup",
@@ -393,11 +393,9 @@ fn Fields(space: String, target: Target, by: String) -> Element {
 /// it (or a tag under it).
 #[component]
 pub fn SidebarTags(space: String) -> Element {
-    let nav = use_nav();
     let doc = use_doc(tags::tags_doc(&space));
     let lib = Library::load(&doc.loro());
     let counts = lib.counts();
-    let place = (nav.place)();
     let mut rows: Vec<(usize, Tag)> = Vec::new();
     fn walk(
         lib: &Library,
@@ -419,37 +417,28 @@ pub fn SidebarTags(space: String) -> Element {
     for r in lib.roots() {
         walk(&lib, r, 0, &mut Vec::new(), &mut rows);
     }
-    let manage_on = place == Place::Tags;
+    let at = |place: Place| crate::nav::At {
+        place,
+        within: None,
+    };
     rsx! {
-        document::Stylesheet { href: STYLE }
-        h3 { class: "sidetagshead",
-            "Tags"
-            button {
-                class: if manage_on { "sidetagsmanage on" } else { "sidetagsmanage" },
-                title: "Manage tags",
-                onclick: move |_| nav.go_home(Place::Tags),
-                "Manage"
-            }
-        }
-        for (i , (depth , t)) in rows.into_iter().enumerate() {
-            {
-                let p = Place::Tag(t.id.clone());
-                let on = place == p;
-                let count = counts.get(&t.id).copied().unwrap_or(0);
-                rsx! {
-                    button {
-                        key: "{i}-{t.id}",
-                        class: if on { "side sidetag on" } else { "side sidetag" },
-                        style: "padding-left: {10 + depth * 14}px; --tag: {t.color.hex()}",
-                        onclick: move |_| nav.go_home(p.clone()),
-                        span { class: "tagdot" }
-                        span { class: "slabel", "{t.name}" }
-                        if count > 0 {
-                            span { class: "snote", "{count}" }
+        app_shell::ui::SidebarSection { title: "Tags",
+            for (i , (depth , t)) in rows.into_iter().enumerate() {
+                {
+                    let count = counts.get(&t.id).copied().unwrap_or(0);
+                    rsx! {
+                        crate::shell::PlaceRow {
+                            key: "{i}-{t.id}",
+                            at: at(Place::Tag(t.id.clone())),
+                            label: t.name.clone(),
+                            color: t.color.hex(),
+                            note: if count > 0 { count.to_string() } else { String::new() },
+                            depth,
                         }
                     }
                 }
             }
+            crate::shell::PlaceRow { at: at(Place::Tags), label: "Manage tags", icon: "Collection" }
         }
     }
 }
@@ -640,7 +629,6 @@ fn Results(space: String, wanted: Wanted) -> Element {
     };
     let open = search.as_ref().is_some_and(|s| s.hints().open);
     rsx! {
-        document::Stylesheet { href: STYLE }
         div { class: "viewhead",
             div { class: "kindtitle",
                 if let Some(t) = &tag {
@@ -733,7 +721,6 @@ pub fn TagManager(space: String) -> Element {
     let cur = picked().and_then(|id| lib.get(&id).cloned());
     let editing = cur.is_some();
     rsx! {
-        document::Stylesheet { href: STYLE }
         div { class: "pane wide tagmanager",
             div { class: "panehead",
                 h1 { "Tags" }

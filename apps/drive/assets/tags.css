@@ -1,4 +1,4 @@
-/* Tags and fields: chips, the keyboard adder, the sidebar's Tags, the
+/* Tags and fields: chips, the keyboard adder, the
    manager. A tag's colour comes in as --tag. */
 
 .tagbox { display: flex; flex-direction: column; gap: 8px; }
@@ -38,11 +38,6 @@ select.tagadd { appearance: none; color-scheme: dark; margin-top: 8px; }
 .fieldnew .taginput { flex: 1; }
 .fieldkind { height: 34px; border-radius: 10px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); color-scheme: dark; }
 
-/* The sidebar */
-.sidetagshead { display: flex; align-items: center; }
-.sidetagsmanage { margin-left: auto; font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--ink-3); padding: 2px 6px; border-radius: 6px; }
-.sidetagsmanage:hover, .sidetagsmanage.on { color: var(--ink); background: var(--surface-2); }
-.side.sidetag { height: 28px; font-size: 13.5px; }
 
 /* Results */
 .chip.tagmode { background: rgba(45,212,191,.14); color: var(--accent); }

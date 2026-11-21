@@ -161,6 +161,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "app-shell"
+version = "0.1.0"
+source = "git+https://github.com/FastTrackStudios/app-shell?rev=0f6d85b9d5007ae93a8bb4052406d8356969a98d#0f6d85b9d5007ae93a8bb4052406d8356969a98d"
+dependencies = [
+ "dioxus",
+ "futures-channel",
+ "futures-util",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "append-only-bytes"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2001,6 +2014,7 @@ dependencies = [
 name = "drive-app"
 version = "0.1.0"
 dependencies = [
+ "app-shell",
  "dioxus",
  "drive-dioxus",
  "drive-files",
@@ -2010,7 +2024,9 @@ dependencies = [
  "gloo-net 0.8.0",
  "js-sys",
  "loro",
+ "serde",
  "serde_json",
+ "web-sys",
 ]
 
 [[package]]
