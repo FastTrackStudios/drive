@@ -231,6 +231,25 @@ impl Store {
         exts: &[String],
         limit: i64,
     ) -> turso::Result<Vec<Found>> {
+        self.search_with(space, q, exts, &[], limit).await
+    }
+
+    /// As [`Store::search`], and (when `sampled` is not empty) only files
+    /// with one of those contents (sampled hashes): every copy of the
+    /// files a tag is on.
+    pub async fn search_with(
+        &self,
+        space: &str,
+        q: &str,
+        exts: &[String],
+        sampled: &[String],
+        limit: i64,
+    ) -> turso::Result<Vec<Found>> {
+        let sampled: Vec<&String> = sampled
+            .iter()
+            .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+            .take(500)
+            .collect();
         let words: Vec<String> = q
             .split_whitespace()
             .map(|w| w.to_lowercase())
@@ -247,7 +266,7 @@ impl Store {
             .filter(|e| !e.is_empty())
             .take(64)
             .collect();
-        if words.is_empty() && exts.is_empty() {
+        if words.is_empty() && exts.is_empty() && sampled.is_empty() {
             return Ok(Vec::new());
         }
         let mut sql = String::from(
@@ -265,6 +284,18 @@ impl Store {
                 sql.push_str(&format!(
                     "{}lname LIKE ?{}",
                     if i > 0 { " OR " } else { "" },
+                    params.len()
+                ));
+            }
+            sql.push(')');
+        }
+        if !sampled.is_empty() {
+            sql.push_str(" AND dir = 0 AND sampled IN (");
+            for (i, h) in sampled.iter().enumerate() {
+                params.push(Value::Text((*h).clone()));
+                sql.push_str(&format!(
+                    "{}?{}",
+                    if i > 0 { ", " } else { "" },
                     params.len()
                 ));
             }
@@ -403,5 +434,57 @@ impl Store {
             out.push(Self::found(&row)?);
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use drive_files::index::IndexEntry;
+
+    fn file(path: &str, sampled: &str) -> IndexEntry {
+        IndexEntry {
+            path: path.into(),
+            dir: false,
+            size: 10,
+            mtime: 1,
+            sampled: sampled.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn search_by_content_finds_every_copy() {
+        let dir = std::env::temp_dir().join(format!("drive-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("node.db")).await.unwrap();
+        for (loc, path) in [("l1", "Song/a.wav"), ("l2", "Copies/renamed.wav")] {
+            store
+                .put_index(
+                    "home",
+                    &LocationIndex {
+                        location: loc.into(),
+                        root: String::new(),
+                        built: 1,
+                        entries: vec![file(path, "aa11"), file("other.wav", "bb22")],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let found = store
+            .search_with("home", "", &[], &["aa11".into(), "not hex!".into()], 100)
+            .await
+            .unwrap();
+        let mut paths: Vec<String> = found.into_iter().map(|f| f.path).collect();
+        paths.sort();
+        assert_eq!(paths, ["Copies/renamed.wav", "Song/a.wav"]);
+        // Words and contents together.
+        let found = store
+            .search_with("home", "renamed", &[], &["aa11".into()], 100)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

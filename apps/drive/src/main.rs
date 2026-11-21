@@ -10,6 +10,7 @@ mod notes;
 mod orgs;
 mod projects;
 mod sites;
+mod tags;
 
 use dioxus::prelude::*;
 use drive_dioxus::{DriveProvider, use_doc, use_docs, use_drive};
