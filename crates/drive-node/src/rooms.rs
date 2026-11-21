@@ -166,6 +166,11 @@ impl Rooms {
         }
     }
 
+    /// Save every changed document now (before a backup).
+    pub async fn flush_now(&self) {
+        self.flush().await;
+    }
+
     async fn flush(&self) {
         let dirty: Vec<(DocId, Vec<u8>)> = {
             let mut rooms = self.rooms.lock().await;

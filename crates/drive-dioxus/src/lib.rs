@@ -15,6 +15,12 @@
 //! Every document is live (edits and presence from others arrive as they
 //! are made) and local-first (this browser keeps a copy; edits made offline
 //! are sent on reconnect).
+//!
+//! Documents belong to an org: `use_doc("studio:library")` opens
+//! `<org>/studio:library` in the org this browser is in (the page's
+//! `?org=`, then the last one used here, then the node's default), and
+//! `use_docs` lists within it, ids without the org. An id that already
+//! names an org (`other/studio:library`) is used as it is.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,6 +31,7 @@ pub use drive_client::{Drive, Event, Me, Status, loro};
 pub use drive_proto::{DocInfo, Peer};
 use futures_util::StreamExt;
 use serde::Serialize;
+use wasm_bindgen::JsCast;
 
 pub mod text;
 pub mod ui;
@@ -49,6 +56,8 @@ struct DocSignals {
 #[derive(Clone)]
 pub struct DriveCtx {
     pub drive: Drive,
+    /// The org every document opened here belongs to.
+    pub org: String,
     pub status: Signal<Status>,
     pub me: Signal<Me>,
     docs: Rc<RefCell<HashMap<String, DocSignals>>>,
@@ -67,6 +76,22 @@ impl DriveCtx {
             })
     }
 
+    /// A document's full id in this org.
+    pub fn qualify(&self, id: &str) -> String {
+        drive_proto::qualify(&self.org, id)
+    }
+
+    /// Move to another org: every app on this address follows (reloads).
+    pub fn set_org(&self, org: &str) {
+        if let Some(s) = local() {
+            let _ = s.set_item(ORG_KEY, org);
+        }
+        if let Some(w) = web_sys::window() {
+            let _ = w.location().set_search("");
+            let _ = w.location().reload();
+        }
+    }
+
     /// Change your name and colour, in every app on this address.
     pub fn set_me(&self, me: Me) {
         self.drive.set_me(me.clone());
@@ -75,22 +100,92 @@ impl DriveCtx {
     }
 }
 
-/// Connects to the Drive node this page was served from, and provides it.
+const ORG_KEY: &str = "drive:org";
+
+fn local() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+/// The org named by the page (`?org=`) or last used here.
+fn known_org() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let from_url = search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("org="))
+        .map(|v| {
+            js_sys::decode_uri_component(v)
+                .ok()
+                .and_then(|s| s.as_string())
+                .unwrap_or_else(|| v.to_string())
+        })
+        .filter(|v| !v.is_empty());
+    if let Some(o) = &from_url
+        && let Some(s) = local()
+    {
+        let _ = s.set_item(ORG_KEY, o);
+    }
+    from_url
+        .or_else(|| local()?.get_item(ORG_KEY).ok().flatten())
+        .filter(|v| !v.is_empty())
+}
+
+/// The node's default org (`/orgs`).
+async fn default_org() -> Option<String> {
+    let w = web_sys::window()?;
+    let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(w.fetch_with_str("/orgs"))
+        .await
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let text = wasm_bindgen_futures::JsFuture::from(resp.text().ok()?)
+        .await
+        .ok()?
+        .as_string()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v["default"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+/// Connects to the Drive node this page was served from, and provides it,
+/// once the org is known (at once, unless this browser never chose one).
 #[component]
 pub fn DriveProvider(children: Element) -> Element {
-    let ctx = use_context_provider(|| {
+    let mut org = use_signal(known_org);
+    use_future(move || async move {
+        if org.peek().is_none() {
+            let o = default_org().await.unwrap_or_else(|| "home".to_string());
+            if let Some(s) = local() {
+                let _ = s.set_item(ORG_KEY, &o);
+            }
+            org.set(Some(o));
+        }
+    });
+    match org() {
+        Some(o) => rsx! {
+            Connected { key: "{o}", org: o, {children} }
+        },
+        None => rsx! {},
+    }
+}
+
+#[component]
+fn Connected(org: String, children: Element) -> Element {
+    use_context_provider(|| {
         let (drive, rx) = Drive::connect(None);
         let ctx = DriveCtx {
             status: Signal::new(drive.status()),
             me: Signal::new(drive.me()),
             drive,
+            org: org.clone(),
             docs: Rc::new(RefCell::new(HashMap::new())),
             lists: Rc::new(RefCell::new(HashMap::new())),
         };
         pump(ctx.clone(), rx);
         ctx
     });
-    let _ = ctx;
     rsx! {
         {children}
     }
@@ -135,6 +230,14 @@ fn pump(ctx: DriveCtx, mut rx: drive_client::EventStream) {
                 Event::Docs { prefix, docs } => {
                     let sig = ctx.lists.borrow().get(&prefix).copied();
                     if let Some(mut s) = sig {
+                        // Ids within this org, as the app named them.
+                        let docs = docs
+                            .into_iter()
+                            .map(|mut d| {
+                                d.id = drive_proto::unqualify(&ctx.org, &d.id).to_string();
+                                d
+                            })
+                            .collect();
                         s.set(docs);
                     }
                 }
@@ -224,7 +327,7 @@ impl Doc {
 /// Open a document for this component (and keep it open).
 pub fn use_doc(id: impl Into<String>) -> Doc {
     let ctx = use_drive();
-    let id: String = id.into();
+    let id: String = ctx.qualify(&id.into());
     let me = ctx.me;
     use_hook(|| {
         let doc = ctx.drive.open(&id);
@@ -250,7 +353,7 @@ pub fn use_doc(id: impl Into<String>) -> Doc {
 /// The documents the node holds under a prefix, refreshed every few seconds.
 pub fn use_docs(prefix: impl Into<String>) -> Signal<Vec<DocInfo>> {
     let ctx = use_drive();
-    let prefix: String = prefix.into();
+    let prefix: String = ctx.qualify(&prefix.into());
     let sig = use_hook(|| {
         *ctx.lists
             .borrow_mut()

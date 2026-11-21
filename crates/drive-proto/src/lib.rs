@@ -20,6 +20,29 @@ pub const VERSION: u32 = 1;
 /// A document's id: an app's namespace and a name (`canvas:board-1`).
 pub type DocId = String;
 
+/// A document's full id in an org: `home/studio:library`. Ids that already
+/// name their org (they hold a `/`) are left as they are.
+pub fn qualify(org: &str, id: &str) -> String {
+    if id.contains('/') || org.is_empty() {
+        id.to_string()
+    } else {
+        format!("{org}/{id}")
+    }
+}
+
+/// A document's id within its org (`studio:library` for
+/// `home/studio:library`); ids of another org stay whole.
+pub fn unqualify<'a>(org: &str, id: &'a str) -> &'a str {
+    id.strip_prefix(org)
+        .and_then(|r| r.strip_prefix('/'))
+        .unwrap_or(id)
+}
+
+/// The org a full id belongs to (`home` for `home/studio:library`).
+pub fn org_of(id: &str) -> Option<&str> {
+    id.split_once('/').map(|(o, _)| o)
+}
+
 /// A connection's peer number, given by the node.
 pub type Peer = u64;
 

@@ -29,14 +29,15 @@ pub mod space;
 pub mod storage;
 pub mod tree;
 
-/// The file tree's document id for a space.
+/// The file tree's document id for a space (a space is an org: its
+/// documents are all `<space>/…`).
 pub fn files_doc(space: &str) -> String {
-    format!("drive:files:{space}")
+    format!("{space}/drive:files")
 }
 
 /// The registry's document id for a space.
 pub fn space_doc(space: &str) -> String {
-    format!("drive:space:{space}")
+    format!("{space}/drive:space")
 }
 
 /// Milliseconds since the Unix epoch (the browser's clock on the web,

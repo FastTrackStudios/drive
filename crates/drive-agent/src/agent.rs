@@ -144,7 +144,7 @@ impl Agent {
         let space_id = space_doc(&cfg.space);
         let files = drive.open(&files_id).await;
         let space = drive.open(&space_id).await;
-        let spine = drive.open(drive_spine::SPINE).await;
+        let spine = drive.open(&drive_spine::spine_doc(&cfg.space)).await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(4), async {
             drive.synced(&files_id).await;
             drive.synced(&space_id).await;

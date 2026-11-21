@@ -2,7 +2,9 @@
 //! given (in Turso), passes live edits and presence between the peers that
 //! have a document open, keeps blobs, and serves apps' web builds.
 
+pub mod backup;
 pub mod catalog;
+pub mod migrate;
 pub mod rooms;
 pub mod share;
 pub mod store;
@@ -23,15 +25,79 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use rooms::Rooms;
 
+/// How a node runs beyond its data and apps.
+#[derive(Clone, Default)]
+pub struct Options {
+    /// The org apps use when they have not picked one; also the org that
+    /// documents from before org-scoped ids are moved into.
+    pub org: Option<String>,
+    /// Spaces from before orgs that move into an org of another name
+    /// (`cody` → `codywright`).
+    pub space_org: Vec<(String, String)>,
+    /// Where daily backups also go (the R2 bucket, Starcommand).
+    pub backup_to: Option<StorageConfig>,
+}
+
+/// `/orgs`: the orgs this node keeps documents for, and the default.
+async fn orgs(rooms: &Rooms, default: &str) -> serde_json::Value {
+    let mut orgs: Vec<String> = rooms
+        .store
+        .list()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, _)| drive_proto::org_of(&id).map(str::to_string))
+        .collect();
+    if !default.is_empty() {
+        orgs.push(default.to_string());
+    }
+    orgs.sort();
+    orgs.dedup();
+    let default = if default.is_empty() {
+        orgs.first().cloned().unwrap_or_default()
+    } else {
+        default.to_string()
+    };
+    serde_json::json!({ "default": default, "orgs": orgs })
+}
+
 /// The node's routes: `/sync` (the websocket), `/health`, and each app's
 /// web build under its prefix (`""` for the root).
-pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
+pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) -> Router {
     std::fs::create_dir_all(data).expect("the data folder can be made");
     let store = store::Store::open(&data.join("drive.db"))
         .await
         .expect("the document store opens");
+    // Documents from before org-scoped ids: back up, then rename them.
+    if let Some(org) = &opts.org {
+        let old = store
+            .list()
+            .await
+            .map(|l| l.iter().any(|(id, _)| !id.contains('/')))
+            .unwrap_or(false);
+        if old {
+            backup::write(&store, &data.join("backups"), 14, None)
+                .await
+                .expect("a backup before renaming documents");
+            match migrate::to_org_ids(&store, org, &opts.space_org).await {
+                Ok(n) => {
+                    tracing::info!(migrate.docs = n, migrate.org = %org, "documents now name their org")
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "renaming documents failed; the backup before it is in data/backups")
+                }
+            }
+        }
+    }
     let rooms = Arc::new(Rooms::new(store));
     tokio::spawn(rooms.clone().flush_loop());
+    tokio::spawn(backup::daily(
+        rooms.clone(),
+        data.join("backups"),
+        opts.backup_to.clone(),
+    ));
+    let orgs_rooms = rooms.clone();
+    let default_org = opts.org.clone().unwrap_or_default();
     // The node is a storage too: blobs on its disk, over HTTP.
     let blobs = StorageConfig::Fs {
         root: data.join("blobs").to_string_lossy().into_owned(),
@@ -46,6 +112,14 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>) -> Router {
     let mut app = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
+        .route(
+            "/orgs",
+            get(move || {
+                let rooms = orgs_rooms.clone();
+                let default = default_org.clone();
+                async move { axum::Json(orgs(&rooms, &default).await) }
+            }),
+        )
         .with_state(rooms)
         .merge(
             Router::new()

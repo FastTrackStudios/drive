@@ -380,21 +380,26 @@ pub fn kind_hue(id: &str) -> u32 {
 #[component]
 pub fn Browser() -> Element {
     use_context_provider(Nav::new);
-    let spaces = use_docs("drive:space:");
-    let mut picked = use_signal(|| None::<String>);
-    let list: Vec<String> = spaces()
-        .into_iter()
-        .map(|d| d.id.trim_start_matches("drive:space:").to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let space = picked()
-        .or_else(|| list.first().cloned())
-        .unwrap_or_default();
-    // Everything below depends on the space: a new space, a fresh shell.
+    let ctx = drive_dioxus::use_drive();
+    // The space is the org this browser is in; the others the node keeps
+    // can be switched to.
+    let orgs = use_resource(|| async {
+        get("/orgs".to_string())
+            .await
+            .and_then(|v| v["orgs"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|o| o.as_str().map(str::to_string))
+            .collect::<Vec<String>>()
+    });
+    let space = ctx.org.clone();
+    let mut list = orgs().unwrap_or_default();
+    if !list.contains(&space) {
+        list.push(space.clone());
+    }
+    let switch = ctx.clone();
     rsx! {
-        for sp in [space] {
-            Shell { key: "{sp}", space: sp.clone(), spaces: list.clone(), on_space: move |s| picked.set(Some(s)) }
-        }
+        Shell { space: space.clone(), spaces: list, on_space: move |s: String| switch.set_org(&s) }
     }
 }
 

@@ -106,6 +106,38 @@ impl Store {
         Ok(())
     }
 
+    /// Give a document a new id (nothing happens if `to` already exists).
+    pub async fn rename(&self, from: &str, to: &str) -> turso::Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE docs SET id = ?2 WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM docs WHERE id = ?2)",
+            vec![Value::Text(from.into()), Value::Text(to.into())],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Move a space's index rows to a new space name.
+    pub async fn rename_space(&self, from: &str, to: &str) -> turso::Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE entries SET space = ?2 WHERE space = ?1",
+            vec![Value::Text(from.into()), Value::Text(to.into())],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: &str) -> turso::Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM docs WHERE id = ?1",
+            vec![Value::Text(id.into())],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Every stored document id with its snapshot size.
     pub async fn list(&self) -> turso::Result<Vec<(String, u64)>> {
         let conn = self.conn.lock().await;

@@ -8,11 +8,18 @@
 //! update its own event by id).
 
 pub mod kinds;
+pub mod schema;
 
 use loro::{LoroDoc, LoroMap, LoroMovableList, LoroValue, ValueOrContainer};
 
-/// The spine document's id.
+/// The spine document's id within an org (apps open it through
+/// `use_doc`, which adds the org).
 pub const SPINE: &str = "drive:spine";
+
+/// The spine document's full id in an org.
+pub fn spine_doc(org: &str) -> String {
+    format!("{org}/{SPINE}")
+}
 
 /// A task in the inbox.
 #[derive(Clone, Debug, PartialEq)]

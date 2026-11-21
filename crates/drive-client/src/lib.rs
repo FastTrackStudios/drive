@@ -10,16 +10,17 @@
 //! - Everything that happens comes out of [`Drive::events`], one stream,
 //!   for the UI layer to turn into its own state.
 //!
-//! The browser keeps a snapshot of each open document in `localStorage`;
+//! The browser keeps a snapshot of each open document in IndexedDB;
 //! edits made offline are sent when the connection comes back (the join
 //! handshake exchanges version vectors, so nothing is lost or repeated).
+
+mod idb;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use base64::Engine;
 use drive_proto::{DocId, DocInfo, Peer, ToClient, ToNode};
 use futures_channel::mpsc;
 pub use loro;
@@ -109,10 +110,6 @@ fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
 }
 
-fn b64() -> base64::engine::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
-
 impl Drive {
     /// Connect to the node at `url` (`wss://host/sync`); `None` connects to
     /// the page's own host. Returns the client and its event stream.
@@ -145,6 +142,7 @@ impl Drive {
             retry_ms: Cell::new(500),
         }));
         drive.save_me();
+        drop_old_copies();
         drive.open_socket();
         (drive, rx)
     }
@@ -184,10 +182,29 @@ impl Drive {
             return d.doc.clone();
         }
         let doc = LoroDoc::new();
-        if let Some(saved) = storage().and_then(|s| s.get_item(&key(id)).ok().flatten())
-            && let Ok(bytes) = b64().decode(saved)
+        // This browser's copy arrives a moment later (IndexedDB is async);
+        // it merges with whatever the node has sent by then.
         {
-            let _ = doc.import(&bytes);
+            let me = self.clone();
+            let id = id.to_string();
+            wasm_bindgen_futures::spawn_local(async move {
+                let Some(bytes) = idb::load(&id).await else {
+                    return;
+                };
+                let ok =
+                    me.0.docs
+                        .borrow()
+                        .get(&id)
+                        .map(|d| d.doc.import(&bytes).is_ok());
+                if ok == Some(true) {
+                    // Edits made offline last time: join again so the node
+                    // says what it lacks and they are sent.
+                    if me.status() == Status::Online {
+                        me.join(&id);
+                    }
+                    me.emit(Event::Changed(id.clone()));
+                }
+            });
         }
         let outbox = Arc::new(Mutex::new(Vec::new()));
         let ob = outbox.clone();
@@ -370,8 +387,9 @@ impl Drive {
             d.save_pending = false;
             d.doc.export(ExportMode::Snapshot).ok()
         };
-        if let (Some(s), Some(bytes)) = (storage(), snapshot) {
-            let _ = s.set_item(&key(id), &b64().encode(bytes));
+        if let Some(bytes) = snapshot {
+            let id = id.to_string();
+            wasm_bindgen_futures::spawn_local(async move { idb::save(&id, &bytes).await });
         }
     }
 
@@ -503,8 +521,18 @@ impl Drive {
     }
 }
 
-fn key(id: &str) -> String {
-    format!("drive:doc:{id}")
+/// Copies kept in `localStorage` before IndexedDB: dropped (they were
+/// under ids from before orgs, and the node has every one of them).
+fn drop_old_copies() {
+    let Some(s) = storage() else { return };
+    let n = s.length().unwrap_or(0);
+    let old: Vec<String> = (0..n)
+        .filter_map(|i| s.key(i).ok().flatten())
+        .filter(|k| k.starts_with("drive:doc:"))
+        .collect();
+    for k in old {
+        let _ = s.remove_item(&k);
+    }
 }
 
 fn guest_name() -> String {

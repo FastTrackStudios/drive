@@ -89,7 +89,10 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
         .into_iter()
         .find(|p| p.id == share.project)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let kinds = c.rooms.read(drive_spine::SPINE, Kinds::load).await;
+    let kinds = c
+        .rooms
+        .read(&drive_spine::spine_doc(space_id), Kinds::load)
+        .await;
     let allowed: Vec<String> = share
         .kinds
         .iter()
