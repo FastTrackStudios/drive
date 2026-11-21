@@ -37,6 +37,8 @@ pub struct Rooms {
     /// Fetches waiting for an agent's answer.
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
     next_req: AtomicU64,
+    /// Who may read and write what (the issuer's orgs).
+    pub auth: crate::auth::Auth,
 }
 
 /// Why a file could not be fetched from its device.
@@ -53,8 +55,9 @@ pub enum FetchError {
 }
 
 impl Rooms {
-    pub fn new(store: Store) -> Rooms {
+    pub fn new(store: Store, auth: crate::auth::Auth) -> Rooms {
         Rooms {
+            auth,
             rooms: Mutex::new(HashMap::new()),
             store,
             next_peer: AtomicU64::new(1),
@@ -62,6 +65,43 @@ impl Rooms {
             pending: Mutex::new(HashMap::new()),
             next_req: AtomicU64::new(1),
         }
+    }
+
+    /// Whether someone may read and write a document: their org's, or one
+    /// of a project another org shared with one of their orgs (that org's
+    /// registry, to see the project, and the project's documents).
+    pub async fn may(&self, p: &crate::auth::Principal, id: &str) -> bool {
+        if p.all {
+            return true;
+        }
+        let Some(org) = drive_proto::org_of(id) else {
+            return false;
+        };
+        if p.member_of(org) {
+            return true;
+        }
+        let registry = drive_files::space_doc(org);
+        let shared: Vec<drive_files::projects::Project> = self
+            .read(&registry, drive_files::projects::projects)
+            .await
+            .into_iter()
+            .filter(|pr| pr.shared_with.iter().any(|o| p.member_of(o)))
+            .collect();
+        if shared.is_empty() {
+            return false;
+        }
+        if id == registry {
+            return true;
+        }
+        let rest = drive_proto::unqualify(org, id);
+        shared.iter().any(|pr| pr.docs.iter().any(|d| d == rest))
+    }
+
+    fn refuse(out: &Outbox, who: &crate::auth::Principal, id: &str) {
+        tracing::warn!(auth.outcome = "denied", auth.who = %who.who, doc.org = drive_proto::org_of(id).unwrap_or(""), "a document outside the person's orgs was asked for");
+        let _ = out.send(ToClient::Error {
+            message: format!("not allowed: {id}"),
+        });
     }
 
     /// Read a document as the node holds it (loading it if needed).
@@ -197,10 +237,25 @@ impl Rooms {
         &self,
         peer: Peer,
         name: &str,
+        who: &crate::auth::Principal,
         out: &Outbox,
         joined: &mut HashSet<DocId>,
         msg: ToNode,
     ) {
+        // Every document a message names must be the person's to touch.
+        let named = match &msg {
+            ToNode::Join { doc, .. }
+            | ToNode::Update { doc, .. }
+            | ToNode::Presence { doc, .. } => Some(doc.clone()),
+            ToNode::Agent { space, .. } => Some(drive_files::space_doc(space)),
+            _ => None,
+        };
+        if let Some(id) = named
+            && !self.may(who, &id).await
+        {
+            Self::refuse(out, who, &id);
+            return;
+        }
         match msg {
             ToNode::Hello { .. } => {}
             ToNode::Join {
@@ -319,6 +374,15 @@ impl Rooms {
                         });
                     }
                 }
+                if !who.all {
+                    let mut kept = Vec::new();
+                    for d in docs {
+                        if self.may(who, &d.id).await {
+                            kept.push(d);
+                        }
+                    }
+                    docs = kept;
+                }
                 docs.sort_by(|a, b| a.id.cmp(&b.id));
                 let _ = out.send(ToClient::Docs { prefix, docs });
             }
@@ -344,7 +408,7 @@ impl Rooms {
 }
 
 /// One client's connection, from its first message to its last.
-pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
+pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
     let peer = rooms.next_peer.fetch_add(1, Ordering::Relaxed);
     let (mut sink, mut stream) = socket.split();
     let (out, mut outbox) = mpsc::unbounded_channel::<ToClient>();
@@ -361,6 +425,7 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
     });
 
     let mut name = String::from("Guest");
+    let mut who: Option<crate::auth::Principal> = None;
     let mut joined = HashSet::new();
     while let Some(Ok(frame)) = stream.next().await {
         let Message::Binary(bytes) = frame else {
@@ -373,18 +438,33 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket) {
                 continue;
             }
         };
-        if let ToNode::Hello { version, name: n } = &msg {
+        if let ToNode::Hello {
+            version,
+            name: n,
+            token,
+        } = &msg
+        {
             if *version != drive_proto::VERSION {
                 let _ = out.send(ToClient::Error {
                     message: "protocol version mismatch".into(),
                 });
                 break;
             }
+            match rooms.auth.principal(token.as_deref(), local).await {
+                Some(p) => who = Some(p),
+                None => {
+                    let _ = out.send(ToClient::Error {
+                        message: "sign in".into(),
+                    });
+                    break;
+                }
+            }
             name = n.clone();
             let _ = out.send(ToClient::Welcome { peer });
             continue;
         }
-        rooms.handle(peer, &name, &out, &mut joined, msg).await;
+        let Some(p) = &who else { continue };
+        rooms.handle(peer, &name, p, &out, &mut joined, msg).await;
     }
     for id in joined {
         rooms.leave(peer, &name, &id).await;

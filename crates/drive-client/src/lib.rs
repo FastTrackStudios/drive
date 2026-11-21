@@ -94,6 +94,9 @@ struct Inner {
     docs: RefCell<HashMap<DocId, OpenDoc>>,
     events: mpsc::UnboundedSender<Event>,
     retry_ms: Cell<u32>,
+    /// The issuer's access token, sent in the handshake (none: the node
+    /// is open, or this is its own computer).
+    token: RefCell<Option<String>>,
 }
 
 /// A connection to a Drive node, and the documents open on it.
@@ -140,11 +143,22 @@ impl Drive {
             docs: RefCell::new(HashMap::new()),
             events: tx,
             retry_ms: Cell::new(500),
+            token: RefCell::new(None),
         }));
         drive.save_me();
         drop_old_copies();
         drive.open_socket();
         (drive, rx)
+    }
+
+    /// Use this access token from the next handshake on (a fresh one
+    /// after a refresh reconnects, so the node sees it).
+    pub fn set_token(&self, token: Option<String>) {
+        let changed = *self.0.token.borrow() != token;
+        *self.0.token.borrow_mut() = token;
+        if changed && let Some(ws) = self.0.ws.borrow().as_ref() {
+            let _ = ws.close();
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -405,9 +419,11 @@ impl Drive {
         let onopen = Closure::<dyn FnMut()>::new(move || {
             me.0.retry_ms.set(500);
             let name = me.0.me.borrow().name.clone();
+            let token = me.0.token.borrow().clone();
             me.send(&ToNode::Hello {
                 version: drive_proto::VERSION,
                 name,
+                token,
             });
         });
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));

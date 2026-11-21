@@ -2,6 +2,7 @@
 //! given (in Turso), passes live edits and presence between the peers that
 //! have a document open, keeps blobs, and serves apps' web builds.
 
+pub mod auth;
 pub mod backup;
 pub mod catalog;
 pub mod migrate;
@@ -34,13 +35,64 @@ pub struct Options {
     /// Spaces from before orgs that move into an org of another name
     /// (`cody` → `codywright`).
     pub space_org: Vec<(String, String)>,
+    /// The auth server (`https://auth.fasttrackstudio.app`): who people
+    /// are and which orgs they are in. None: the node is open.
+    pub issuer: Option<String>,
     /// Where daily backups also go (the R2 bucket, Starcommand).
     pub backup_to: Option<StorageConfig>,
 }
 
-/// `/orgs`: the orgs this node keeps documents for, and the default.
-async fn orgs(rooms: &Rooms, default: &str) -> serde_json::Value {
-    let mut orgs: Vec<String> = rooms
+type Remote = Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>;
+
+fn peer_addr(p: &Remote) -> Option<std::net::SocketAddr> {
+    p.as_ref().map(|e| e.0.0)
+}
+
+/// `/orgs`: the orgs this person is in (the issuer says; without one, every
+/// org the node keeps), the one to open by default, and how to sign in.
+async fn orgs(
+    State((rooms, default)): State<(Arc<Rooms>, String)>,
+    headers: axum::http::HeaderMap,
+    peer: Remote,
+) -> axum::Json<serde_json::Value> {
+    let local = auth::is_local(peer_addr(&peer), &headers);
+    let who = rooms
+        .auth
+        .principal(auth::bearer(&headers).as_deref(), local)
+        .await;
+    let sign_in = rooms
+        .auth
+        .issuer
+        .as_ref()
+        .map(|i| serde_json::json!({ "issuer": i, "client_id": "drive" }));
+    let Some(who) = who else {
+        return axum::Json(
+            serde_json::json!({ "signed_in": false, "auth": sign_in, "orgs": [], "default": "" }),
+        );
+    };
+    let mut orgs = if who.all {
+        every_org(&rooms).await
+    } else {
+        who.orgs.clone()
+    };
+    if who.all && !default.is_empty() {
+        orgs.push(default.clone());
+    }
+    orgs.sort();
+    orgs.dedup();
+    let default = if orgs.contains(&default) {
+        default
+    } else {
+        orgs.first().cloned().unwrap_or_default()
+    };
+    axum::Json(
+        serde_json::json!({ "signed_in": true, "who": who.who, "auth": sign_in, "default": default, "orgs": orgs }),
+    )
+}
+
+/// Every org the node keeps documents for.
+async fn every_org(rooms: &Rooms) -> Vec<String> {
+    rooms
         .store
         .list()
         .await
@@ -48,18 +100,87 @@ async fn orgs(rooms: &Rooms, default: &str) -> serde_json::Value {
         .into_iter()
         .filter_map(|(id, _)| drive_proto::org_of(&id).map(str::to_string))
         .filter(|o| !o.is_empty())
-        .collect();
-    if !default.is_empty() {
-        orgs.push(default.to_string());
+        .collect()
+}
+
+/// The org an HTTP request is about: `?space=` / `?org=`, or the first
+/// path segment after `/index/` or `/fetch/`.
+fn org_of_request(uri: &axum::http::Uri) -> Option<String> {
+    let q = uri.query().unwrap_or("");
+    for kv in q.split('&') {
+        if let Some(v) = kv
+            .strip_prefix("space=")
+            .or_else(|| kv.strip_prefix("org="))
+        {
+            return Some(percent_decode(v));
+        }
     }
-    orgs.sort();
-    orgs.dedup();
-    let default = if default.is_empty() {
-        orgs.first().cloned().unwrap_or_default()
-    } else {
-        default.to_string()
+    let mut parts = uri.path().trim_start_matches('/').split('/');
+    match parts.next() {
+        Some("index") | Some("fetch") => parts.next().map(percent_decode),
+        _ => None,
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(if b[i] == b'+' { b' ' } else { b[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Every catalog request: signed in, and about an org (or a project
+/// shared with one) the person is in.
+async fn guard(
+    State(rooms): State<Arc<Rooms>>,
+    peer: Remote,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let local = auth::is_local(peer_addr(&peer), req.headers());
+    let Some(who) = rooms
+        .auth
+        .principal(auth::bearer(req.headers()).as_deref(), local)
+        .await
+    else {
+        return (StatusCode::UNAUTHORIZED, "sign in").into_response();
     };
-    serde_json::json!({ "default": default, "orgs": orgs })
+    // Writing a blob needs a sign-in only (its name is its hash); reading
+    // one needs nothing (share links hand out its URL).
+    let blob = req.uri().path().starts_with("/blobs/");
+    if blob {
+        return next.run(req).await;
+    }
+    if let Some(org) = org_of_request(req.uri())
+        && !rooms.may(&who, &drive_files::space_doc(&org)).await
+    {
+        tracing::warn!(auth.outcome = "denied", auth.who = %who.who, req.org = %org, "a request about an org the person is not in");
+        return (StatusCode::FORBIDDEN, "not one of your orgs").into_response();
+    }
+    next.run(req).await
+}
+
+async fn guard_writes(
+    State(rooms): State<Arc<Rooms>>,
+    peer: Remote,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD {
+        return next.run(req).await;
+    }
+    guard(State(rooms), peer, req, next).await
 }
 
 /// The node's routes: `/sync` (the websocket), `/health`, and each app's
@@ -90,14 +211,13 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
             }
         }
     }
-    let rooms = Arc::new(Rooms::new(store));
+    let rooms = Arc::new(Rooms::new(store, auth::Auth::new(opts.issuer.clone())));
     tokio::spawn(rooms.clone().flush_loop());
     tokio::spawn(backup::daily(
         rooms.clone(),
         data.join("backups"),
         opts.backup_to.clone(),
     ));
-    let orgs_rooms = rooms.clone();
     let default_org = opts.org.clone().unwrap_or_default();
     // The node is a storage too: blobs on its disk, over HTTP.
     let blobs = StorageConfig::Fs {
@@ -113,15 +233,12 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
     let mut app = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
-        .route(
-            "/orgs",
-            get(move || {
-                let rooms = orgs_rooms.clone();
-                let default = default_org.clone();
-                async move { axum::Json(orgs(&rooms, &default).await) }
-            }),
+        .with_state(rooms.clone())
+        .merge(
+            Router::new()
+                .route("/orgs", get(orgs))
+                .with_state((rooms.clone(), default_org)),
         )
-        .with_state(rooms)
         .merge(
             Router::new()
                 .route(
@@ -136,15 +253,25 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .route("/stats", get(catalog::stats))
                 .route("/shared", get(catalog::shared))
                 .route("/fetch/{space}/{location}", get(catalog::fetch))
+                .layer(axum::middleware::from_fn_with_state(rooms.clone(), guard))
+                .layer(axum::extract::DefaultBodyLimit::max(512 << 20))
+                .with_state(catalog.clone()),
+        )
+        // Share links carry their own permission (the token).
+        .merge(
+            Router::new()
                 .route("/s/{space}/{token}", get(share::page))
                 .route("/s/{space}/{token}/file", get(share::file))
                 .route("/s/{space}/{token}/zip", get(share::zip))
-                .layer(axum::extract::DefaultBodyLimit::max(512 << 20))
                 .with_state(catalog),
         )
         .merge(
             Router::new()
                 .route("/blobs/{hash}", get(get_blob).head(head_blob).put(put_blob))
+                .layer(axum::middleware::from_fn_with_state(
+                    rooms.clone(),
+                    guard_writes,
+                ))
                 .layer(axum::extract::DefaultBodyLimit::max(2 << 30))
                 .with_state(blobs),
         );
@@ -164,9 +291,15 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
     app
 }
 
-async fn sync(ws: WebSocketUpgrade, State(rooms): State<Arc<Rooms>>) -> impl IntoResponse {
+async fn sync(
+    ws: WebSocketUpgrade,
+    State(rooms): State<Arc<Rooms>>,
+    headers: axum::http::HeaderMap,
+    peer: Remote,
+) -> impl IntoResponse {
+    let local = auth::is_local(peer_addr(&peer), &headers);
     ws.max_message_size(64 << 20)
-        .on_upgrade(move |socket: WebSocket| rooms::serve(rooms, socket))
+        .on_upgrade(move |socket: WebSocket| rooms::serve(rooms, socket, local))
 }
 
 /// A blob's bytes (checked against its hash on the way out); `?name=`

@@ -13,7 +13,7 @@ use notify::Watcher;
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
-use crate::computers::View;
+use crate::view::View;
 
 /// Devices whose agent is connected now (from the registry's presence),
 /// this one included.

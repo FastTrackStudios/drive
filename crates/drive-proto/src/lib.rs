@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The protocol's version; a node refuses a client that speaks another.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// A document's id: an app's namespace and a name (`canvas:board-1`).
 pub type DocId = String;
@@ -49,7 +49,13 @@ pub type Peer = u64;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToNode {
     /// The first message: the protocol version, and who this is.
-    Hello { version: u32, name: String },
+    /// `token`: an access token from the issuer, when the node asks for
+    /// one (a browser signed in; this computer's own agent needs none).
+    Hello {
+        version: u32,
+        name: String,
+        token: Option<String>,
+    },
     /// Open a document, saying what this client already has.
     Join { doc: DocId, version_vector: Vec<u8> },
     /// Loro updates made here.

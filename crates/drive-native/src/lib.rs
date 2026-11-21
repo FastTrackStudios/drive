@@ -308,9 +308,13 @@ impl Drive {
     ) {
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<ToNode>();
+        // This computer's own agent needs no token; an agent elsewhere
+        // signs in and is given one (DRIVE_TOKEN) until devices sign in
+        // by themselves.
         let hello = ToNode::Hello {
             version: drive_proto::VERSION,
             name: self.0.name.clone(),
+            token: std::env::var("DRIVE_TOKEN").ok().filter(|t| !t.is_empty()),
         };
         if sink
             .send(Message::Binary(drive_proto::encode(&hello).into()))

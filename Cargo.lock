@@ -1838,11 +1838,13 @@ name = "drive-node"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "drive-files",
  "drive-proto",
  "drive-spine",
  "futures",
  "loro",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",

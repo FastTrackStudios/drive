@@ -41,11 +41,14 @@
 
 mod agent;
 mod available;
+#[cfg(feature = "mount")]
 mod computers;
 mod daemon;
+#[cfg(feature = "mount")]
 mod fs;
 mod placement;
 mod places;
+mod view;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -324,6 +327,9 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             settle(&a).await;
             out(format!("{}  {}", a.state(&e).as_str(), p));
         }
+        #[cfg(not(feature = "mount"))]
+        "mount" => return Err("this build has no mount (built without the `mount` feature); `serve` runs everything else".into()),
+        #[cfg(feature = "mount")]
         "mount" => {
             let at = PathBuf::from(args.get(1).ok_or("mount MOUNTPOINT")?);
             let a = Arc::new(start(dir).await?);
@@ -351,7 +357,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         }
         "serve" => {
             let a = Arc::new(start(dir).await?);
-            let view = Arc::new(RwLock::new(computers::View::default()));
+            let view = Arc::new(RwLock::new(view::View::default()));
             run_until_stopped(daemon::serve(a, view)).await?;
         }
         "location" if args.get(1).map(String::as_str) == Some("add") => {
@@ -848,6 +854,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
 
 /// Mount a file system, clearing a stale mount first and retrying while
 /// the kernel lets go of it.
+#[cfg(feature = "mount")]
 async fn mount_fs<F: fuser::Filesystem + Send + Sync + 'static>(
     at: &Path,
     name: &str,

@@ -3,7 +3,7 @@
 //! ```text
 //! drive-node --listen 127.0.0.1:8096 --data ./data \
 //!     --app /=apps/drive/dist --app /frame=../frame-app/dist \
-//!     --org cody [--backup-to r2.json]
+//!     --org codywright [--issuer https://auth.fasttrackstudio.app] [--backup-to r2.json]
 //! drive-node backup [--data ./data]           # one backup now (node stopped)
 //! drive-node restore FILE [--data ./data]     # merge a backup back in
 //! drive-node rename-app FROM TO --org ORG     # an app's documents and spine entries follow a new name
@@ -37,6 +37,7 @@ fn args() -> Result<Args, String> {
             "--listen" => a.listen = value.parse().map_err(|e| format!("--listen: {e}"))?,
             "--data" => a.data = value.into(),
             "--org" => a.opts.org = Some(value),
+            "--issuer" => a.opts.issuer = Some(value),
             "--space-org" => {
                 let (space, org) = value
                     .split_once('=')
@@ -154,5 +155,10 @@ async fn main() {
         .await
         .expect("the address is free");
     tracing::info!(node.listen = %args.listen, "drive-node listening");
-    axum::serve(listener, app).await.expect("the server runs");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("the server runs");
 }
