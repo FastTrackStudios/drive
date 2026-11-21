@@ -177,7 +177,12 @@ pub fn remove_event(doc: &LoroDoc, id: &str) {
 
 /// A new id, unique across peers: this peer's id and its next counter.
 pub fn new_id(doc: &LoroDoc, prefix: &str) -> String {
-    format!("{prefix}{:x}-{:x}", doc.peer_id(), doc.oplog_vv().get(&doc.peer_id()).copied().unwrap_or(0))
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // The counter only moves on commit, so several ids in one edit also
+    // take a number of their own.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}{:x}-{:x}-{n:x}", doc.peer_id(), doc.oplog_vv().get(&doc.peer_id()).copied().unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -196,6 +201,7 @@ mod tests {
         assert_eq!(t.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["Book the drummer", "Buy rice"]);
         assert!(t[0].done && !t[1].done);
         assert_ne!(a, b);
+        assert_ne!(new_id(&d, "x"), new_id(&d, "x"));
         put_event(&d, &Event { id: "e1".into(), title: "CYA".into(), app: "studio".into(), link: String::new(), date: "2026-11-19".into(), time: "7:30 PM".into(), place: "Chapel".into() });
         put_event(&d, &Event { id: "e1".into(), title: "CYA set".into(), app: "studio".into(), link: String::new(), date: "2026-11-19".into(), time: "7:30 PM".into(), place: "Chapel".into() });
         assert_eq!(events(&d).len(), 1);

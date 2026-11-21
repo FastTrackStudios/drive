@@ -16,7 +16,8 @@ installed.
 - [docs/apps/meals.md](docs/apps/meals.md): the Meals app.
 - [PROTOTYPE.md](PROTOTYPE.md): the running prototype (Drive and four apps, live).
 
-Status: a working prototype (see PROTOTYPE.md); the plan is the way to the real thing.
-(`../studio-proto`, a Dioxus 0.8 app).
+Status: a working prototype (see PROTOTYPE.md); the plan is the way to the
+real thing. The first apps on it: Studio (`../studio-proto`), Meals
+(`../meals`) and Frame (`../frame-app`).
 
 Licence: to be decided.

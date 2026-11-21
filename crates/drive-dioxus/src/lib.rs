@@ -214,7 +214,8 @@ pub fn use_doc(id: impl Into<String>) -> Doc {
         let s = ctx.signals(&id);
         let d = Doc { id: id.clone(), drive: ctx.drive.clone(), doc, rev: s.rev, presence: s.presence, me };
         // Being here is presence too: others see you as soon as you open it.
-        d.set_presence(&serde_json::Value::Null);
+        let me = d.me.peek().clone();
+        d.drive.announce(&d.id, serde_json::json!({ "hue": me.hue, "data": null }).to_string());
         d
     })
 }

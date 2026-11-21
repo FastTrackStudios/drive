@@ -235,6 +235,15 @@ impl Drive {
         }
     }
 
+    /// Say you are here, unless you already said something more: opening
+    /// a document from a second component must not wipe your cursor.
+    pub fn announce(&self, id: &str, json: String) {
+        let fresh = self.0.docs.borrow().get(id).is_some_and(|d| d.my_presence.is_none());
+        if fresh {
+            self.set_presence(id, json);
+        }
+    }
+
     /// Say where you are in a document. Never stored; others see it live.
     pub fn set_presence(&self, id: &str, json: String) {
         if let Some(d) = self.0.docs.borrow_mut().get_mut(id) {
