@@ -10,6 +10,7 @@ drive-proto.workspace = true
 drive-files = { path = "../drive-files" }
 drive-spine.workspace = true
 drive-view = { workspace = true, features = ["edit"] }
+drive-sidecars = { workspace = true, features = ["produce"] }
 zip = { version = "5", default-features = false }
 zstd = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
@@ -24,3 +25,6 @@ turso = "0.8"
 futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

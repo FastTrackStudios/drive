@@ -25,7 +25,7 @@ broader kind as a fallback for kinds apps register) and its name:
 | `text`, `sheet` `.csv/.tsv` | Plain text with line numbers | Text editor |
 | `code`, `chart` `.kf/.musicxml` | Source with line numbers | Text editor |
 | `image` (png, jpg, gif, webp, svg, avif, bmp) | The browser's `<img>`, fit or 100% | — |
-| `audio` (not MIDI) | Waveform (the browser decodes; peaks in Rust) over `<audio>`, a time readout | — |
+| `audio` (not MIDI) | Waveform from the file's `peaks` sidecar ([sidecars.md](sidecars.md)), the file streamed to play; the browser decodes it only when there are no peaks | — |
 | `video` | The browser's `<video>`, a time readout | — |
 | `pdf` | pdfcraft: one page at a time on a canvas, zoom, find, the PDF's own comments | Rotate, delete, move a page (natively, on the node) |
 
@@ -155,8 +155,8 @@ lightcraft, plus storytold/craft-libs.
 - The PDF engine as its own lazily loaded module in a worker (size, and
   rendering off the main thread).
 - The sign flow through the node and the agent (the seam above).
-- Waveform peaks made natively for big audio (`craft-audio`), kept as a
-  blob beside the file.
+- ~~Waveform peaks made natively for big audio~~: done, as sidecars
+  ([sidecars.md](sidecars.md); symphonia, streamed, not `craft-audio`).
 - DOCX/ODT/RTF and spreadsheet viewers, and decoders for HEIC and TIFF (above).
 - The comments UI on top of the anchors, being built separately.
 - Quick edits for files on other computers (today, only files of the

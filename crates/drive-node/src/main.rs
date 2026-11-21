@@ -3,7 +3,7 @@
 //! ```text
 //! drive-node --listen 127.0.0.1:8096 --data ./data \
 //!     --app /=apps/drive/dist --app /frame=../frame-app/dist \
-//!     --org codywright [--issuer https://auth.fasttrackstudio.app] [--backup-to r2.json]
+//!     --org codywright [--issuer https://auth.fasttrackstudio.app] [--backup-to r2.json] [--no-backfill]
 //! drive-node backup [--data ./data]           # one backup now (node stopped)
 //! drive-node restore FILE [--data ./data]     # merge a backup back in
 //! drive-node rename-app FROM TO --org ORG     # an app's documents and spine entries follow a new name
@@ -32,6 +32,10 @@ fn args() -> Result<Args, String> {
         .filter(|a| a != "backup" && a != "restore" && a != "rename-app")
         .skip_while(|a| !a.starts_with("--"));
     while let Some(flag) = it.next() {
+        if flag == "--no-backfill" {
+            a.opts.no_backfill = true;
+            continue;
+        }
         let value = it.next().ok_or(format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--listen" => a.listen = value.parse().map_err(|e| format!("--listen: {e}"))?,

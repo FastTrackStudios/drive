@@ -106,6 +106,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let mut last_full = tokio::time::Instant::now();
     let mut last_view = tokio::time::Instant::now();
     let mut last_place = tokio::time::Instant::now() - Duration::from_secs(3600);
+    // Sidecars: missing ones made in the background, a few files at a
+    // time, starting a minute after the first indexing.
+    let backfilling = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut last_backfill = tokio::time::Instant::now() - Duration::from_secs(540);
     loop {
         tokio::select! {
             ev = events.recv() => match ev {
@@ -115,6 +119,18 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                         let r = a.answer_fetch(&location, &path).await;
                         if let Err(e) = &r {
                             tracing::warn!(fetch.location = %location, error = %e, "a fetch was refused");
+                        }
+                        a.drive.fetched(req, r);
+                    });
+                }
+                Ok(Event::Sidecars { req, location, path, kinds, force: _ }) => {
+                    let a = a.clone();
+                    tokio::spawn(async move {
+                        let r = a.answer_sidecars(&location, &path, &kinds).await;
+                        if let Err(e) = &r
+                            && !e.starts_with("no generator")
+                        {
+                            tracing::warn!(sidecar.location = %location, error = %e, "sidecars could not be made");
                         }
                         a.drive.fetched(req, r);
                     });
@@ -181,6 +197,26 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     tokio::spawn(async move {
                         a.build_due_sites().await;
                         building.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
+                }
+                if now.duration_since(last_backfill) > Duration::from_secs(600)
+                    && pending.is_empty()
+                    && !backfilling.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    last_backfill = now;
+                    let (a, backfilling) = (a.clone(), backfilling.clone());
+                    tokio::spawn(async move {
+                        let p = a.backfill_sidecars(&[], false, 200).await;
+                        if p.files > 0 {
+                            tracing::info!(
+                                sidecars.files = p.files,
+                                sidecars.made = p.made,
+                                sidecars.no_generator = p.no_generator,
+                                sidecars.failed = p.failed,
+                                "sidecars made in the background"
+                            );
+                        }
+                        backfilling.store(false, std::sync::atomic::Ordering::SeqCst);
                     });
                 }
                 if now.duration_since(last_view) > Duration::from_secs(30) {

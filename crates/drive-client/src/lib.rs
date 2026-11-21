@@ -562,7 +562,7 @@ impl Drive {
                 });
             }
             ToClient::Docs { prefix, docs } => self.emit(Event::Docs { prefix, docs }),
-            ToClient::Error { .. } | ToClient::Fetch { .. } => {}
+            ToClient::Error { .. } | ToClient::Fetch { .. } | ToClient::Sidecars { .. } => {}
         }
     }
 }

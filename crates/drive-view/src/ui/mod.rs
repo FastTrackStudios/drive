@@ -28,7 +28,12 @@ pub const CSS: &str = include_str!("viewers.css");
 /// - `compact`: the small form, for an inspector (no editing or search);
 /// - `on_anchor`: where the person points or selects (see [`Anchor`]);
 /// - `on_save`: offered for text kinds; gets the edited file's bytes;
-/// - `on_pdf_edit`: offered for PDFs; gets page edits to make natively.
+/// - `on_pdf_edit`: offered for PDFs; gets page edits to make natively;
+/// - `peaks`: for audio, the URL of its waveform peaks made ahead of time
+///   (a sidecar, `drive_sidecars::peaks`): drawn from those, the file is
+///   only streamed to play. Without them (or when they cannot be read),
+///   the browser decodes the file itself, if it is small enough;
+/// - `poster`: for video, a picture to show before it plays.
 #[component]
 pub fn Viewer(
     kind: String,
@@ -41,6 +46,8 @@ pub fn Viewer(
     #[props(default)] on_anchor: Option<EventHandler<Anchor>>,
     #[props(default)] on_save: Option<EventHandler<Vec<u8>>>,
     #[props(default)] on_pdf_edit: Option<EventHandler<Vec<PageEdit>>>,
+    #[props(default)] peaks: Option<String>,
+    #[props(default)] poster: Option<String>,
 ) -> Element {
     let Some(vk) = ViewKind::pick(&kind, &parent, &name) else {
         return rsx! {
@@ -66,10 +73,10 @@ pub fn Viewer(
                     media::ImageView { src: src.clone(), compact, on_anchor }
                 },
                 ViewKind::Audio => rsx! {
-                    media::AudioView { src: src.clone(), compact, on_anchor }
+                    media::AudioView { src: src.clone(), compact, on_anchor, peaks: peaks.clone() }
                 },
                 ViewKind::Video => rsx! {
-                    media::VideoView { src: src.clone(), compact, on_anchor }
+                    media::VideoView { src: src.clone(), compact, on_anchor, poster: poster.clone() }
                 },
                 ViewKind::Pdf => pdf_view(src.clone(), compact, on_anchor, on_pdf_edit),
             }

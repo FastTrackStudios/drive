@@ -9,6 +9,7 @@ license.workspace = true
 drive-native = { path = "../drive-native" }
 drive-files = { path = "../drive-files" }
 drive-sites = { path = "../drive-sites" }
+drive-sidecars = { workspace = true, features = ["produce"] }
 opendal = { version = "0.59", default-features = false }
 drive-spine.workspace = true
 loro.workspace = true
