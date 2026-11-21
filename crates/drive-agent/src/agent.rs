@@ -52,6 +52,11 @@ pub struct Config {
     /// byte it has.
     #[serde(default)]
     pub allow_evict: bool,
+    /// Our own iroh relay (`https://relay.example.com`) for file transfers
+    /// between devices; none: n0's public relays (docs/transfer.md).
+    /// `DRIVE_RELAY` overrides it.
+    #[serde(default)]
+    pub relay: Option<String>,
 }
 
 impl Config {
@@ -149,6 +154,9 @@ pub struct Agent {
     pub(crate) stores: Vec<(String, BlobStore)>,
     pub http: reqwest::Client,
     busy: Mutex<HashSet<(String, State)>>,
+    /// This device's iroh endpoint serving its files (docs/transfer.md),
+    /// once the daemon has started it.
+    pub provider: std::sync::OnceLock<drive_transfer::Provider>,
 }
 
 impl Agent {
@@ -190,6 +198,7 @@ impl Agent {
             stores,
             http: reqwest::Client::new(),
             busy: Mutex::new(HashSet::new()),
+            provider: std::sync::OnceLock::new(),
         };
         agent.announce();
         agent

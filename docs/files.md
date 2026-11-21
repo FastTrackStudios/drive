@@ -142,7 +142,9 @@ Voyager while it is off.
 - **Fetch** (`GET /fetch/<space>/<location>?path=`): the node asks the
   owning device's agent, over its existing connection, to put the file on
   the node, then serves it. Device off: `503`, "the device that has this
-  file is offline".
+  file is offline". A device with an iroh endpoint instead serves the file
+  in place and the node streams the ranges asked for
+  ([transfer.md](transfer.md)).
 - **The Computers folder** (`drive-agent mount ~/Drive --computers
   ~/Computers`): `Computers/<device>/<location>/…`, read-only, built from
   the indexes this device keeps a copy of (it lists everything offline).
@@ -226,8 +228,9 @@ Drive stays the data platform; apps build on its catalog:
 - **macOS:** the File Provider extension (Swift, around the agent), so
   Finder shows cloud and download badges natively.
 - **Windows:** the Cloud Files API (`cloud-filter`).
-- Large files in chunks (BLAKE3/Bao, `iroh-blobs`) and streaming reads
-  instead of whole-blob downloads; eviction when the cache is full;
+- Large files of the tree in chunks (BLAKE3/Bao, `iroh-blobs`: devices'
+  own files already move that way, [transfer.md](transfer.md)) and
+  streaming reads instead of whole-blob downloads; eviction when the cache is full;
   placement rules; conflicts (both versions kept); signed device keys.
 - The agent as a fleet service (it runs as a transient user unit now).
 - Confirm copies with the full hash; read an offline file from a

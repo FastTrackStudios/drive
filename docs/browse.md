@@ -135,8 +135,9 @@ Information`, `$RECYCLE.BIN`, `lost+found`, `Thumbs.db`, `desktop.ini`.
 ## Next
 
 - Byte ranges stream from the device a chunk at a time; a whole file is
-  not kept on the node. Large media straight from a device (#26) now has
-  its transport; the location `fetch` route could use it too.
+  not kept on the node. A device with an iroh endpoint now serves them
+  over iroh-blobs instead, verified, and `/fetch` too
+  ([transfer.md](transfer.md)).
 - Search inside a browsed folder (the device walking on request), and
   thumbnails for a whole folder ahead of scrolling.
 - Watching a browsed folder live (the agent's watcher, a subscription).

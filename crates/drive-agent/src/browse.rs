@@ -302,6 +302,14 @@ impl Agent {
                 let file = rules.resolve(&root, &path)?;
                 self.browse_sidecars(file, &kinds).await.map(Browsed::Key)
             }
+            Browse::Provide { root, path } => self
+                .provide_browsed(&rules, &root, &path)
+                .await
+                .map(Browsed::Provided),
+            Browse::ProvideLocation { location, path } => self
+                .provide_location(&location, &path)
+                .await
+                .map(Browsed::Provided),
             Browse::Index { root, path, name } => {
                 let folder = rules.resolve(&root, &path)?;
                 if !folder.is_dir() {

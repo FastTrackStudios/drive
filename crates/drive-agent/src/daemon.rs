@@ -55,6 +55,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
         (c.space.clone(), c.device_id.clone())
     };
     a.drive.register_agent(&space_name, &me);
+    if let Err(e) = a.start_transfer().await {
+        tracing::warn!(error = %e, "files are not served over iroh; the node fetches them the old way");
+    }
     let mut events = a.drive.events();
     a.report_volumes();
 
@@ -241,6 +244,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 if now.duration_since(last_view) > Duration::from_secs(30) {
                     last_view = now;
                     a.announce();
+                    a.publish_endpoint();
                     refresh_view(&a, &view).await;
                 }
             }

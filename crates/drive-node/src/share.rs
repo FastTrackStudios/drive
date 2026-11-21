@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -211,10 +211,10 @@ async fn bring(
     r: &Resolved,
     part: &Part,
     f: &Found,
-) -> Result<String, &'static str> {
+) -> Result<Got, &'static str> {
     if let Some(a) = r.kept(part, f) {
         if c.blobs.has(&a.hash).await.unwrap_or(false) {
-            return Ok(a.hash.clone());
+            return Ok(Got::Blob(a.hash.clone()));
         }
     }
     // Every location holding the same content, storage servers first, then
@@ -253,11 +253,37 @@ async fn bring(
     }
     sources.sort();
     for (_, loc, path) in sources {
+        // Over iroh when that computer serves files that way: streamed,
+        // not uploaded whole first (docs/transfer.md).
+        if let Some((dev, _, _)) = r.locations.get(&loc) {
+            let ask = drive_proto::Browse::ProvideLocation {
+                location: loc.clone(),
+                path: path.clone(),
+            };
+            match crate::transfer::provide(&c.rooms, space_id, dev, ask).await {
+                Ok(Some((got, src))) => {
+                    if c.blobs.has(&got.hash).await.unwrap_or(false) {
+                        return Ok(Got::Blob(got.hash));
+                    }
+                    return Ok(Got::Device(got, src));
+                }
+                Ok(None) => {}
+                Err(_) => continue,
+            }
+        }
         if let Ok(h) = c.rooms.fetch(space_id, &loc, &path).await {
-            return Ok(h);
+            return Ok(Got::Blob(h));
         }
     }
     Err("every computer that has this file is off")
+}
+
+/// Where a shared file's bytes are now.
+enum Got {
+    /// On the node, as a blob.
+    Blob(String),
+    /// On a computer that serves it over iroh.
+    Device(drive_proto::Provided, drive_transfer::Source),
 }
 
 /// `/s/{space}/{token}`: the share's page.
@@ -544,6 +570,7 @@ pub async fn file(
     UrlPath((space_id, token)): UrlPath<(String, String)>,
     State(c): State<Catalog>,
     Query(q): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let r = match resolve(&c, &space_id, &token).await {
         Ok(r) => r,
@@ -561,16 +588,39 @@ pub async fn file(
         return Redirect::temporary(&url).into_response();
     }
     match bring(&c, &space_id, &r, part, f).await {
-        Ok(hash) => {
+        Ok(Got::Blob(hash)) => {
             let mut query = HashMap::new();
             query.insert("name".to_string(), f.name.clone());
-            match crate::get_blob(UrlPath(hash), Query(query), State(c.blobs.clone())).await {
+            match crate::get_blob_ranged(
+                UrlPath(hash),
+                Query(query),
+                headers,
+                State(c.blobs.clone()),
+            )
+            .await
+            {
                 Ok(resp) => resp,
                 Err(s) => s.into_response(),
             }
         }
+        Ok(Got::Device(got, src)) => match c.rooms.transfer.get() {
+            Some(t) => {
+                let reply = crate::transfer::Reply {
+                    name: f.name.clone(),
+                    cache: Some(c.blobs.clone()),
+                };
+                crate::transfer::respond(t, &got, src, &headers, reply)
+            }
+            None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        },
         Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
     }
+}
+
+/// One file of the zip: its bytes, or a stream of them from a computer.
+enum Entry {
+    Bytes(Vec<u8>),
+    Stream(tokio::sync::mpsc::Receiver<std::io::Result<Bytes>>),
 }
 
 /// A `Write` that hands its bytes to the response body.
@@ -604,7 +654,7 @@ pub async fn zip(
         r.project.name.replace(['/', '\\', '"', '\r', '\n'], "_")
     );
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(8);
-    let (file_tx, file_rx) = std::sync::mpsc::sync_channel::<(String, Vec<u8>)>(1);
+    let (file_tx, file_rx) = std::sync::mpsc::sync_channel::<(String, Entry)>(1);
 
     // Writer: a blocking task, one entry per file that arrives.
     tokio::task::spawn_blocking(move || {
@@ -613,8 +663,29 @@ pub async fn zip(
             .compression_method(zip::CompressionMethod::Stored)
             .large_file(true);
         for (entry, bytes) in file_rx {
-            if z.start_file(entry, opts).is_err() || z.write_all(&bytes).is_err() {
+            if z.start_file(entry, opts).is_err() {
                 return;
+            }
+            match bytes {
+                Entry::Bytes(b) => {
+                    if z.write_all(&b).is_err() {
+                        return;
+                    }
+                }
+                // As it comes from the computer; a file that stops coming
+                // stops the zip (the download fails rather than lies).
+                Entry::Stream(mut rx) => {
+                    while let Some(chunk) = rx.blocking_recv() {
+                        match chunk {
+                            Ok(b) => {
+                                if z.write_all(&b).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(_) => return,
+                        }
+                    }
+                }
             }
         }
         let _ = z.finish();
@@ -626,7 +697,25 @@ pub async fn zip(
         for (part, f) in &r.files {
             let entry = format!("{}/{}", part.label, part.relative(&f.path));
             let bytes = match bring(&c, &space_id, &r, part, f).await {
-                Ok(h) => c.blobs.get(&h).await.ok(),
+                Ok(Got::Blob(h)) => c.blobs.get(&h).await.ok().map(Entry::Bytes),
+                Ok(Got::Device(got, src)) => c.rooms.transfer.get().map(|t| {
+                    let (tx, rx) = tokio::sync::mpsc::channel(16);
+                    let stream = crate::transfer::tee(
+                        t.clone(),
+                        src.clone(),
+                        c.blobs.clone(),
+                        t.fetcher.stream(src, 0, got.size.saturating_sub(1)),
+                    );
+                    tokio::spawn(async move {
+                        let mut stream = std::pin::pin!(stream);
+                        while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+                            if tx.send(chunk).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                    Entry::Stream(rx)
+                }),
                 Err(_) => None,
             };
             match bytes {
@@ -643,7 +732,7 @@ pub async fn zip(
                 "These files are on a computer that was off when this zip was made. Download again later for them.\n\n{}\n",
                 missing.join("\n")
             );
-            let _ = file_tx.send(("MISSING.txt".into(), note.into_bytes()));
+            let _ = file_tx.send(("MISSING.txt".into(), Entry::Bytes(note.into_bytes())));
         }
     });
 

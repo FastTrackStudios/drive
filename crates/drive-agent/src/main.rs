@@ -74,6 +74,7 @@ mod places;
 mod sidecars;
 mod sites;
 mod tagging;
+mod transfer;
 mod view;
 
 use std::io::Write;
@@ -146,6 +147,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 token_expires: None,
                 signed_in_as: None,
                 allow_evict: false,
+                relay: None,
             };
             cfg.save(dir)?;
             let a = Agent::start(dir, cfg.clone()).await;
@@ -176,6 +178,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     token_expires: None,
                     signed_in_as: None,
                     allow_evict: false,
+                    relay: None,
                 },
                 (Err(e), _, _) => return Err(format!("{e} (before joining: sign-in --node URL --space NAME)")),
             };
@@ -282,6 +285,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 token_expires: prior.as_ref().and_then(|c| c.token_expires.clone()),
                 signed_in_as: prior.as_ref().and_then(|c| c.signed_in_as.clone()),
                 allow_evict: false,
+                relay: prior.as_ref().and_then(|c| c.relay.clone()),
             };
             let a = Agent::start(dir, cfg.clone()).await;
             let d = space::join(&a.space, &code, this_device(&cfg.device_id, &name))
