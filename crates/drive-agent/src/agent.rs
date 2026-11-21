@@ -36,6 +36,16 @@ pub struct Config {
     /// Files kept here always (their tree ids).
     #[serde(default)]
     pub pins: Vec<String>,
+    /// The issuer's session for this device (`drive-agent sign-in`): the
+    /// node asks for one when it is reached from another computer. Kept
+    /// only in this file (mode 600).
+    #[serde(default)]
+    pub token: Option<String>,
+    /// When that session runs out (RFC 3339), and whose it is.
+    #[serde(default)]
+    pub token_expires: Option<String>,
+    #[serde(default)]
+    pub signed_in_as: Option<String>,
 }
 
 impl Config {
@@ -139,7 +149,13 @@ impl Agent {
     /// Connect, open the space's documents, and wait for the node's copy
     /// (or go on with this device's own after a few seconds: offline).
     pub async fn start(dir: &Path, cfg: Config) -> Agent {
-        let drive = Drive::connect(&cfg.node, &cfg.device_name, dir.join("state")).await;
+        let drive = Drive::connect_with(
+            &cfg.node,
+            &cfg.device_name,
+            dir.join("state"),
+            cfg.token.clone(),
+        )
+        .await;
         let files_id = files_doc(&cfg.space);
         let space_id = space_doc(&cfg.space);
         let files = drive.open(&files_id).await;

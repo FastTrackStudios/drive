@@ -70,6 +70,9 @@ struct Inner {
     save: Notify,
     /// Set by [`Drive::register_agent`]; sent again on every reconnect.
     agent: Mutex<Option<(String, String)>>,
+    /// The issuer's token for the handshake (a device signed in as its
+    /// person); none on the node's own computer.
+    token: Option<String>,
 }
 
 /// A connection to a Drive node and the documents open on it.
@@ -93,6 +96,16 @@ impl Drive {
     /// Connect (and keep reconnecting) to the node at `url`
     /// (`ws://host:port/sync`). Documents' copies live under `dir`.
     pub async fn connect(url: &str, name: &str, dir: impl Into<PathBuf>) -> Drive {
+        Drive::connect_with(url, name, dir, None).await
+    }
+
+    /// [`Drive::connect`], signed in: `token` goes in every handshake.
+    pub async fn connect_with(
+        url: &str,
+        name: &str,
+        dir: impl Into<PathBuf>,
+        token: Option<String>,
+    ) -> Drive {
         let dir = dir.into();
         let _ = tokio::fs::create_dir_all(dir.join("docs")).await;
         let (events, _) = broadcast::channel(1024);
@@ -105,6 +118,7 @@ impl Drive {
             events,
             save: Notify::new(),
             agent: Mutex::new(None),
+            token,
         }));
         tokio::spawn(drive.clone().run(url.to_string()));
         tokio::spawn(drive.clone().saver());
@@ -312,12 +326,11 @@ impl Drive {
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<ToNode>();
         // This computer's own agent needs no token; an agent elsewhere
-        // signs in and is given one (DRIVE_TOKEN) until devices sign in
-        // by themselves.
+        // signs in (`drive-agent sign-in`) and sends its token.
         let hello = ToNode::Hello {
             version: drive_proto::VERSION,
             name: self.0.name.clone(),
-            token: std::env::var("DRIVE_TOKEN").ok().filter(|t| !t.is_empty()),
+            token: self.0.token.clone(),
         };
         if sink
             .send(Message::Binary(drive_proto::encode(&hello).into()))
@@ -457,6 +470,9 @@ impl Drive {
                     location,
                     path,
                 });
+            }
+            ToClient::Error { message } if message == "sign in" => {
+                tracing::warn!(drive.error = %message, "the node asks this device to sign in: run `drive-agent sign-in`")
             }
             ToClient::Error { message } => {
                 tracing::warn!(drive.error = %message, "the node refused something")

@@ -3,6 +3,7 @@
 //! ```text
 //! drive-agent [--dir DIR] init  --node ws://host:8096/sync --space home --name "Studio PC"
 //! drive-agent [--dir DIR] invite                       # a pairing code for another device
+//! drive-agent [--dir DIR] sign-in | sign-out             # this device signs in as its person (the node's issuer)
 //! drive-agent [--dir DIR] join  --node URL --space home --name Laptop --code K7Q2XM
 //! drive-agent [--dir DIR] devices | storages
 //! drive-agent [--dir DIR] device rm NAME                # forget a device, its locations and storages
@@ -117,6 +118,9 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 device_name: name.clone(),
                 storages: Vec::new(),
                 pins: Vec::new(),
+                token: None,
+                token_expires: None,
+                signed_in_as: None,
             };
             cfg.save(dir)?;
             let a = Agent::start(dir, cfg.clone()).await;
@@ -129,6 +133,81 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 "Created space {} with this device, {name} ({}).",
                 cfg.space, cfg.device_id
             ));
+        }
+        "sign-in" => {
+            // The node's issuer, from the node itself.
+            let mut cfg = Config::load(dir)?;
+            let http = reqwest::Client::new();
+            let orgs: serde_json::Value = http
+                .get(format!("{}/orgs", cfg.node_http()))
+                .bearer_auth(cfg.token.clone().unwrap_or_default())
+                .send()
+                .await
+                .map_err(|e| format!("the node: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("the node: {e}"))?;
+            let Some(issuer) = orgs["auth"]["issuer"].as_str().map(str::to_string) else {
+                out("This node asks for no sign-in.");
+                return Ok(());
+            };
+            let client_id = orgs["auth"]["client_id"].as_str().unwrap_or("drive").to_string();
+            // The device-code flow: the person approves this device in a browser.
+            let code: serde_json::Value = http
+                .post(format!("{issuer}/auth/device/code"))
+                .json(&serde_json::json!({ "client_id": client_id, "scope": "openid email profile" }))
+                .send()
+                .await
+                .map_err(|e| format!("the issuer: {e}"))?
+                .json()
+                .await
+                .map_err(|e| format!("the issuer: {e}"))?;
+            let device_code = code["device_code"].as_str().ok_or("the issuer sent no device code")?.to_string();
+            let link = code["verification_uri_complete"].as_str().unwrap_or("/auth/device");
+            let link = if link.starts_with("http") { link.to_string() } else { format!("{issuer}{link}") };
+            out(format!(
+                "To sign this device ({}) in, open {link} and approve code {} (valid {} minutes).",
+                cfg.device_name,
+                code["user_code"].as_str().unwrap_or("?"),
+                code["expires_in_seconds"].as_i64().unwrap_or(600) / 60
+            ));
+            let every = std::time::Duration::from_secs(code["interval_seconds"].as_u64().unwrap_or(5).max(1));
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(code["expires_in_seconds"].as_u64().unwrap_or(600));
+            loop {
+                if std::time::Instant::now() > until {
+                    return Err("the code ran out before it was approved; run sign-in again".into());
+                }
+                tokio::time::sleep(every).await;
+                let r = http
+                    .post(format!("{issuer}/auth/device/token"))
+                    .json(&serde_json::json!({ "device_code": device_code }))
+                    .send()
+                    .await;
+                let Ok(r) = r else { continue };
+                if !r.status().is_success() {
+                    continue;
+                }
+                let bundle: serde_json::Value = r.json().await.map_err(|e| e.to_string())?;
+                let token = bundle["token"].as_str().ok_or("the issuer sent no session")?.to_string();
+                cfg.token = Some(token);
+                cfg.token_expires = bundle["session"]["expires_at"].as_str().map(str::to_string);
+                cfg.signed_in_as = bundle["user"]["email"].as_str().or(bundle["user"]["name"].as_str()).map(str::to_string);
+                cfg.save(dir)?;
+                out(format!(
+                    "Signed in as {} until {}. Restart the agent (or it picks the session up on its next start).",
+                    cfg.signed_in_as.clone().unwrap_or_default(),
+                    cfg.token_expires.clone().unwrap_or_default()
+                ));
+                return Ok(());
+            }
+        }
+        "sign-out" => {
+            let mut cfg = Config::load(dir)?;
+            cfg.token = None;
+            cfg.token_expires = None;
+            cfg.signed_in_as = None;
+            cfg.save(dir)?;
+            out("Signed out: this device's session is gone from its config.");
         }
         "invite" => {
             let a = start(dir).await?;
@@ -154,6 +233,9 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 device_name: name.clone(),
                 storages: Vec::new(),
                 pins: Vec::new(),
+                token: None,
+                token_expires: None,
+                signed_in_as: None,
             };
             let a = Agent::start(dir, cfg.clone()).await;
             let d = space::join(&a.space, &code, this_device(&cfg.device_id, &name))
