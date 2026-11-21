@@ -72,6 +72,8 @@ struct OpenDoc {
     _sub: Subscription,
     my_presence: Option<String>,
     save_pending: bool,
+    /// The node has answered this document's join at least once.
+    synced: bool,
 }
 
 struct Inner {
@@ -182,7 +184,7 @@ impl Drive {
         }));
         self.0.docs.borrow_mut().insert(
             id.to_string(),
-            OpenDoc { doc: doc.clone(), outbox, _sub: sub, my_presence: None, save_pending: false },
+            OpenDoc { doc: doc.clone(), outbox, _sub: sub, my_presence: None, save_pending: false, synced: false },
         );
         if self.status() == Status::Online {
             self.join(id);
@@ -213,6 +215,22 @@ impl Drive {
                     self.send(&ToNode::Update { doc: id.to_string(), bytes });
                 }
             }
+            self.changed(id);
+        }
+    }
+
+    /// Whether the node has answered this document's join yet (so an empty
+    /// document is really empty, not just not arrived).
+    pub fn is_synced(&self, id: &str) -> bool {
+        self.0.docs.borrow().get(id).is_some_and(|d| d.synced)
+    }
+
+    /// Merge exported Loro bytes made elsewhere (a template, a file) into a
+    /// document, and send them, as if they were edits made here.
+    pub fn import_local(&self, id: &str, bytes: &[u8]) {
+        let ok = self.0.docs.borrow().get(id).map(|d| d.doc.import(bytes).is_ok());
+        if ok == Some(true) {
+            self.send(&ToNode::Update { doc: id.to_string(), bytes: bytes.to_vec() });
             self.changed(id);
         }
     }
@@ -351,8 +369,9 @@ impl Drive {
             }
             ToClient::Synced { doc: id, bytes, version_vector } => {
                 let (ours, presence) = {
-                    let docs = self.0.docs.borrow();
-                    let Some(d) = docs.get(&id) else { return };
+                    let mut docs = self.0.docs.borrow_mut();
+                    let Some(d) = docs.get_mut(&id) else { return };
+                    d.synced = true;
                     if !bytes.is_empty() {
                         let _ = d.doc.import(&bytes);
                     }

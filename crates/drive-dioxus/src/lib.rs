@@ -187,6 +187,17 @@ impl Doc {
         (self.presence)().into_iter().filter(|p| Some(p.peer) != me).collect()
     }
 
+    /// Whether the node has answered (an empty document is really empty).
+    pub fn synced(&self) -> bool {
+        let _ = (self.rev)();
+        self.drive.is_synced(&self.id)
+    }
+
+    /// Merge exported Loro bytes made elsewhere (a template) and send them.
+    pub fn import(&self, bytes: &[u8]) {
+        self.drive.import_local(&self.id, bytes);
+    }
+
     /// A number that changes whenever the document does.
     pub fn rev(&self) -> u64 {
         (self.rev)()
