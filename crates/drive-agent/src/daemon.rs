@@ -77,6 +77,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let mut last_full = tokio::time::Instant::now();
     let mut last_view = tokio::time::Instant::now();
+    let mut last_place = tokio::time::Instant::now() - Duration::from_secs(3600);
     loop {
         tokio::select! {
             ev = events.recv() => match ev {
@@ -120,6 +121,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     for loc in a.my_locations() {
                         let _ = a.index_location(&loc).await;
                     }
+                }
+                if now.duration_since(last_place) > Duration::from_secs(60) {
+                    last_place = now;
+                    a.place().await;
                 }
                 if now.duration_since(last_view) > Duration::from_secs(30) {
                     last_view = now;

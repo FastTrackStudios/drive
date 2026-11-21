@@ -176,6 +176,24 @@ length that differ only between the samples would look alike; the next
 step confirms a copy with the full hash before the report counts it (and
 before any copy is used in place of another).
 
+## What each device keeps: roles (built, 2026-11-21)
+
+- **Storage servers** (`drive-agent role storage-server`: the NAS, an
+  always-on box with big disks) keep as much as they can: every file's
+  bytes in the tree (smallest first, keeping a tenth of the disk free),
+  never letting any go, and a **mirror** of every other computer's
+  locations, copied while that computer is on and registered as a
+  location of its own (`Projects (mirror)`), so its files count as copies.
+- **Workstations** (`role workstation`, the default: Battleship, Voyager,
+  airlock) keep what they are working on: the files under their **active
+  folders** (`drive-agent active add Songs/Song A`) and their pins.
+  Anything else they opened goes three days after its last use, and only
+  once a storage or storage server holds it: a workstation never drops the
+  last copy.
+- The agent runs a placement pass every minute (`drive-agent place` runs
+  one now); the Drive app's Devices view shows each device's role and
+  active folders.
+
 ## Apps on Drive's catalog
 
 Drive stays the data platform; apps build on its catalog:

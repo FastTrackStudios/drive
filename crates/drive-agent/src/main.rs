@@ -22,6 +22,11 @@
 //! drive-agent [--dir DIR] search WORDS…                 # every device's files
 //! drive-agent [--dir DIR] copies LOCATION PATH          # where else a file is
 //!
+//! What this device keeps:
+//! drive-agent [--dir DIR] role storage-server|workstation   # keep everything, or the work at hand
+//! drive-agent [--dir DIR] active [add|rm PATH]          # folders this device is working on
+//! drive-agent [--dir DIR] place                         # one placement pass now
+//!
 //! Protection (3-2-1 and the like):
 //! drive-agent [--dir DIR] site DEVICE_OR_STORAGE SITE   # where it physically is
 //! drive-agent [--dir DIR] policy add NAME [--copies 3 --media 2 --offsite 1] [--scope LOC,LOC]
@@ -36,6 +41,7 @@ mod agent;
 mod computers;
 mod daemon;
 mod fs;
+mod placement;
 mod places;
 
 use std::io::Write;
@@ -303,6 +309,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 path,
                 volume,
                 storage,
+                mirror_of: String::new(),
                 index: String::new(),
                 files: 0,
                 bytes: 0,
@@ -399,6 +406,63 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     c["path"].as_str().unwrap_or("")
                 ));
             }
+        }
+        "role" => {
+            let role = args.get(1).ok_or("role storage-server|workstation")?;
+            if role != "storage-server" && role != "workstation" {
+                return Err(format!("unknown role {role}"));
+            }
+            let a = start(dir).await?;
+            let me = a.device_id();
+            let mut roles: Vec<String> = space::devices(&a.space)
+                .into_iter()
+                .find(|d| d.id == me)
+                .map(|d| d.roles)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r != "storage-server" && r != "workstation")
+                .collect();
+            roles.push(role.clone());
+            space::set_roles(&a.space, &me, &roles).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            out(match role.as_str() {
+                "storage-server" => "This device keeps everything it has room for, and mirrors other computers' locations.",
+                _ => "This device keeps its active folders and pins; other bytes go once a storage holds them.",
+            });
+        }
+        "active" => {
+            let a = start(dir).await?;
+            let me = a.device_id();
+            match (args.get(1).map(String::as_str), args.get(2)) {
+                (Some(op @ ("add" | "rm")), Some(p)) => {
+                    let p = p.trim_matches('/').to_string();
+                    if op == "add" && !p.is_empty() && tree::resolve(&a.files, &p).flatten().is_none_or(|e| !e.dir) {
+                        return Err(format!("no folder {p}"));
+                    }
+                    space::set_active(&a.space, &me, &p, op == "add").map_err(|e| e.to_string())?;
+                    a.commit_space();
+                    settle(&a).await;
+                }
+                (None, _) => {}
+                _ => return Err("active [add|rm PATH]".into()),
+            }
+            for p in space::active(&a.space, &me) {
+                out(format!("/{p}"));
+            }
+        }
+        "place" => {
+            let a = start(dir).await?;
+            let d = a.place().await;
+            settle(&a).await;
+            out(format!(
+                "{:?}: {} fetched, {} let go, {} mirrored{}",
+                a.role(),
+                d.fetched,
+                d.evicted,
+                d.mirrored,
+                if d.no_room > 0 { format!(", {} did not fit", human(d.no_room)) } else { String::new() }
+            ));
         }
         "site" => {
             let who = args.get(1).ok_or("site DEVICE_OR_STORAGE SITE")?;
@@ -515,6 +579,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                         path: base.clone(),
                         volume: String::new(),
                         storage: own.id.clone(),
+                        mirror_of: String::new(),
                         index: String::new(),
                         files: 0,
                         bytes: 0,

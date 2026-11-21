@@ -162,6 +162,7 @@ mod tests {
             path: format!("/{id}"),
             volume: volume.into(),
             storage: storage.into(),
+            mirror_of: String::new(),
             index: String::new(),
             files: 0,
             bytes: 0,

@@ -19,6 +19,7 @@ pub mod blob;
 pub mod hash;
 #[cfg(feature = "storage")]
 pub mod index;
+pub mod placement;
 pub mod protect;
 pub mod space;
 #[cfg(feature = "storage")]

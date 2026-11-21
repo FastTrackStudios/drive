@@ -115,6 +115,31 @@ pub fn devices(doc: &LoroDoc) -> Vec<Device> {
     out
 }
 
+/// Replace a device's roles (`storage-server`, `workstation`, `client`).
+pub fn set_roles(doc: &LoroDoc, device: &str, roles: &[String]) -> loro::LoroResult<()> {
+    doc.get_map("devices").ensure_mergeable_map(device)?.insert("roles", roles.join(","))?;
+    Ok(())
+}
+
+/// A folder of the file tree a device is working on now (`active`:
+/// device → path → true): its files are kept on that device.
+pub fn set_active(doc: &LoroDoc, device: &str, path: &str, on: bool) -> loro::LoroResult<()> {
+    let m = doc.get_map("active").ensure_mergeable_map(device)?;
+    if on {
+        m.insert(path, true)?;
+    } else if m.get(path).is_some() {
+        m.delete(path)?;
+    }
+    Ok(())
+}
+
+pub fn active(doc: &LoroDoc, device: &str) -> Vec<String> {
+    let mut out: Vec<String> =
+        child(&doc.get_map("active"), device).map(|m| m.keys().map(|k| k.to_string()).collect()).unwrap_or_default();
+    out.sort();
+    out
+}
+
 pub fn remove_device(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
     doc.get_map("devices").delete(id)?;
     doc.get_map("holdings").delete(id)
@@ -203,6 +228,8 @@ pub struct Location {
     /// When set, the location is in this storage (an S3 bucket, a WebDAV
     /// share) and `path` is inside it; `device` runs that storage.
     pub storage: String,
+    /// When set, this location is a storage server's mirror of that one.
+    pub mirror_of: String,
     /// The latest index blob's hash (empty until the first walk).
     pub index: String,
     pub files: i64,
@@ -221,6 +248,7 @@ pub fn add_location(doc: &LoroDoc, l: &Location) -> loro::LoroResult<()> {
             ("path", &l.path),
             ("volume", &l.volume),
             ("storage", &l.storage),
+            ("mirror_of", &l.mirror_of),
         ],
     )?;
     Ok(())
@@ -248,6 +276,7 @@ pub fn locations(doc: &LoroDoc) -> Vec<Location> {
             path: s(&m, "path"),
             volume: s(&m, "volume"),
             storage: s(&m, "storage"),
+            mirror_of: s(&m, "mirror_of"),
             index: s(&m, "index"),
             files: n(&m, "files"),
             bytes: n(&m, "bytes"),

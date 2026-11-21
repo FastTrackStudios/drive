@@ -290,12 +290,22 @@ fn Devices(space: String) -> Element {
                         .and_then(|c| c.into_map().ok())
                         .map_or(0, |m| m.len());
                     let by = devices.iter().find(|x| x.id == d.approved_by).map_or(d.approved_by.clone(), |x| x.name.clone());
+                    let server = drive_files::placement::Role::of(&d.roles) == drive_files::placement::Role::StorageServer;
+                    let active = space::active(&r, &d.id);
+                    let keeps = if server {
+                        "storage server · keeps everything".to_string()
+                    } else if active.is_empty() {
+                        "workstation · keeps its pins".to_string()
+                    } else {
+                        format!("workstation · working on {}", active.iter().map(|p| if p.is_empty() { "everything".to_string() } else { format!("/{p}") }).collect::<Vec<_>>().join(", "))
+                    };
                     rsx! {
                         div { key: "{d.id}", class: "device",
                             span { class: if live { "dot on" } else { "dot" } }
                             div { class: "dmain",
                                 b { "{d.name}" }
                                 span { class: "s1", "{d.kind} · {d.os} · approved by {by}" }
+                                span { class: if server { "s1 role server" } else { "s1 role" }, "{keeps}" }
                             }
                             span { class: "count", "{held} blobs here" }
                             span { class: if live { "badge on" } else { "badge" },

@@ -144,3 +144,4 @@ code { font: 12.5px/1.5 ui-monospace, monospace; background: #0a0a0c; padding: 6
 .meter .fill { height: 100%; background: var(--ok); border-radius: 4px; }
 .policy .frow { padding: 7px 2px; border-top: 1px solid #1d1d22; }
 .frow.short .fname { font-weight: 500; color: var(--ink-2); }
+.role.server { color: #c7d2fe; }
