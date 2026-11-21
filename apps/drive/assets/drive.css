@@ -187,11 +187,18 @@ code { font: 12.5px/1.5 ui-monospace, monospace; background: #0a0a0c; padding: 6
 .cell { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 6px 10px; border-radius: 12px; cursor: default; text-align: center; min-width: 0; user-select: none; }
 .cell:hover { background: var(--surface); }
 .cell.on { background: rgba(45,212,191,.12); box-shadow: inset 0 0 0 1px rgba(45,212,191,.45); }
-.cell .kicon { width: 72px; height: 72px; object-fit: contain; margin-bottom: 4px; }
+.cell .kicon { width: 72px; height: 72px; object-fit: contain; }
+/* An icon, and the item's thumbnail over it once it has loaded. */
+.kbox { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.kbox .thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity .15s ease; }
+.kbox.has .thumb { opacity: 1; }
+.kbox.has .kicon { visibility: hidden; }
+.cell .kbox { width: 104px; height: 80px; margin-bottom: 4px; }
+.cell .kbox .thumb { filter: drop-shadow(0 1px 3px rgba(0,0,0,.45)); }
 .cname { font-size: 13px; font-weight: 600; line-height: 1.25; max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
 .csub { font-size: 12px; color: var(--ink-3); }
 .cat { font-size: 11px; color: var(--ink-3); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.away .kicon { opacity: .45; filter: grayscale(.6); }
+.away .kbox { opacity: .45; filter: grayscale(.6); }
 .away .cname, .away .nm { color: var(--ink-2); }
 
 .list { padding: 6px 10px 40px; }
@@ -202,7 +209,9 @@ code { font: 12.5px/1.5 ui-monospace, monospace; background: #0a0a0c; padding: 6
 .row:nth-child(even) { background: rgba(255,255,255,.018); }
 .row:hover { background: var(--surface); }
 .row.on { background: rgba(45,212,191,.12); }
-.row .kicon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; object-fit: contain; }
+.row .kbox { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; }
+.row .kicon { width: 24px; height: 24px; object-fit: contain; }
+.row .kbox .thumb { border-radius: 3px; }
 .row .lname { padding-left: 34px; display: flex; flex-direction: column; min-width: 0; }
 .row .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lkind, .ldate { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -217,6 +226,9 @@ code { font: 12.5px/1.5 ui-monospace, monospace; background: #0a0a0c; padding: 6
 .ihead .x { color: var(--ink-3); width: 28px; height: 28px; border-radius: 7px; }
 .ihead .x:hover { background: var(--surface); color: var(--ink); }
 .ibig { width: 120px; height: 120px; object-fit: contain; align-self: center; margin: 4px 0 10px; }
+.kbox.ibox { align-self: center; width: 100%; height: 220px; margin: 4px 0 10px; }
+.kbox.ibox .kicon { width: 120px; height: 120px; }
+.kbox.ibox .thumb { border-radius: 8px; }
 .iname { margin: 0; font-size: 17px; text-align: center; word-break: break-word; }
 .ikind { text-align: center; color: var(--ink-3); font-size: 13px; margin-top: 2px; }
 .iacts { display: flex; gap: 8px; justify-content: center; margin: 14px 0 4px; flex-wrap: wrap; }
@@ -259,6 +271,12 @@ h2.sec { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter
 .mmain { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .mmain span { color: var(--ink-3); font-size: 12.5px; }
 
+.previews { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.previews .stat { min-width: 200px; }
+.pvparts { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--ink-2); flex: 1; min-width: 200px; }
+.pvparts .hint { color: var(--ink-3); font-size: 12px; }
+.previews .primary { height: 36px; border-radius: 10px; }
+
 /* Protection */
 .polhead img { width: 30px; height: 30px; }
 .pmain { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -282,8 +300,11 @@ h2.sec { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter
   .inspector, .shell.inspecting .inspector { display: none; }
   .shell.picked .inspector { display: flex; position: fixed; z-index: 25; left: 0; right: 0; bottom: 0; max-height: 72vh; border-left: 0; border-top: 1px solid var(--rule); border-radius: 18px 18px 0 0; box-shadow: 0 -20px 50px rgba(0,0,0,.6); padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
   .ibig { width: 84px; height: 84px; }
+  .kbox.ibox { height: 160px; }
+  .kbox.ibox .kicon { width: 84px; height: 84px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); padding: 8px 8px 40px; }
   .cell .kicon { width: 58px; height: 58px; }
+  .cell .kbox { width: 88px; height: 66px; }
   .lhead { display: none; }
   .row { grid-template-columns: minmax(0, 1fr) auto; }
   .row .lkind, .row .ldate, .row .lcopies { display: none; }

@@ -837,6 +837,8 @@ fn Content(space: String) -> Element {
 #[component]
 pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> Element {
     let mut nav = use_nav();
+    // The space the items are in (a project another org shared: that org).
+    let space = (nav.within)().unwrap_or_else(|| drive_dioxus::use_drive().org.clone());
     let (sort, desc) = (nav.sort)();
     let mut items = items;
     items.sort_by(|a, b| {
@@ -902,7 +904,7 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
                                 e.prevent_default();
                                 nav.selected.set(Some(it2.clone()));
                             },
-                            img { class: "kicon", src: "{ic}", alt: "", draggable: false }
+                            KindIcon { icon: ic.clone(), thumb: sidecar_url(&i, &space, drive_sidecars::Kind::Thumb256) }
                             if grid {
                                 span { class: "cname", "{i.name}" }
                                 span { class: "csub",
@@ -1391,6 +1393,8 @@ fn Inspector(space: String) -> Element {
         && (matches!(item.src, Src::Tree { .. })
             || item.available.is_some()
             || item.size <= INLINE_FROM_DEVICE);
+    let big_thumb = sidecar_url(&item, &space, drive_sidecars::Kind::Thumb1024);
+    let peaks = sidecar_url(&item, &space, drive_sidecars::Kind::Peaks);
     rsx! {
         aside { class: "inspector",
             div { class: "ihead",
@@ -1407,10 +1411,12 @@ fn Inspector(space: String) -> Element {
                         size: item.size,
                         bearer: drive_dioxus::auth::bearer(),
                         compact: true,
+                        peaks: peaks.clone(),
+                        poster: big_thumb.clone(),
                     }
                 }
             } else {
-                img { class: "ibig", src: icon(&item.kind.icon), alt: "" }
+                KindIcon { key: "{item.key()}", icon: icon(&item.kind.icon), thumb: big_thumb.clone(), class: "ibox" }
             }
             h2 { class: "iname", "{item.name}" }
             span { class: "ikind", "{item.kind.name}" }
@@ -1496,6 +1502,76 @@ pub fn file_url(item: &Item, space: &str) -> Option<String> {
                 .then(|| format!("/fetch/{}/{}?path={}", enc(space), enc(location), enc(path))),
         },
         Src::Doc { .. } => None,
+    }
+}
+
+/// Where an item's sidecar (a thumbnail, its waveform peaks) is read:
+/// by its content key, with what the node needs to have it made when it is
+/// missing (the file's name; for a computer's file, where it is, and its
+/// copy on the node if there is one). `None`: nothing derives from it.
+pub fn sidecar_url(item: &Item, space: &str, kind: drive_sidecars::Kind) -> Option<String> {
+    if item.dir || !drive_sidecars::kinds_for(&item.name).contains(&kind) {
+        return None;
+    }
+    let name = enc(&item.name);
+    match &item.src {
+        Src::Tree { hash, .. } if !hash.is_empty() => Some(format!(
+            "{}?name={name}",
+            drive_sidecars::url(&drive_sidecars::full_key(hash), kind)
+        )),
+        Src::Index {
+            location,
+            path,
+            sampled,
+        } if !sampled.is_empty() => {
+            let mut u = format!(
+                "{}?name={name}&space={}&location={}&path={}",
+                drive_sidecars::url(&drive_sidecars::sampled_key(sampled), kind),
+                enc(space),
+                enc(location),
+                enc(path)
+            );
+            if let Some(h) = &item.available {
+                u.push_str(&format!("&hash={h}"));
+            }
+            Some(u)
+        }
+        _ => None,
+    }
+}
+
+/// An item's icon, with its thumbnail over it once that has loaded (lazily:
+/// only when it scrolls into view). No thumbnail, or none can be made: the
+/// icon stays.
+#[component]
+pub fn KindIcon(icon: String, thumb: Option<String>, #[props(default)] class: String) -> Element {
+    let mut loaded = use_signal(|| false);
+    let mut failed = use_signal(|| false);
+    // Another item in this place (a list re-sorted): start over.
+    let mut was = use_signal(|| thumb.clone());
+    if *was.peek() != thumb {
+        was.set(thumb.clone());
+        loaded.set(false);
+        failed.set(false);
+    }
+    let shown = thumb.filter(|_| !failed());
+    let has = loaded() && shown.is_some();
+    rsx! {
+        span { class: format!("kbox {class}{}", if has { " has" } else { "" }),
+            img { class: "kicon", src: "{icon}", alt: "", draggable: false }
+            if let Some(t) = shown {
+                img {
+                    class: "thumb",
+                    src: "{t}",
+                    alt: "",
+                    loading: "lazy",
+                    decoding: "async",
+                    draggable: false,
+                    onload: move |_| loaded.set(true),
+                    onerror: move |_| failed.set(true),
+                }
+            }
+        }
     }
 }
 
@@ -1764,6 +1840,8 @@ fn Preview(space: String) -> Element {
                     on_anchor: Some(EventHandler::new(move |a| anchor.set(Some(a)))),
                     on_save,
                     on_pdf_edit,
+                    peaks: sidecar_url(&item, &space, drive_sidecars::Kind::Peaks),
+                    poster: sidecar_url(&item, &space, drive_sidecars::Kind::Thumb1024),
                 }
             }
             if let Some(a) = anchor() {

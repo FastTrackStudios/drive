@@ -84,7 +84,12 @@ enum Wave {
 }
 
 #[component]
-pub fn AudioView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>>) -> Element {
+pub fn AudioView(
+    src: Src,
+    compact: bool,
+    on_anchor: Option<EventHandler<Anchor>>,
+    peaks: Option<String>,
+) -> Element {
     let id = use_hook(super::fresh_id);
     let mut wave = use_signal(|| Wave::Loading);
     let mut now = use_signal(|| 0.0f64);
@@ -93,11 +98,22 @@ pub fn AudioView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
     use_hook({
         let src = src.clone();
         move || {
-            if src.size > WAVEFORM_MAX {
-                wave.set(Wave::Plain(src.url.clone()));
-                return;
-            }
             spawn(async move {
+                // Peaks made ahead of time: the file itself is only
+                // streamed, to play.
+                if let Some(url) = &peaks
+                    && let Some(p) = fetch_peaks(url, src.bearer.as_deref()).await
+                {
+                    if p.frames > 0 && p.sample_rate > 0 {
+                        length.set(p.seconds());
+                    }
+                    wave.set(Wave::Ready(p.columns(BUCKETS), src.url.clone()));
+                    return;
+                }
+                if src.size > WAVEFORM_MAX {
+                    wave.set(Wave::Plain(src.url.clone()));
+                    return;
+                }
                 let w = match src.bytes().await {
                     Err(e) => Wave::Failed(e),
                     Ok(bytes) => {
@@ -224,6 +240,19 @@ pub fn AudioView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
     }
 }
 
+/// A sound's peaks made ahead of time (a sidecar), if they can be had.
+async fn fetch_peaks(url: &str, bearer: Option<&str>) -> Option<drive_sidecars::peaks::Peaks> {
+    let mut req = gloo_net::http::Request::get(url);
+    if let Some(b) = bearer {
+        req = req.header("authorization", b);
+    }
+    let r = req.send().await.ok()?;
+    if !r.ok() {
+        return None;
+    }
+    drive_sidecars::peaks::Peaks::decode(&r.binary().await.ok()?).ok()
+}
+
 /// A `blob:` URL of these bytes.
 fn object_url(bytes: &[u8]) -> Option<String> {
     let arr = js_sys::Array::new();
@@ -257,7 +286,12 @@ async fn decode_peaks(bytes: &[u8]) -> Option<Vec<(f32, f32)>> {
 // ── video ───────────────────────────────────────────────────────────────
 
 #[component]
-pub fn VideoView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>>) -> Element {
+pub fn VideoView(
+    src: Src,
+    compact: bool,
+    on_anchor: Option<EventHandler<Anchor>>,
+    poster: Option<String>,
+) -> Element {
     let id = use_hook(super::fresh_id);
     let mut now = use_signal(|| 0.0f64);
     let mut length = use_signal(|| 0.0f64);
@@ -296,6 +330,7 @@ pub fn VideoView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
             controls: true,
             preload: "metadata",
             playsinline: true,
+            poster: poster.unwrap_or_default(),
             src: "{src.url}",
             ontimeupdate: move |_| t1(),
             onloadedmetadata: move |_| read_time(),

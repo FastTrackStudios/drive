@@ -158,6 +158,69 @@ pub fn Overview(space: String) -> Element {
                     }
                 }
             }
+            Previews {}
+        }
+    }
+}
+
+/// The node's sidecars (thumbnails, waveforms): how many, the space they
+/// take, and a way to clear them (they are made again when wanted).
+#[component]
+fn Previews() -> Element {
+    let mut rev = use_signal(|| 0u32);
+    let mut busy = use_signal(|| false);
+    let st = use_resource(move || async move {
+        let _ = rev();
+        get("/sidecars/stats".to_string()).await
+    });
+    let Some(st) = st().flatten() else {
+        return rsx! {};
+    };
+    let count = st["count"].as_u64().unwrap_or(0);
+    let bytes = st["bytes"].as_u64().unwrap_or(0);
+    let kinds = st["kinds"].as_object().cloned().unwrap_or_default();
+    let part = |k: &str| {
+        let v = &kinds.get(k).cloned().unwrap_or_default();
+        (
+            v["count"].as_u64().unwrap_or(0),
+            v["bytes"].as_u64().unwrap_or(0),
+        )
+    };
+    let thumbs = (
+        part("thumb-256").0 + part("thumb-1024").0,
+        part("thumb-256").1 + part("thumb-1024").1,
+    );
+    let peaks = part("peaks");
+    let clear = move |_| {
+        busy.set(true);
+        spawn(async move {
+            let mut req = gloo_net::http::Request::post("/sidecars/purge")
+                .header("content-type", "application/json");
+            if let Some(b) = drive_dioxus::auth::bearer() {
+                req = req.header("authorization", &b);
+            }
+            if let Ok(r) = req.body(r#"{"all":true}"#) {
+                let _ = r.send().await;
+            }
+            busy.set(false);
+            rev += 1;
+        });
+    };
+    rsx! {
+        h2 { class: "sec", "Previews" }
+        div { class: "previews",
+            div { class: "stat",
+                b { "{human(bytes)}" }
+                span { "{count} thumbnails and waveforms on the node" }
+            }
+            div { class: "pvparts",
+                span { "Thumbnails · {thumbs.0} · {human(thumbs.1)}" }
+                span { "Waveforms · {peaks.0} · {human(peaks.1)}" }
+                span { class: "hint", "Made once per file content; cleared ones are made again when needed." }
+            }
+            button { class: "primary ghost", disabled: busy() || count == 0, onclick: clear,
+                if busy() { "Clearing…" } else { "Clear" }
+            }
         }
     }
 }

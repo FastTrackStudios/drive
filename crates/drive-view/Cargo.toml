@@ -9,6 +9,7 @@ license.workspace = true
 default = ["ui", "pdf"]
 # The Dioxus components (off for a server that only uses the native edits).
 ui = [
+    "dep:drive-sidecars",
     "dep:dioxus",
     "dep:gloo-net",
     "dep:js-sys",
@@ -29,6 +30,7 @@ sign = ["edit", "dep:pdfcraft-sign"]
 
 [dependencies]
 serde.workspace = true
+drive-sidecars = { workspace = true, optional = true }
 dioxus = { workspace = true, optional = true }
 gloo-net = { version = "0.8", default-features = false, features = ["http"], optional = true }
 js-sys = { version = "0.3", optional = true }
