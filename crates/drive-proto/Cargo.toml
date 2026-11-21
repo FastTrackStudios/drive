@@ -1,0 +1,10 @@
+[package]
+name = "drive-proto"
+description = "Drive's sync messages: what a client and a node say to each other"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true

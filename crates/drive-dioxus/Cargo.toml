@@ -1,0 +1,14 @@
+[package]
+name = "drive-dioxus"
+description = "Drive for Dioxus apps: live documents and presence as signals, and the shared pieces (avatars, status, cursors)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drive-client.workspace = true
+drive-proto.workspace = true
+dioxus.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures-util = "0.3"

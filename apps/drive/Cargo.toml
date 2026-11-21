@@ -1,0 +1,17 @@
+[package]
+name = "drive-app"
+description = "The Drive app: the inbox, the calendar, notes and everything every app keeps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dioxus.workspace = true
+drive-dioxus.workspace = true
+drive-spine.workspace = true
+serde_json.workspace = true
+js-sys = "0.3"
+
+[features]
+default = []
+web = ["dioxus/web"]

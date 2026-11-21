@@ -1,0 +1,400 @@
+//! `drive-client`: what an app embeds to use Drive, in the browser.
+//!
+//! - [`Drive::connect`] opens one connection to a node; it reconnects by
+//!   itself and says so in [`Status`].
+//! - [`Drive::open`] opens a document (a [`LoroDoc`]): first from this
+//!   browser's own copy (so it works offline), then synced live with the
+//!   node. Edit it, then call [`Drive::commit`].
+//! - [`Drive::set_presence`] says where you are in a document (any JSON);
+//!   every peer's presence arrives as [`Event::Presence`].
+//! - Everything that happens comes out of [`Drive::events`], one stream,
+//!   for the UI layer to turn into its own state.
+//!
+//! The browser keeps a snapshot of each open document in `localStorage`;
+//! edits made offline are sent when the connection comes back (the join
+//! handshake exchanges version vectors, so nothing is lost or repeated).
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+use base64::Engine;
+use drive_proto::{DocId, DocInfo, Peer, ToClient, ToNode};
+use futures_channel::mpsc;
+pub use loro;
+use loro::{ExportMode, LoroDoc, Subscription, VersionVector};
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::Closure;
+use web_sys::{BinaryType, MessageEvent, WebSocket};
+
+/// The stream of [`Event`]s a [`Drive`] produces.
+pub type EventStream = mpsc::UnboundedReceiver<Event>;
+
+/// Wait, in the browser.
+pub async fn sleep(ms: u32) {
+    gloo_timers::future::TimeoutFuture::new(ms).await;
+}
+
+/// The connection's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Connecting,
+    Online,
+    /// Disconnected; edits stay here and are sent on reconnect.
+    Offline,
+}
+
+/// What happened, for the UI.
+#[derive(Clone, Debug)]
+pub enum Event {
+    Status(Status),
+    /// A document changed (here or elsewhere).
+    Changed(DocId),
+    /// A peer's presence in a document; `None` when they left.
+    Presence { doc: DocId, peer: Peer, name: String, json: Option<String> },
+    /// The node's answer to [`Drive::list`].
+    Docs { prefix: String, docs: Vec<DocInfo> },
+}
+
+/// Who this browser is: a display name and a colour, kept in
+/// `localStorage`, shared by every app on the same address.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Me {
+    pub name: String,
+    pub hue: u32,
+}
+
+struct OpenDoc {
+    doc: LoroDoc,
+    /// Updates made here, waiting to be sent.
+    outbox: Arc<Mutex<Vec<Vec<u8>>>>,
+    _sub: Subscription,
+    my_presence: Option<String>,
+    save_pending: bool,
+}
+
+struct Inner {
+    url: String,
+    me: RefCell<Me>,
+    ws: RefCell<Option<WebSocket>>,
+    status: Cell<Status>,
+    peer: Cell<Option<Peer>>,
+    docs: RefCell<HashMap<DocId, OpenDoc>>,
+    events: mpsc::UnboundedSender<Event>,
+    retry_ms: Cell<u32>,
+}
+
+/// A connection to a Drive node, and the documents open on it.
+#[derive(Clone)]
+pub struct Drive(Rc<Inner>);
+
+impl PartialEq for Drive {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+fn b64() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::STANDARD
+}
+
+impl Drive {
+    /// Connect to the node at `url` (`wss://host/sync`); `None` connects to
+    /// the page's own host. Returns the client and its event stream.
+    pub fn connect(url: Option<String>) -> (Drive, mpsc::UnboundedReceiver<Event>) {
+        let url = url.unwrap_or_else(|| {
+            let loc = web_sys::window().expect("a window").location();
+            let proto = if loc.protocol().unwrap_or_default() == "https:" { "wss" } else { "ws" };
+            format!("{proto}://{}/sync", loc.host().unwrap_or_default())
+        });
+        let (tx, rx) = mpsc::unbounded();
+        let me = storage()
+            .and_then(|s| s.get_item("drive:me").ok().flatten())
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_else(|| Me { name: guest_name(), hue: (js_sys::Math::random() * 360.0) as u32 });
+        let drive = Drive(Rc::new(Inner {
+            url,
+            me: RefCell::new(me),
+            ws: RefCell::new(None),
+            status: Cell::new(Status::Connecting),
+            peer: Cell::new(None),
+            docs: RefCell::new(HashMap::new()),
+            events: tx,
+            retry_ms: Cell::new(500),
+        }));
+        drive.save_me();
+        drive.open_socket();
+        (drive, rx)
+    }
+
+    pub fn status(&self) -> Status {
+        self.0.status.get()
+    }
+
+    /// This connection's peer number, once the node has said it.
+    pub fn peer(&self) -> Option<Peer> {
+        self.0.peer.get()
+    }
+
+    pub fn me(&self) -> Me {
+        self.0.me.borrow().clone()
+    }
+
+    /// Change your display name and colour (every app on this address).
+    pub fn set_me(&self, me: Me) {
+        *self.0.me.borrow_mut() = me;
+        self.save_me();
+        // A new name reaches the node on the next connection.
+        if let Some(ws) = self.0.ws.borrow().as_ref() {
+            let _ = ws.close();
+        }
+    }
+
+    fn save_me(&self) {
+        if let (Some(s), Ok(j)) = (storage(), serde_json::to_string(&*self.0.me.borrow())) {
+            let _ = s.set_item("drive:me", &j);
+        }
+    }
+
+    /// Open a document: this browser's copy now, the node's as it arrives.
+    pub fn open(&self, id: &str) -> LoroDoc {
+        if let Some(d) = self.0.docs.borrow().get(id) {
+            return d.doc.clone();
+        }
+        let doc = LoroDoc::new();
+        if let Some(saved) = storage().and_then(|s| s.get_item(&key(id)).ok().flatten())
+            && let Ok(bytes) = b64().decode(saved)
+        {
+            let _ = doc.import(&bytes);
+        }
+        let outbox = Arc::new(Mutex::new(Vec::new()));
+        let ob = outbox.clone();
+        let sub = doc.subscribe_local_update(Box::new(move |bytes| {
+            if let Ok(mut o) = ob.lock() {
+                o.push(bytes.clone());
+            }
+            true
+        }));
+        self.0.docs.borrow_mut().insert(
+            id.to_string(),
+            OpenDoc { doc: doc.clone(), outbox, _sub: sub, my_presence: None, save_pending: false },
+        );
+        if self.status() == Status::Online {
+            self.join(id);
+        }
+        doc
+    }
+
+    /// Close a document (it stays saved here).
+    pub fn close(&self, id: &str) {
+        if self.0.docs.borrow_mut().remove(id).is_some() {
+            self.send(&ToNode::Leave { doc: id.to_string() });
+        }
+    }
+
+    /// Commit the edits made to a document and send them.
+    pub fn commit(&self, id: &str) {
+        let pending = {
+            let docs = self.0.docs.borrow();
+            let Some(d) = docs.get(id) else { return };
+            d.doc.commit();
+            let mut o = d.outbox.lock().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default();
+            o.retain(|u| !u.is_empty());
+            o
+        };
+        if !pending.is_empty() {
+            if self.status() == Status::Online {
+                for bytes in pending {
+                    self.send(&ToNode::Update { doc: id.to_string(), bytes });
+                }
+            }
+            self.changed(id);
+        }
+    }
+
+    /// Say where you are in a document. Never stored; others see it live.
+    pub fn set_presence(&self, id: &str, json: String) {
+        if let Some(d) = self.0.docs.borrow_mut().get_mut(id) {
+            d.my_presence = Some(json.clone());
+        }
+        self.send(&ToNode::Presence { doc: id.to_string(), json });
+    }
+
+    /// Ask the node which documents it holds under a prefix; the answer
+    /// comes as [`Event::Docs`].
+    pub fn list(&self, prefix: &str) {
+        self.send(&ToNode::List { prefix: prefix.to_string() });
+    }
+
+    // ── internals ───────────────────────────────────────────────────────
+
+    fn emit(&self, e: Event) {
+        let _ = self.0.events.unbounded_send(e);
+    }
+
+    fn set_status(&self, s: Status) {
+        if self.0.status.get() != s {
+            self.0.status.set(s);
+            self.emit(Event::Status(s));
+        }
+    }
+
+    fn send(&self, msg: &ToNode) {
+        if let Some(ws) = self.0.ws.borrow().as_ref()
+            && ws.ready_state() == WebSocket::OPEN
+        {
+            let _ = ws.send_with_u8_array(&drive_proto::encode(msg));
+        }
+    }
+
+    fn join(&self, id: &str) {
+        let vv = self.0.docs.borrow().get(id).map(|d| d.doc.oplog_vv().encode());
+        if let Some(vv) = vv {
+            self.send(&ToNode::Join { doc: id.to_string(), version_vector: vv });
+        }
+    }
+
+    /// A document changed: tell the UI, and save this browser's copy soon.
+    fn changed(&self, id: &str) {
+        self.emit(Event::Changed(id.to_string()));
+        let schedule = {
+            let mut docs = self.0.docs.borrow_mut();
+            match docs.get_mut(id) {
+                Some(d) if !d.save_pending => {
+                    d.save_pending = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if schedule {
+            let me = self.clone();
+            let id = id.to_string();
+            gloo_timers::callback::Timeout::new(600, move || me.save_local(&id)).forget();
+        }
+    }
+
+    fn save_local(&self, id: &str) {
+        let snapshot = {
+            let mut docs = self.0.docs.borrow_mut();
+            let Some(d) = docs.get_mut(id) else { return };
+            d.save_pending = false;
+            d.doc.export(ExportMode::Snapshot).ok()
+        };
+        if let (Some(s), Some(bytes)) = (storage(), snapshot) {
+            let _ = s.set_item(&key(id), &b64().encode(bytes));
+        }
+    }
+
+    fn open_socket(&self) {
+        self.set_status(Status::Connecting);
+        let Ok(ws) = WebSocket::new(&self.0.url) else {
+            self.retry();
+            return;
+        };
+        ws.set_binary_type(BinaryType::Arraybuffer);
+
+        let me = self.clone();
+        let onopen = Closure::<dyn FnMut()>::new(move || {
+            me.0.retry_ms.set(500);
+            let name = me.0.me.borrow().name.clone();
+            me.send(&ToNode::Hello { version: drive_proto::VERSION, name });
+        });
+        ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+        onopen.forget();
+
+        let me = self.clone();
+        let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+            if let Ok(buf) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
+                let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+                if let Ok(msg) = drive_proto::decode::<ToClient>(&bytes) {
+                    me.receive(msg);
+                }
+            }
+        });
+        ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+        onmessage.forget();
+
+        let me = self.clone();
+        let onclose = Closure::<dyn FnMut()>::new(move || {
+            me.0.peer.set(None);
+            me.set_status(Status::Offline);
+            me.retry();
+        });
+        ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+        onclose.forget();
+
+        *self.0.ws.borrow_mut() = Some(ws);
+    }
+
+    fn retry(&self) {
+        let ms = self.0.retry_ms.get();
+        self.0.retry_ms.set((ms * 2).min(8000));
+        let me = self.clone();
+        gloo_timers::callback::Timeout::new(ms, move || me.open_socket()).forget();
+    }
+
+    fn receive(&self, msg: ToClient) {
+        match msg {
+            ToClient::Welcome { peer } => {
+                self.0.peer.set(Some(peer));
+                self.set_status(Status::Online);
+                let ids: Vec<DocId> = self.0.docs.borrow().keys().cloned().collect();
+                for id in ids {
+                    self.join(&id);
+                }
+            }
+            ToClient::Synced { doc: id, bytes, version_vector } => {
+                let (ours, presence) = {
+                    let docs = self.0.docs.borrow();
+                    let Some(d) = docs.get(&id) else { return };
+                    if !bytes.is_empty() {
+                        let _ = d.doc.import(&bytes);
+                    }
+                    // Whatever was made here (offline too) that the node lacks.
+                    let theirs = VersionVector::decode(&version_vector).unwrap_or_default();
+                    let ours = d.doc.export(ExportMode::updates(&theirs)).unwrap_or_default();
+                    if let Ok(mut o) = d.outbox.lock() {
+                        o.clear();
+                    }
+                    (ours, d.my_presence.clone())
+                };
+                if !ours.is_empty() {
+                    self.send(&ToNode::Update { doc: id.clone(), bytes: ours });
+                }
+                if let Some(json) = presence {
+                    self.send(&ToNode::Presence { doc: id.clone(), json });
+                }
+                self.changed(&id);
+            }
+            ToClient::Update { doc: id, bytes } => {
+                let ok = self.0.docs.borrow().get(&id).map(|d| d.doc.import(&bytes).is_ok());
+                if ok == Some(true) {
+                    self.changed(&id);
+                }
+            }
+            ToClient::Presence { doc, peer, name, json } => {
+                self.emit(Event::Presence { doc, peer, name, json });
+            }
+            ToClient::Docs { prefix, docs } => self.emit(Event::Docs { prefix, docs }),
+            ToClient::Error { .. } => {}
+        }
+    }
+}
+
+fn key(id: &str) -> String {
+    format!("drive:doc:{id}")
+}
+
+fn guest_name() -> String {
+    const N: [&str; 12] = [
+        "Otter", "Heron", "Lynx", "Robin", "Maple", "Comet", "Pike", "Wren", "Fern", "Juniper", "Basil", "Sage",
+    ];
+    let i = (js_sys::Math::random() * N.len() as f64) as usize % N.len();
+    format!("Guest {}", N[i])
+}

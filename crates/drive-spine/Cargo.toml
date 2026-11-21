@@ -1,0 +1,9 @@
+[package]
+name = "drive-spine"
+description = "Drive's spine, typed: the one inbox of tasks and the one calendar every app writes to"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+loro.workspace = true
