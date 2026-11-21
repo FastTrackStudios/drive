@@ -107,9 +107,10 @@ async fn pass(rooms: &Rooms, org: &str, st: &mut State) {
         {
             st.scheduled.insert(r.id.clone(), now);
             Some(r.mode == Mode::Live)
-        } else if r.enabled && st.seen_rules.get(&r.id) != Some(&sig(r)) {
-            Some(r.mode == Mode::Live)
-        } else if r.enabled && r.trigger.on_change && tree_changed {
+        } else if r.enabled
+            && (st.seen_rules.get(&r.id) != Some(&sig(r)) || (r.trigger.on_change && tree_changed))
+        {
+            // Switched on, made live or edited; or the tree changed.
             Some(r.mode == Mode::Live)
         } else {
             None

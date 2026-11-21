@@ -1473,10 +1473,10 @@ fn ConditionRow(
             button {
                 class: "x",
                 onclick: move |_| {
-                    if let Some(g) = draft.write().when.groups.get_mut(gi) {
-                        if ci < g.conditions.len() {
-                            g.conditions.remove(ci);
-                        }
+                    if let Some(g) = draft.write().when.groups.get_mut(gi)
+                        && ci < g.conditions.len()
+                    {
+                        g.conditions.remove(ci);
                     }
                 },
                 "×"
