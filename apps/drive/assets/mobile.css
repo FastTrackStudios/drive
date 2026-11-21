@@ -1,0 +1,38 @@
+/* Drive on a phone (crate::mobile): app-shell draws the pill, the round
+   button, the drawer and the sheets; this is Drive's own content in them. */
+
+/* The inspector in its sheet: the in-tab one stays hidden on a phone. */
+.insheet .inspector, .insheet .tab.inspecting .inspector {
+  display: flex !important; position: static; max-height: none; border: 0; border-radius: 0;
+  box-shadow: none; padding: 4px 4px 16px; background: transparent;
+}
+.insheet .inspector .ihead { display: none; }
+
+/* Quick Look full screen on a phone, over the pill and the bar. */
+.fullview.phone { position: fixed; inset: 0; z-index: 80; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.fvbody.swiped { padding: 0; overflow: hidden; }
+.fvswipe { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px; }
+
+/* The uploads' accessory. */
+.uploads { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.uploads .upicon { width: 22px; height: 22px; flex: none; }
+.uploads .upmid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.uploads .upline { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uploads .upbar { height: 4px; border-radius: 2px; background: var(--as-border); overflow: hidden; }
+.uploads .upbar i { display: block; height: 100%; background: var(--as-accent); transition: width .2s; }
+
+/* The naming and projects sheets. */
+.nameform { display: flex; flex-direction: column; gap: 12px; padding: 4px 4px 12px; }
+.nameinput { height: 44px; border-radius: 10px; border: 1px solid var(--as-border); background: var(--as-bg); color: var(--as-text); padding: 0 12px; font: inherit; font-size: 16px; outline: none; }
+.nameinput:focus { border-color: var(--as-accent); }
+.nameform .primary.wide { height: 44px; justify-content: center; }
+.sheetlist { display: flex; flex-direction: column; padding-bottom: 8px; }
+.sheetrow { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 10px; border-radius: 12px; font-size: 16px; color: var(--as-text); background: none; border: 0; text-align: left; }
+.sheetrow:active { background: var(--as-selected); }
+.sheetrow .sicon { width: 22px; height: 22px; }
+.sheetlist .hint { color: var(--as-muted); padding: 8px 10px; }
+
+@media (max-width: 599px) {
+  /* app-shell's phone layout (below 600 points): its sheet holds the inspector. */
+  .tab.picked .inspector { display: none; }
+}

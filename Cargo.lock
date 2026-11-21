@@ -163,10 +163,11 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "app-shell"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/app-shell?rev=0f6d85b9d5007ae93a8bb4052406d8356969a98d#0f6d85b9d5007ae93a8bb4052406d8356969a98d"
+source = "git+https://github.com/FastTrackStudios/app-shell?tag=v0.2.0#db64971573d3f25d47ddf56ee91f79039b4f0e10"
 dependencies = [
  "dioxus",
  "futures-channel",
+ "futures-timer",
  "futures-util",
  "serde",
  "thiserror 2.0.21",

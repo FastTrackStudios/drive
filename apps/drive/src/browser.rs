@@ -580,52 +580,25 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
         })
         .collect();
 
+    // Through the shared uploads: their progress is the phone's accessory
+    // too (crate::mobile).
+    let uploads = crate::mobile::use_uploads();
     let upload = {
         let files = files.clone();
         let reg = reg.clone();
         move |e: FormEvent| {
-            let files = files.clone();
-            let reg = reg.clone();
-            async move {
-                for file in e.files() {
-                    let name = file.name();
-                    status.set(format!("Uploading {name}…"));
-                    let Ok(bytes) = file.read_bytes().await else {
-                        continue;
-                    };
-                    let hash = drive_files::hash::of_bytes(&bytes);
-                    let body = js_sys::Uint8Array::from(bytes.as_ref());
-                    let mut put = gloo_net::http::Request::put(&format!("/blobs/{hash}"));
-                    if let Some(b) = drive_dioxus::auth::bearer() {
-                        put = put.header("authorization", &b);
-                    }
-                    let sent = put.body(body);
-                    match sent {
-                        Ok(req) => match req.send().await {
-                            Ok(r) if r.ok() => {
-                                files.edit(|d| {
-                                    let id = match tree::lookup(d, cur, &name) {
-                                        Some(x) if !x.dir => Some(x.id),
-                                        Some(_) => None,
-                                        None => tree::create_file(d, cur, &name).ok(),
-                                    };
-                                    if let Some(id) = id {
-                                        let _ = tree::set_content(d, id, bytes.len() as u64, &hash);
-                                    }
-                                });
-                                reg.edit(|d| {
-                                    let _ = space::set_held(d, "node", &hash, Some("stored"));
-                                });
-                                status.set(format!("Uploaded {name}"));
-                            }
-                            _ => status.set(format!("The node refused {name}")),
-                        },
-                        Err(_) => status.set(format!("Could not send {name}")),
-                    }
-                }
-            }
+            crate::mobile::upload_files(files.clone(), reg.clone(), cur, e.files(), uploads)
         }
     };
+    let up_state = (uploads.0)();
+    if up_state.busy() {
+        let line = format!("Uploading {}…", up_state.current);
+        if status() != line {
+            status.set(line);
+        }
+    } else if !up_state.said.is_empty() && status() != up_state.said {
+        status.set(up_state.said.clone());
+    }
     rsx! {
         div { class: "viewhead",
             div { class: "actions",
@@ -1132,6 +1105,11 @@ fn quick_look_key(mut nav: Nav, key: &str, columns: usize) {
     }
 }
 
+/// Quick Look's next (or previous) file: what a swipe on a phone does.
+pub fn quick_look_step(nav: Nav, forward: bool) {
+    quick_look_key(nav, if forward { "ArrowRight" } else { "ArrowLeft" }, 1);
+}
+
 /// The item `step` places on from `current` (the first one when nothing
 /// is picked), staying inside the list.
 fn step_to(items: &[Item], current: Option<&str>, step: usize, forward: bool) -> Option<Item> {
@@ -1276,9 +1254,10 @@ pub fn Preview(space: String) -> Element {
         _ => None,
     };
     let close = move |_| nav.preview.set(false);
+    let phone = app_shell::ui::use_shell().form() == app_shell::ui::FormFactor::Phone;
     rsx! {
         div {
-            class: "fullview",
+            class: if phone { "fullview phone" } else { "fullview" },
             tabindex: "0",
             onkeydown: move |e: KeyboardEvent| {
                 if e.key().to_string() == "Escape" {
@@ -1297,7 +1276,24 @@ pub fn Preview(space: String) -> Element {
                 a { class: "primary ghost", href: "{url}", "Download" }
                 button { class: "x", title: "Close (Esc)", onclick: close, "✕" }
             }
-            div { class: "fvbody",
+            div { class: if phone { "fvbody swiped" } else { "fvbody" },
+                if phone {
+                    crate::mobile::QuickLookSwipe { nav,
+                        div { class: "fvswipe",
+                            drive_view::Viewer {
+                                key: "{url}",
+                                kind: item.kind.id.clone(),
+                                parent: item.kind.parent.clone(),
+                                name: item.name.clone(),
+                                url: url.clone(),
+                                size: item.size,
+                                bearer: drive_dioxus::auth::bearer(),
+                                peaks: sidecar_url(&item, &space, drive_sidecars::Kind::Peaks),
+                                poster: sidecar_url(&item, &space, drive_sidecars::Kind::Thumb1024),
+                            }
+                        }
+                    }
+                } else {
                 drive_view::Viewer {
                     key: "{url}",
                     kind: item.kind.id.clone(),
@@ -1311,6 +1307,7 @@ pub fn Preview(space: String) -> Element {
                     on_pdf_edit,
                     peaks: sidecar_url(&item, &space, drive_sidecars::Kind::Peaks),
                     poster: sidecar_url(&item, &space, drive_sidecars::Kind::Thumb1024),
+                }
                 }
             }
             if let Some(a) = anchor() {

@@ -7,6 +7,7 @@ mod browse;
 mod browser;
 mod catalog;
 mod files;
+mod mobile;
 mod nav;
 mod notes;
 mod orgs;
@@ -34,6 +35,7 @@ fn App() -> Element {
         document::Meta { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" }
         document::Stylesheet { href: STYLE }
         document::Stylesheet { href: tags::STYLE }
+        document::Stylesheet { href: mobile::STYLE }
         DriveProvider { shell::Browser {} }
     }
 }
