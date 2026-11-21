@@ -176,8 +176,10 @@ async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
     out
 }
 
-/// `?space=&q=&exts=&limit=`: files and folders whose names hold every
-/// word; with `exts` (`wav,aif`), only files with one of those extensions.
+/// `?space=&q=&exts=&sampled=&limit=`: files and folders whose names hold
+/// every word; with `exts` (`wav,aif`), only files with one of those
+/// extensions; with `sampled` (hashes, comma-separated), only files with
+/// one of those contents (what tags are on).
 pub async fn search(
     State(c): State<Catalog>,
     Query(p): Q,
@@ -185,10 +187,11 @@ pub async fn search(
     let space_id = q(&p, "space");
     let limit = q(&p, "limit").parse().unwrap_or(100);
     let exts: Vec<String> = q(&p, "exts").split(',').map(str::to_string).collect();
+    let sampled: Vec<String> = q(&p, "sampled").split(',').map(str::to_string).collect();
     let found = c
         .rooms
         .store
-        .search(space_id, q(&p, "q"), &exts, limit)
+        .search_with(space_id, q(&p, "q"), &exts, &sampled, limit)
         .await
         .map_err(fail)?;
     Ok(Json(
