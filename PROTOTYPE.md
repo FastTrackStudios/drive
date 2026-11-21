@@ -16,7 +16,7 @@ and each app's web build, from one address:
 | `/frame/` | Frame: a multiplayer design app for control surfaces | `../frame-app` |
 
 On THEBATTLESHIP it runs as the user service `drive-node` (port 8096),
-served on the tailnet at `https://thebattleship.tail666c4b.ts.net:9444/`.
+served on the tailnet at `https://workstation.example.ts.net:9444/`.
 
 ```sh
 cargo build -p drive-node --release
