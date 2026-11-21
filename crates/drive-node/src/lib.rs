@@ -1,6 +1,7 @@
 //! `drive-node`: an always-on Drive peer. It keeps every document it is
 //! given (in Turso), passes live edits and presence between the peers that
-//! have a document open, keeps blobs, and serves apps' web builds.
+//! have a document open, keeps blobs, serves apps' web builds, and serves
+//! the sites agents build (`/sites/<space>/<id>/`).
 
 pub mod auth;
 pub mod backup;
@@ -8,6 +9,7 @@ pub mod catalog;
 pub mod migrate;
 pub mod rooms;
 pub mod share;
+pub mod sites;
 pub mod store;
 
 use std::path::{Path, PathBuf};
@@ -267,6 +269,10 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                     "/s/{space}/{token}/comments",
                     get(share::comments).post(share::comment),
                 )
+                // Built sites: public, like share links.
+                .route("/sites/{space}/{id}", get(sites::root))
+                .route("/sites/{space}/{id}/", get(sites::index))
+                .route("/sites/{space}/{id}/{*path}", get(sites::file))
                 .with_state(catalog),
         )
         .merge(

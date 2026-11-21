@@ -11,6 +11,8 @@
 //! - [`projects`]: projects whose parts are folders on any computer, and
 //!   what of them is kept on the node to be had from anywhere.
 //! - [`protect`]: copies across every index, and policies (3-2-1).
+//! - [`sites`]: static sites built from folders of the tree (their
+//!   settings, last build, and what the node serves).
 //! - [`space`]: the space's registry (`drive:space:<space>`): its devices,
 //!   storages, pairing invites, and which device holds which blob.
 //! - [`storage`]: a storage's full configuration, credentials included, as
@@ -24,6 +26,7 @@ pub mod index;
 pub mod placement;
 pub mod projects;
 pub mod protect;
+pub mod sites;
 pub mod space;
 #[cfg(feature = "storage")]
 pub mod storage;

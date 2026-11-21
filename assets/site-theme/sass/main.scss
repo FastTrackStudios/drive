@@ -1,0 +1,245 @@
+// Drive's base site theme: a readable column, sections in a sidebar (a menu
+// on a phone), dark and light (the system's, or the reader's choice).
+// Sites override any of it with a file of the same path in their override
+// folder; `_site.scss` is the place for a site's own colours.
+
+:root {
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  --measure: 44rem;
+  --nav-width: 15rem;
+
+  --bg: #fbfaf7;
+  --bg-raised: #ffffff;
+  --text: #1d1b18;
+  --muted: #6b665d;
+  --border: #e4e0d6;
+  --link: #8a3b12;
+  --link-hover: #5e2408;
+  --accent: #c2581f;
+  --code-bg: #f1eee6;
+}
+
+@mixin dark {
+  --bg: #15161a;
+  --bg-raised: #1c1e23;
+  --text: #e7e4dc;
+  --muted: #9a958a;
+  --border: #2c2f36;
+  --link: #f0a46c;
+  --link-hover: #ffc796;
+  --accent: #f0a46c;
+  --code-bg: #23262c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { @include dark; }
+}
+:root[data-theme="dark"] { @include dark; }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { font-size: 17px; -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.65;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a { color: var(--link); text-underline-offset: 0.18em; }
+a:hover { color: var(--link-hover); }
+
+// Header: title, search, theme switch.
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.site-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.site-search { flex: 1; max-width: 26rem; margin-left: auto; min-width: 0; }
+.site-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.theme-toggle {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 0.5rem;
+  width: 2.1rem;
+  height: 2.1rem;
+  font-size: 1rem;
+  cursor: pointer;
+  flex: none;
+}
+.theme-toggle .icon-light { display: none; }
+:root[data-theme="dark"] .theme-toggle .icon-dark { display: none; }
+:root[data-theme="dark"] .theme-toggle .icon-light { display: inline; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .icon-dark { display: none; }
+  :root:not([data-theme="light"]) .theme-toggle .icon-light { display: inline; }
+}
+
+// Layout: the sections beside the page.
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--nav-width) minmax(0, 1fr);
+  gap: 2.5rem;
+  max-width: calc(var(--measure) + var(--nav-width) + 6rem);
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.site-nav { font-size: 0.92rem; }
+.nav-menu > summary {
+  list-style: none;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.75rem;
+  margin-bottom: 0.6rem;
+  pointer-events: none;
+}
+.nav-menu > summary::-webkit-details-marker { display: none; }
+.site-nav ul { list-style: none; margin: 0; padding: 0; }
+.site-nav li { margin: 0.15rem 0; }
+.site-nav a { color: var(--text); text-decoration: none; display: block; padding: 0.15rem 0; }
+.site-nav a:hover { color: var(--link); }
+.nav-section { margin-top: 0.8rem !important; }
+.nav-section-title { font-weight: 600; }
+.nav-section ul { padding-left: 0.75rem; border-left: 1px solid var(--border); margin-top: 0.2rem; }
+.nav-section ul a { color: var(--muted); }
+
+.content { min-width: 0; max-width: var(--measure); }
+
+.page-title {
+  font-family: var(--font-serif);
+  font-size: 2.2rem;
+  line-height: 1.2;
+  margin: 0 0 1.25rem;
+}
+
+// Markdown.
+.prose { font-size: 1.02rem; }
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  font-family: var(--font-serif);
+  line-height: 1.25;
+  margin: 2rem 0 0.75rem;
+}
+.prose > :first-child { margin-top: 0; }
+.prose h2 { font-size: 1.5rem; }
+.prose h3 { font-size: 1.2rem; }
+.prose img, .prose picture, .prose svg { max-width: 100%; height: auto; border-radius: 0.4rem; }
+.prose blockquote {
+  margin: 1.25rem 0;
+  padding: 0.25rem 1rem;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3em;
+}
+.prose pre {
+  background: var(--code-bg);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+}
+.prose pre code { background: none; padding: 0; }
+.prose table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
+.prose th, .prose td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
+.prose hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+.prose .missing-link { color: var(--muted); border-bottom: 1px dashed var(--muted); }
+
+.tags { margin: -0.5rem 0 1.25rem; }
+.tag {
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 0.1rem 0.55rem;
+  margin-right: 0.35rem;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--muted);
+}
+
+// Lists of sections and pages.
+.card-list {
+  list-style: none;
+  padding: 0;
+  margin: 2rem 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.75rem;
+}
+.card {
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  border-radius: 0.6rem;
+  padding: 0.9rem 1rem;
+}
+.card-title { font-weight: 600; text-decoration: none; display: block; }
+.card-meta { color: var(--muted); font-size: 0.85rem; }
+.list-heading { font-family: var(--font-serif); font-size: 1.3rem; margin: 2rem 0 0.5rem; }
+.page-list { list-style: none; padding: 0; margin: 0; }
+.page-list li { padding: 0.55rem 0; border-bottom: 1px solid var(--border); }
+.page-list li:last-child { border-bottom: none; }
+.page-list a { font-weight: 500; text-decoration: none; }
+.page-desc { display: block; color: var(--muted); font-size: 0.9rem; }
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 1rem 1.25rem;
+  text-align: center;
+}
+
+// A phone: the sections become a menu above the page.
+@media (max-width: 760px) {
+  html { font-size: 16px; }
+  .site-header { flex-wrap: wrap; gap: 0.6rem; padding: 0.6rem 0.9rem; }
+  .site-title { flex: 1; }
+  .site-search { order: 3; flex-basis: 100%; max-width: none; margin-left: 0; }
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; padding: 1rem 0.9rem 2rem; }
+  .nav-menu { border: 1px solid var(--border); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--bg-raised); }
+  .nav-menu > summary { pointer-events: auto; cursor: pointer; margin: 0; }
+  .nav-menu[open] > summary { margin-bottom: 0.5rem; }
+  .page-title { font-size: 1.75rem; }
+}
