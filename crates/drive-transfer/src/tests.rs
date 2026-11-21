@@ -264,3 +264,59 @@ fn addresses_round_trip_as_text() {
     assert_eq!(addr_from_str(&addr_to_string(&a)).unwrap(), a);
     assert_eq!(addr_from_str(&id.to_string()).unwrap().id, id);
 }
+
+/// Dialing through n0's public relays only (direct addresses left out of
+/// the address the fetcher dials; iroh may then find a direct path on its
+/// own): needs the internet, so not in the default run.
+/// `cargo test -p drive-transfer -- --ignored`.
+#[tokio::test]
+#[ignore]
+async fn through_n0s_relay() {
+    let t = tempfile::tempdir().unwrap();
+    let n0 = Settings::default();
+    let f = Arc::new(
+        Fetcher::start(&t.path().join("node/iroh.key"), &n0)
+            .await
+            .unwrap(),
+    );
+    let id = f.id();
+    let p = Provider::start(&t.path().join("agent"), &n0, Arc::new(move |x| *x == id))
+        .await
+        .unwrap();
+    p.online(std::time::Duration::from_secs(10)).await;
+    let data = noise(32 << 20, 5);
+    let file = t.path().join("memo.wav");
+    std::fs::write(&file, &data).unwrap();
+    let got = p.provide(&file).await.unwrap();
+    let full = p.addr();
+    let relay_only = EndpointAddr::from_parts(
+        full.id,
+        full.addrs
+            .iter()
+            .filter(|a| matches!(a, iroh::TransportAddr::Relay(_)))
+            .cloned(),
+    );
+    assert!(!relay_only.addrs.is_empty(), "no relay: {full:?}");
+    let src = Source {
+        addr: relay_only,
+        hash: got.hash.parse().unwrap(),
+        size: got.size,
+    };
+    let began = std::time::Instant::now();
+    let mut s = std::pin::pin!(f.stream(src.clone(), 0, u64::MAX));
+    let mut n = 0;
+    let mut first = None;
+    while let Some(b) = s.next().await {
+        n += b.unwrap().len();
+        first.get_or_insert(began.elapsed());
+    }
+    let total = began.elapsed();
+    assert_eq!(n, data.len());
+    tracing::info!(
+        first_byte_ms = first.unwrap().as_millis() as u64,
+        total_ms = total.as_millis() as u64,
+        path = f.path_kind(&src.addr.id),
+        "through a relay"
+    );
+    p.shutdown().await;
+}

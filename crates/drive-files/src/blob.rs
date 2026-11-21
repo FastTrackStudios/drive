@@ -94,6 +94,39 @@ impl BlobStore {
         })
     }
 
+    /// A blob's size, if this store has it.
+    pub async fn size(&self, hash: &str) -> Result<Option<u64>, Error> {
+        if !valid_hash(hash) {
+            return Err(Error::BadHash(hash.into()));
+        }
+        match self.op.stat(&key(hash)).await {
+            Ok(m) => Ok(Some(m.content_length())),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Bytes `start..end` of a blob as the storage has them. Not checked
+    /// against the hash (a range cannot be without the blob's outboard):
+    /// for a store whose blobs were checked as they were written (the
+    /// node's own), so a player can seek without reading the whole blob.
+    pub async fn read_range(
+        &self,
+        hash: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<bytes::Bytes, Error> {
+        if !valid_hash(hash) {
+            return Err(Error::BadHash(hash.into()));
+        }
+        Ok(self
+            .op
+            .read_with(&key(hash))
+            .range(start..end)
+            .await?
+            .to_bytes())
+    }
+
     pub async fn delete(&self, hash: &str) -> Result<(), Error> {
         Ok(self.op.delete(&key(hash)).await?)
     }
@@ -200,5 +233,18 @@ mod tests {
         assert!(matches!(w.finish().await, Err(Error::Corrupt(_))));
         assert!(!s.has(&other).await.unwrap());
         assert_eq!(s.list().await.unwrap(), vec![h]);
+    }
+
+    #[tokio::test]
+    async fn ranges_and_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let op =
+            Operator::new(opendal::services::Fs::default().root(&dir.path().to_string_lossy()))
+                .unwrap();
+        let s = BlobStore::new(op);
+        let h = s.put(b"0123456789".to_vec()).await.unwrap();
+        assert_eq!(s.size(&h).await.unwrap(), Some(10));
+        assert_eq!(s.size(&"a".repeat(64)).await.unwrap(), None);
+        assert_eq!(&s.read_range(&h, 2, 5).await.unwrap()[..], b"234");
     }
 }
