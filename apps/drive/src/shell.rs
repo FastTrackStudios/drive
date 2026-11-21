@@ -23,6 +23,7 @@ use crate::browser::{
     Content, Inspector, Preview, app_label, device_icon, get, online, plural, project_icon, s,
     use_quick_look,
 };
+use crate::mobile::{self, MobileHost, Naming};
 use crate::nav::{
     At, InTab, Navs, Place, Sort, Store, TAB_KIND, View, new_pane, storage_get, storage_set,
     use_nav,
@@ -126,6 +127,13 @@ pub fn Browser() -> Element {
     });
     let navs = use_context_provider(|| Navs::new(store));
     use_quick_look(navs);
+    // A phone's pill, round button and uploads (crate::mobile).
+    let uploads = mobile::use_uploads_provider();
+    let shell_slot = use_hook(|| CopyValue::new(None::<Shell>));
+    let naming = use_signal(|| None::<Naming>);
+    let destination = mobile::destination_of(&(navs.active().place)());
+    let projects_space = space.clone();
+    let accessory = mobile::uploads_showing(uploads).then(|| rsx! { mobile::UploadAccessory {} });
     let kinds = use_hook(|| {
         TabKinds::new().with(
             TabKind::new(TAB_KIND, "Place", |ctx: TabCtx| {
@@ -168,7 +176,17 @@ pub fn Browser() -> Element {
                 },
                 top_bar: rsx! {
                     DriveTopBar {}
+                    MobileHost { shell_slot, naming }
                 },
+                destinations: mobile::destinations(),
+                destination,
+                on_destination: move |d: String| {
+                    if let Some(sh) = *shell_slot.peek() {
+                        mobile::go_destination(sh, navs.active_now(), &d, mobile::projects_sheet(projects_space.clone()));
+                    }
+                },
+                action: mobile::new_action(shell_slot, naming),
+                accessory,
             }
         }
     }
@@ -186,6 +204,7 @@ fn PlaceTab(pane: String, active: bool) -> Element {
     // A project another org shared is shown in its own org's registry.
     let view = (nav.within)().unwrap_or(org);
     let picked = (nav.selected)().is_some();
+    let phone = use_shell().form() == app_shell::ui::FormFactor::Phone;
     let class = format!(
         "tab{}{}",
         if (nav.inspector)() { " inspecting" } else { "" },
@@ -197,6 +216,9 @@ fn PlaceTab(pane: String, active: bool) -> Element {
                 Content { key: "{view}", space: view.clone() }
             }
             Inspector { key: "{view}", space: view.clone() }
+            if phone && active {
+                mobile::InspectorSheet { nav, space: view.clone(), open: picked && !(nav.preview)() }
+            }
             if (nav.preview)() && picked {
                 Preview { key: "{view}", space: view.clone() }
             }
@@ -458,6 +480,23 @@ fn DriveTopBar() -> Element {
                 div { class: "who",
                     ConnectionStatus {}
                     Avatars { doc: spine_doc.clone() }
+                }
+            },
+            phone_actions: rsx! {
+                if files {
+                    ToolbarButton {
+                        icon: if grid { icons::LIST } else { icons::GRID },
+                        label: if grid { "List" } else { "Grid" },
+                        on_press: move |()| nav.set_view(if grid { View::List } else { View::Grid }),
+                    }
+                    div {
+                        class: "tbwrap",
+                        onclick: move |e: MouseEvent| {
+                            let p = e.client_coordinates();
+                            sort_menu(p.x, p.y);
+                        },
+                        ToolbarButton { icon: SORT, label: "Sort", on_press: move |()| {} }
+                    }
                 }
             },
             on_back: move |()| nav.step(false),
