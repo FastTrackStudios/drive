@@ -35,6 +35,7 @@ use serde::Serialize;
 pub mod auth;
 pub mod comments;
 mod keyed;
+pub mod mount;
 pub mod text;
 pub mod ui;
 
@@ -272,6 +273,25 @@ fn SignInScreen(issuer: auth::Issuer) -> Element {
     }
 }
 
+/// The node's sync socket for an app under a mount (`None`: the page's
+/// own host, at the root).
+fn sync_url() -> Option<String> {
+    if mount::get().is_empty() {
+        return None;
+    }
+    let loc = web_sys::window()?.location();
+    let proto = if loc.protocol().ok()? == "https:" {
+        "wss"
+    } else {
+        "ws"
+    };
+    Some(format!(
+        "{proto}://{}{}",
+        loc.host().ok()?,
+        mount::api("/sync")
+    ))
+}
+
 #[component]
 fn BootMessage(why: String) -> Element {
     rsx! {
@@ -283,7 +303,7 @@ fn BootMessage(why: String) -> Element {
                     style: BUTTON,
                     onclick: move |_| {
                         if let Some(w) = web_sys::window() {
-                            let _ = w.location().set_href("/");
+                            let _ = w.location().set_href(&mount::page("/"));
                         }
                     },
                     "Try again"
@@ -302,7 +322,7 @@ fn Connected(
     children: Element,
 ) -> Element {
     let ctx = use_context_provider(|| {
-        let (drive, rx) = Drive::connect_with(None, token.clone());
+        let (drive, rx) = Drive::connect_with(sync_url(), token.clone());
         let ctx = DriveCtx {
             status: Signal::new(drive.status()),
             me: Signal::new(drive.me()),

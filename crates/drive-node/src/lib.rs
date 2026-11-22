@@ -295,7 +295,9 @@ async fn guard_sidecars(
 }
 
 /// The node's routes: `/sync` (the websocket), `/health`, and each app's
-/// web build under its prefix (`""` for the root).
+/// web build under its prefix (`""` for the root). An app under a prefix
+/// reaches the node under `<prefix>/api` as well (drive-dioxus `mount`),
+/// so a site can hand the node that one path.
 pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) -> Router {
     std::fs::create_dir_all(data).expect("the data folder can be made");
     let store = store::Store::open(&data.join("drive.db"))
@@ -388,7 +390,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         sc: sidecar_store,
         rooms: rooms.clone(),
     };
-    let mut app = Router::new()
+    let api = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
         .with_state(rooms.clone())
@@ -487,10 +489,21 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .layer(axum::extract::DefaultBodyLimit::max(2 << 30))
                 .with_state(blobs),
         );
+    mount(api, apps)
+}
+
+/// The node's routes with each app mounted: its web build under its
+/// prefix, and the node's own routes again under `<prefix>/api`.
+fn mount(api: Router, apps: Vec<(String, PathBuf)>) -> Router {
+    let mut app = api.clone();
     // Longest prefixes first, so "/" does not swallow "/canvas".
     let mut apps = apps;
     apps.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
     for (prefix, dir) in apps {
+        let prefix = prefix.trim_end_matches('/').to_string();
+        if !prefix.is_empty() {
+            app = app.nest(&format!("{prefix}/api"), api.clone());
+        }
         let index = dir.join("index.html");
         let serve = ServeDir::new(&dir).fallback(ServeFile::new(index));
         if prefix.is_empty() {
@@ -805,6 +818,53 @@ mod range_tests {
         assert_eq!(byte_range("bytes=5-1", 1000), None);
         assert_eq!(byte_range("items=0-1", 1000), None);
         assert_eq!(byte_range("bytes=0-0", 0), None);
+    }
+}
+
+#[cfg(test)]
+mod mount_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    async fn get_body(app: &Router, url: &str) -> (u16, String) {
+        let r = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(url)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = r.status().as_u16();
+        let b = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8_lossy(&b).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_mounted_app_reaches_the_node_under_its_mount() {
+        let (root, studio) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(root.path().join("index.html"), "root app").unwrap();
+        std::fs::write(studio.path().join("index.html"), "studio app").unwrap();
+        let api = Router::new().route("/health", get(|| async { "ok" }));
+        let app = mount(
+            api,
+            vec![
+                ("/".into(), root.path().into()),
+                ("/studio".into(), studio.path().into()),
+            ],
+        );
+        assert_eq!(get_body(&app, "/health").await, (200, "ok".into()));
+        assert_eq!(
+            get_body(&app, "/studio/api/health").await,
+            (200, "ok".into())
+        );
+        assert_eq!(get_body(&app, "/studio/set/x").await.1, "studio app");
+        assert_eq!(
+            get_body(&app, "/studio/auth/callback").await.1,
+            "studio app"
+        );
+        assert_eq!(get_body(&app, "/elsewhere").await.1, "root app");
     }
 }
 

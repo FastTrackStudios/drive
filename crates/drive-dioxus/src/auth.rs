@@ -56,7 +56,7 @@ fn origin() -> String {
 }
 
 fn redirect_uri() -> String {
-    format!("{}/auth/callback", origin())
+    format!("{}{}", origin(), crate::mount::page("/auth/callback"))
 }
 
 /// 32 random bytes, hex (`crypto.getRandomValues`: there on every page,
@@ -161,7 +161,7 @@ pub fn begin(issuer: &Issuer) {
 pub fn is_callback() -> bool {
     web_sys::window()
         .and_then(|w| w.location().pathname().ok())
-        .is_some_and(|p| p == "/auth/callback")
+        .is_some_and(|p| p == crate::mount::page("/auth/callback"))
 }
 
 fn query(name: &str) -> Option<String> {
@@ -206,7 +206,7 @@ pub async fn finish() -> Result<(), String> {
     }
     if let Some(w) = web_sys::window() {
         let back = if pending.return_to.contains("/auth/callback") {
-            "/".to_string()
+            crate::mount::page("/")
         } else {
             pending.return_to
         };
@@ -284,7 +284,8 @@ async fn token_request(
     })
 }
 
-/// One HTTP request from the browser: its status and JSON body.
+/// One HTTP request from the browser: its status and JSON body. A root
+/// path is the node's, reached under the app's mount (`mount::api`).
 pub async fn fetch(
     method: &str,
     url: &str,
@@ -302,12 +303,13 @@ pub async fn fetch(
         init.set_body(&wasm_bindgen::JsValue::from_str(b));
     }
     let w = web_sys::window()?;
-    let resp: web_sys::Response =
-        wasm_bindgen_futures::JsFuture::from(w.fetch_with_str_and_init(url, &init))
-            .await
-            .ok()?
-            .dyn_into()
-            .ok()?;
+    let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(
+        w.fetch_with_str_and_init(&crate::mount::api(url), &init),
+    )
+    .await
+    .ok()?
+    .dyn_into()
+    .ok()?;
     let status = resp.status();
     let text = wasm_bindgen_futures::JsFuture::from(resp.text().ok()?)
         .await
