@@ -99,12 +99,23 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let mut events = a.drive.events();
     a.report_volumes();
 
-    for loc in a.my_locations() {
-        if let Err(e) = a.index_location(&loc).await {
-            tracing::warn!(location.name = %loc.name, error = %e, "a location did not index");
-        }
+    // Indexing runs beside the loop, one pass at a time: a big location
+    // (millions of files) takes hours to walk, and the node's fetches,
+    // browses and sidecars must be answered meanwhile.
+    let indexing = Arc::new(tokio::sync::Mutex::new(()));
+    let (indexed_tx, mut indexed) = mpsc::unbounded_channel::<String>();
+    {
+        let (a, view, lock) = (a.clone(), view.clone(), indexing.clone());
+        tokio::spawn(async move {
+            let _pass = lock.lock().await;
+            for loc in a.my_locations() {
+                if let Err(e) = a.index_location(&loc).await {
+                    tracing::warn!(location.name = %loc.name, error = %e, "a location did not index");
+                }
+            }
+            refresh_view(&a, &view).await;
+        });
     }
-    refresh_view(&a, &view).await;
 
     // Changes under a local location: reindex it a few seconds after they
     // stop. Only small locations on local disks are watched live (see
@@ -158,6 +169,8 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // Sites: checked a few seconds after their pages, theme or settings
     // change, and every minute (new sites, builds asked for elsewhere).
     let building = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let placing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let viewing = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut sites_due: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + Duration::from_secs(3));
     let mut last_sites = tokio::time::Instant::now();
@@ -239,6 +252,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(_) => break,
             },
+            Some(id) = indexed.recv() => {
+                rules_due.push(id);
+            }
             Some(id) = changed.recv() => {
                 pending.insert(id, tokio::time::Instant::now() + Duration::from_secs(5));
             }
@@ -248,10 +264,16 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 for id in due {
                     pending.remove(&id);
                     if let Some(loc) = a.my_locations().into_iter().find(|l| l.id == id) {
-                        match a.index_location(&loc).await {
-                            Ok(_) => rules_due.push(loc.id.clone()),
-                            Err(e) => tracing::warn!(location.name = %loc.name, error = %e, "a location did not reindex"),
-                        }
+                        let (a, lock, tx) = (a.clone(), indexing.clone(), indexed_tx.clone());
+                        tokio::spawn(async move {
+                            let _pass = lock.lock().await;
+                            match a.index_location(&loc).await {
+                                Ok(_) => {
+                                    let _ = tx.send(loc.id.clone());
+                                }
+                                Err(e) => tracing::warn!(location.name = %loc.name, error = %e, "a location did not reindex"),
+                            }
+                        });
                     }
                 }
                 if (!rules_due.is_empty() || now.duration_since(last_rules) > Duration::from_secs(10))
@@ -271,18 +293,33 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                         ruling.store(false, std::sync::atomic::Ordering::SeqCst);
                     });
                 }
-                if now.duration_since(last_full) > Duration::from_secs(600) {
+                // The full pass, unless one is still running.
+                if now.duration_since(last_full) > Duration::from_secs(600)
+                    && let Ok(pass) = indexing.clone().try_lock_owned()
+                {
                     last_full = now;
                     a.report_volumes();
-                    for loc in a.my_locations() {
-                        let _ = a.index_location(&loc).await;
-                    }
+                    let a = a.clone();
+                    tokio::spawn(async move {
+                        let _pass = pass;
+                        for loc in a.my_locations() {
+                            let _ = a.index_location(&loc).await;
+                        }
+                    });
                 }
-                if now.duration_since(last_place) > Duration::from_secs(60) {
+                // Placement reads every index (millions of entries on a big
+                // disk): beside the loop, one pass at a time.
+                if now.duration_since(last_place) > Duration::from_secs(60)
+                    && !placing.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
                     last_place = now;
-                    a.place().await;
-                    a.make_available().await;
-                    a.publish_available().await;
+                    let (a, placing) = (a.clone(), placing.clone());
+                    tokio::spawn(async move {
+                        a.place().await;
+                        a.make_available().await;
+                        a.publish_available().await;
+                        placing.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
                 }
                 if now.duration_since(last_sites) > Duration::from_secs(60) && sites_due.is_none() {
                     sites_due = Some(now);
@@ -322,7 +359,13 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     last_view = now;
                     a.announce();
                     a.publish_endpoint();
-                    refresh_view(&a, &view).await;
+                    if !viewing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        let (a, view, viewing) = (a.clone(), view.clone(), viewing.clone());
+                        tokio::spawn(async move {
+                            refresh_view(&a, &view).await;
+                            viewing.store(false, std::sync::atomic::Ordering::SeqCst);
+                        });
+                    }
                 }
             }
         }
