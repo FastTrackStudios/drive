@@ -169,13 +169,18 @@ impl Agent {
     /// Connect, open the space's documents, and wait for the node's copy
     /// (or go on with this device's own after a few seconds: offline).
     pub async fn start(dir: &Path, cfg: Config) -> Agent {
-        let drive = Drive::connect_with(
-            &cfg.node,
-            &cfg.device_name,
-            dir.join("state"),
-            cfg.token.clone(),
-        )
-        .await;
+        let author = cfg.device_name.clone();
+        let agent = Agent::start_with(dir, cfg, &author, dir.join("state")).await;
+        agent.announce();
+        agent
+    }
+
+    /// [`Agent::start`], with the name every edit records as its author in
+    /// the documents' history, its own folder for the documents' copies,
+    /// and without saying this device is here (the MCP server: an AI agent
+    /// working through this device is not its agent).
+    pub async fn start_with(dir: &Path, cfg: Config, author: &str, state: PathBuf) -> Agent {
+        let drive = Drive::connect_with(&cfg.node, author, state, cfg.token.clone()).await;
         let files_id = files_doc(&cfg.space);
         let space_id = space_doc(&cfg.space);
         let files = drive.open(&files_id).await;
@@ -196,7 +201,7 @@ impl Agent {
         // sync connection does: a node reached from another computer refuses
         // uploads (an index, a blob) without it.
         let http = http_client(cfg.token.as_deref());
-        let agent = Agent {
+        Agent {
             dir: dir.to_path_buf(),
             cfg: Mutex::new(cfg),
             drive,
@@ -209,9 +214,7 @@ impl Agent {
             http,
             busy: Mutex::new(HashSet::new()),
             provider: std::sync::OnceLock::new(),
-        };
-        agent.announce();
-        agent
+        }
     }
 
     /// Say this device is here (others see it online).

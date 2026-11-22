@@ -59,6 +59,9 @@
 //! drive-agent [--dir DIR] site build ID [--force]       # build and publish now
 //! ```
 //!
+//! AI agents (docs/agents.md): an MCP server on stdio, as this device:
+//! drive-agent [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N] [--timeout SECONDS]
+//!
 //! Sidecars (thumbnails, waveform peaks; made here from this device's files):
 //! drive-agent [--dir DIR] sidecars [--force] [--kind thumb|peaks] [--max N]
 //!                                   # make what the node lacks now (`serve` does it in the background)
@@ -74,6 +77,7 @@ mod computers;
 mod daemon;
 #[cfg(feature = "mount")]
 mod fs;
+mod mcp;
 mod placement;
 mod places;
 mod rules;
@@ -700,6 +704,9 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             settle(&a).await;
         }
         "tag" => tagging::command(dir, args).await?,
+        // An MCP server on stdio for AI agents (docs/agents.md): stdout is
+        // the protocol's, so nothing else here may print.
+        "mcp" => mcp::serve(dir, args).await?,
         "rules" => rules::command(dir, args).await?,
         "search" => {
             let words = args[1..].join(" ");

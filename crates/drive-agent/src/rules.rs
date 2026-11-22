@@ -178,7 +178,7 @@ impl Engine {
         a.commit_files();
     }
 
-    fn me(&self, a: &Agent) -> DeviceInfo {
+    pub(crate) fn me(&self, a: &Agent) -> DeviceInfo {
         let id = a.device_id();
         let d = space::devices(&a.space).into_iter().find(|d| d.id == id);
         DeviceInfo {
@@ -965,7 +965,7 @@ pub fn claim(dir: &Path) {
 }
 
 /// Whether a running `serve` (not this process) has claimed them.
-fn served(dir: &Path) -> bool {
+pub(crate) fn served(dir: &Path) -> bool {
     let Some(pid) = std::fs::read_to_string(dir.join("rules.pid"))
         .ok()
         .and_then(|s| s.trim().parse::<i32>().ok())
@@ -980,7 +980,7 @@ fn served(dir: &Path) -> bool {
 
 /// A rule written by hand may name locations, devices, projects and tags
 /// by name: they become ids.
-fn resolve_names(a: &Agent, e: &Engine, r: &mut Rule) -> Result<(), String> {
+pub(crate) fn resolve_names(a: &Agent, e: &Engine, r: &mut Rule) -> Result<(), String> {
     use drive_rules::{Action, Dest, Devices, Place, Test};
     let locs = space::locations(&a.space);
     let devs = space::devices(&a.space);

@@ -20,6 +20,7 @@ installed.
 - [docs/sidecars.md](docs/sidecars.md): thumbnails and waveforms, derived once per file content.
 - [docs/browse.md](docs/browse.md): every computer's disks, browsed live and read-only.
 - [docs/transfer.md](docs/transfer.md): file bytes between devices over iroh-blobs, by range, in place.
+- [docs/agents.md](docs/agents.md): Drive as an MCP server, so AI agents can see and organise files safely.
 - [PROTOTYPE.md](PROTOTYPE.md): the running prototype (Drive and four apps, live).
 
 Status: a working prototype (see PROTOTYPE.md); the plan is the way to the
