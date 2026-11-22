@@ -101,6 +101,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
         let dirs = a
             .cached_index(&loc.id)
             .map(|i| i.entries.iter().filter(|e| e.dir).count());
+        if drive_files::space::is_paused(&a.space, &loc.id) {
+            continue;
+        }
         if let Some(why) = crate::places::watch_refusal(std::path::Path::new(&loc.path), dirs) {
             tracing::info!(location.name = %loc.name, watch.skipped = %why, "a location is rescanned every ten minutes instead of watched");
             continue;

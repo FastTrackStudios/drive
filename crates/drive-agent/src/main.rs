@@ -20,6 +20,7 @@
 //!
 //! Every computer's files (indexed in place, searchable while it is off):
 //! drive [--dir DIR] location add NAME PATH        # a folder on this device
+//! drive [--dir DIR] location pause|resume NAME    # keep its last index, stop walking it
 //! drive [--dir DIR] location add NAME PATH --storage STORAGE   # in a storage it runs
 //! drive [--dir DIR] locations | volumes | index [NAME]
 //! drive [--dir DIR] search WORDS…                 # every device's files
@@ -599,6 +600,25 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             let a = Arc::new(start(dir).await?);
             let view = Arc::new(RwLock::new(view::View::default()));
             run_until_stopped(daemon::serve(a, view)).await?;
+        }
+        "location"
+            if matches!(args.get(1).map(String::as_str), Some("pause" | "resume")) =>
+        {
+            let pause = args.get(1).map(String::as_str) == Some("pause");
+            let who = args.get(2).ok_or("location pause|resume NAME")?.clone();
+            let a = start(dir).await?;
+            let l = space::locations(&a.space)
+                .into_iter()
+                .find(|l| l.name == who || l.id == who)
+                .ok_or(format!("no location {who}"))?;
+            space::set_paused(&a.space, &l.id, pause).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            out(if pause {
+                format!("{} is paused: its last index stays searchable; it is not walked or watched until `drive location resume`.", l.name)
+            } else {
+                format!("{} resumes: it is walked again on the next pass.", l.name)
+            });
         }
         "location" if args.get(1).map(String::as_str) == Some("add") => {
             let name = args.get(2).ok_or("location add NAME PATH")?.clone();

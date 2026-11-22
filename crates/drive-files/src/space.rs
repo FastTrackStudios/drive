@@ -434,6 +434,22 @@ pub fn set_index(
     Ok(())
 }
 
+/// Pause or resume a location: a paused one keeps its last index (still
+/// searchable, still listed) but is never walked or watched again until
+/// resumed. Nothing about its files changes either way.
+pub fn set_paused(doc: &LoroDoc, location: &str, paused: bool) -> loro::LoroResult<()> {
+    let m = doc.get_map("locations").ensure_mergeable_map(location)?;
+    m.insert("paused", paused)
+}
+
+/// Whether a location is paused (see [`set_paused`]).
+pub fn is_paused(doc: &LoroDoc, location: &str) -> bool {
+    child(&doc.get_map("locations"), location)
+        .and_then(|m| m.get("paused"))
+        .and_then(|v| v.into_value().ok())
+        .is_some_and(|v| matches!(v, loro::LoroValue::Bool(true)))
+}
+
 pub fn locations(doc: &LoroDoc) -> Vec<Location> {
     let map = doc.get_map("locations");
     let mut out: Vec<Location> = map

@@ -176,6 +176,10 @@ impl Agent {
     /// Walk one of this device's locations, publish its index to the node
     /// and record it in the registry.
     pub async fn index_location(&self, loc: &Location) -> Result<WalkStats, String> {
+        if space::is_paused(&self.space, &loc.id) {
+            tracing::debug!(location.name = %loc.name, "paused: kept the last index");
+            return Ok(WalkStats::default());
+        }
         let previous = self.cached_index(&loc.id);
         // A folder this process may not read (macOS privacy protection on a
         // background service, a drive not mounted, permissions) must never
