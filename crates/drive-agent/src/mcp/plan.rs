@@ -776,7 +776,7 @@ pub async fn apply(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     Ok(json!({
         "plan_id": id, "results": results, "proposed_rules": proposed, "by": ctx.author,
         "next": if proposed.is_empty() { "done".to_string() } else {
-            "The proposed rules are off and dry runs: show the person `rule_preview` for each; they switch them on and live in the Drive app or with drive-agent rules on|live NAME.".to_string()
+            "The proposed rules are off and dry runs: show the person `rule_preview` for each; they switch them on and live in the Drive app or with drive rules on|live NAME.".to_string()
         }
     }))
 }

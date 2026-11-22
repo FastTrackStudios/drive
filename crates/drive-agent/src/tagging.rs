@@ -1,16 +1,16 @@
-//! `drive-agent tag …`: tags and fields from the command line, for scripts
+//! `drive tag …`: tags and fields from the command line, for scripts
 //! and agents. The same document the Drive app edits (`<space>/drive:tags`),
 //! so a tag added here shows in every browser at once.
 //!
 //! ```text
-//! drive-agent tag ls                          # every tag, nested, with counts
-//! drive-agent tag ls THING                    # the tags and fields on a thing
-//! drive-agent tag add THING TAG…              # makes a tag that does not exist yet
-//! drive-agent tag rm THING TAG…
-//! drive-agent tag new NAME [--parent TAG]… [--color red] [--shorthand S] [--alias A]…
+//! drive tag ls                          # every tag, nested, with counts
+//! drive tag ls THING                    # the tags and fields on a thing
+//! drive tag add THING TAG…              # makes a tag that does not exist yet
+//! drive tag rm THING TAG…
+//! drive tag new NAME [--parent TAG]… [--color red] [--shorthand S] [--alias A]…
 //!                          [--category] [--hidden]
-//! drive-agent tag field THING NAME VALUE [--kind text|multiline|date|datetime]
-//! drive-agent tag search QUERY…               # the search language (docs/tags.md)
+//! drive tag field THING NAME VALUE [--kind text|multiline|date|datetime]
+//! drive tag search QUERY…               # the search language (docs/tags.md)
 //! ```
 //!
 //! A THING is a file on this computer (tagged by its content, so every copy

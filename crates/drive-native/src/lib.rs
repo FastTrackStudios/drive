@@ -347,7 +347,7 @@ impl Drive {
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<ToNode>();
         // This computer's own agent needs no token; an agent elsewhere
-        // signs in (`drive-agent sign-in`) and sends its token.
+        // signs in (`drive sign-in`) and sends its token.
         let hello = ToNode::Hello {
             version: drive_proto::VERSION,
             name: self.0.name.clone(),
@@ -511,7 +511,7 @@ impl Drive {
                 let _ = self.0.events.send(Event::Browse { req, ask });
             }
             ToClient::Error { message } if message == "sign in" => {
-                tracing::warn!(drive.error = %message, "the node asks this device to sign in: run `drive-agent sign-in`")
+                tracing::warn!(drive.error = %message, "the node asks this device to sign in: run `drive sign-in`")
             }
             ToClient::Error { message } => {
                 tracing::warn!(drive.error = %message, "the node refused something")

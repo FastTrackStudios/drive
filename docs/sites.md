@@ -12,7 +12,7 @@ Written 2026-11-21.
 | **Site** | A Loro document, `<space>/drive:site:<id>` (`drive_files::sites`): title, the folder of Markdown pages, the theme folder, an override folder, the public storage it goes to (or none: the node only), its base URL, the device that builds it, whether it rebuilds by itself, and its last build (time, ok, pages, broken links, unresolved wikilinks, input hash, where it went). The registry lists sites (`sites`: id → title). |
 | **Output** | `<space>/drive:siteout:<id>`: every built file's path → blob, as the node serves it, and what each public storage was last sent. |
 | **Source** | A folder of the file tree (`drive_sites::source::TreeFolder`). `Source` is a trait: Loro page documents can be a second source (their text is `Content::Text`). |
-| **Theme** | A folder with `templates/`, `sass/`, `static/` (the starter is `assets/site-theme`, copied into `Sites/Themes/Base` by `drive-agent site theme-init`). The override folder lays files of the same paths on top. No theme folder: the built-in starter. |
+| **Theme** | A folder with `templates/`, `sass/`, `static/` (the starter is `assets/site-theme`, copied into `Sites/Themes/Base` by `drive site theme-init`). The override folder lays files of the same paths on top. No theme folder: the built-in starter. |
 | **Generator** | `crates/drive-sites`: converts the pages (Obsidian frontmatter and `[[wikilinks]]` included), writes a dodeca project on the building computer (only changed files), runs `ddc build`, places the output under its path, publishes it. |
 
 ## Who builds
@@ -24,8 +24,8 @@ only serves what an agent uploaded: `/sites/<space>/<id>/…` reads the
 output document and sends the blob (hashed assets cached for good, pages
 `no-cache`), readable without signing in, like share links.
 
-- `drive-agent site build ID [--force]` builds now.
-- `drive-agent serve` (the service) rebuilds a site four seconds after its
+- `drive site build ID [--force]` builds now.
+- `drive serve` (the service) rebuilds a site four seconds after its
   pages, theme or settings change, when a site is added, when the app asks
   (`requested` later than the last build), and checks every minute. A site
   is built by its `builder` device; one with none is claimed by the first

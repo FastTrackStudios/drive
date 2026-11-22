@@ -1,4 +1,4 @@
-//! `drive-agent mcp`: Drive as an MCP server (Model Context Protocol, over
+//! `drive mcp`: Drive as an MCP server (Model Context Protocol, over
 //! stdio), so an AI agent (Claude Code, any MCP client) can see the
 //! owner's files on every computer and organise them, safely
 //! (docs/agents.md, #43).
@@ -304,7 +304,7 @@ where
     Ok(())
 }
 
-/// `drive-agent mcp`: serve on stdin and stdout until the client leaves.
+/// `drive mcp`: serve on stdin and stdout until the client leaves.
 pub async fn serve(dir: &Path, args: &[String]) -> Result<(), String> {
     let opts = Options::from_args(args)?;
     crate::agent::Config::load(dir)?;

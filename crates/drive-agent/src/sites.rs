@@ -7,7 +7,7 @@
 //! (`/sites/<space>/<id>/`, from blobs).
 //!
 //! A site is built by its `builder` device (the first agent to see it
-//! claims it). `drive-agent site build ID` builds it now; the agent's
+//! claims it). `drive site build ID` builds it now; the agent's
 //! service rebuilds it a few seconds after its pages or theme change, and
 //! when someone asks for a build in the Drive app.
 
@@ -121,7 +121,7 @@ impl Agent {
             format!("{}/sites/{}/", url.trim_end_matches('/'), site.id)
         } else {
             return Err(format!(
-                "{} is not public (drive-agent storage public {} URL)",
+                "{} is not public (drive storage public {} URL)",
                 own.name, own.name
             ));
         };

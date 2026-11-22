@@ -16,7 +16,7 @@ pub const SAFETY: &str = "\
 - Nothing deletes, trashes or overwrites. No tool does; a plan's delete, trash, remove or overwrite operations are refused.
 - Copies never overwrite: a taken name gets \" (2)\". A Drive copy shares the same verified blob.
 - Moves inside the Drive tree only change where an entry is listed; every file stays.
-- A computer's files are moved and copied only by rules. A rule an agent proposes is created OFF and as a DRY RUN; its preview shows what it would do. No tool can switch a rule on or make it live: a person does that, in the Drive app (Rules) or with `drive-agent rules on NAME` and `drive-agent rules live NAME`.
+- A computer's files are moved and copied only by rules. A rule an agent proposes is created OFF and as a DRY RUN; its preview shows what it would do. No tool can switch a rule on or make it live: a person does that, in the Drive app (Rules) or with `drive rules on NAME` and `drive rules live NAME`.
 - Even a live rule moves a computer's files only on devices whose owner set `allow_rule_moves`, and a move is a verified copy with the original kept in the location's `.drive-trash`.
 - Every write tool takes `dry_run: true` to show what it would do without doing it.
 - A session has a cap on writes; listings are paged; calls time out.
@@ -303,7 +303,7 @@ pub fn defs() -> Vec<Def> {
         Def {
             name: "propose_rule",
             title: "Propose a file rule",
-            description: "Make a file rule (docs/rules.md's JSON: name, scope, trigger, when, actions; locations, devices, tags and projects by name). It is ALWAYS created off and as a dry run, and its dry run is returned. Only a person can switch it on and live, in the Drive app or with `drive-agent rules on|live NAME`: ask them to. Trash actions are refused.",
+            description: "Make a file rule (docs/rules.md's JSON: name, scope, trigger, when, actions; locations, devices, tags and projects by name). It is ALWAYS created off and as a dry run, and its dry run is returned. Only a person can switch it on and live, in the Drive app or with `drive rules on|live NAME`: ask them to. Trash actions are refused.",
             write: true,
             schema: props(
                 json!({
@@ -451,7 +451,7 @@ pub fn organize_prompt(params: &Value) -> Result<Value, (i64, String)> {
 2. Summarise before proposing anything: `folder_summary` on the folders that matter, `duplicates`, `search` (e.g. `special:untagged kind:audio`), `file_info` on examples. Tell the person what you found in a few lines, with numbers.\n\
 3. Propose: tags (reuse existing ones; `create_tag` only what is missing, under sensible parents), fields, projects for pieces of work, and rules for anything that should keep happening. Say what each would change and why.\n\
 4. Preview: every write tool takes `dry_run: true`; a one-off batch is `plan` (it shows what applies, what becomes a rule and what is refused); a rule is `propose_rule` (it comes back with its dry run per device; `rule_preview` refreshes it).\n\
-5. Ask, then act: apply only what the person agreed to (`apply_plan`, `tag`, …). For rules, tell them the rule's name and that it is off and a dry run: they switch it on and live themselves in the Drive app (Rules) or with `drive-agent rules on NAME` and `drive-agent rules live NAME`. Moves of a computer's files also need `allow_rule_moves` on that device.\n\n\
+5. Ask, then act: apply only what the person agreed to (`apply_plan`, `tag`, …). For rules, tell them the rule's name and that it is off and a dry run: they switch it on and live themselves in the Drive app (Rules) or with `drive rules on NAME` and `drive rules live NAME`. Moves of a computer's files also need `allow_rule_moves` on that device.\n\n\
 Name things as drive:PATH, LOCATION:PATH, project:NAME, doc:ID or content:HASH. Listings are paged (`offset`, `limit`, `next_offset`). Same content is judged by a sampled hash: confirm before calling two files the same."
     );
     Ok(json!({

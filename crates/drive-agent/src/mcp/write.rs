@@ -442,6 +442,6 @@ pub async fn propose_rule(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     Ok(json!({
         "created": { "id": id, "name": r.name, "on": false, "mode": "dry-run", "by": ctx.author },
         "preview": preview,
-        "next": format!("Show the person this dry run. Only they can switch it on and live: the Drive app's Rules, or `drive-agent rules on \"{0}\"` then `drive-agent rules live \"{0}\"`.", r.name)
+        "next": format!("Show the person this dry run. Only they can switch it on and live: the Drive app's Rules, or `drive rules on \"{0}\"` then `drive rules live \"{0}\"`.", r.name)
     }))
 }

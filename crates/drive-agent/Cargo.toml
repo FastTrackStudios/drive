@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The program is `drive` (`drive serve`, `drive mount`, `drive mcp`, …);
+# the crate keeps its name, and its state folder stays `drive-agent`.
+[[bin]]
+name = "drive"
+path = "src/main.rs"
+
 [dependencies]
 drive-native = { path = "../drive-native" }
 drive-files = { path = "../drive-files" }

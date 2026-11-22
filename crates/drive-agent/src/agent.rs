@@ -36,7 +36,7 @@ pub struct Config {
     /// Files kept here always (their tree ids).
     #[serde(default)]
     pub pins: Vec<String>,
-    /// The issuer's session for this device (`drive-agent sign-in`): the
+    /// The issuer's session for this device (`drive sign-in`): the
     /// node asks for one when it is reached from another computer. Kept
     /// only in this file (mode 600).
     #[serde(default)]
@@ -73,7 +73,7 @@ impl Config {
     pub fn load(dir: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(dir.join("config.json")).map_err(|_| {
             format!(
-                "no config in {}: run `drive-agent init` or `join` first",
+                "no config in {}: run `drive init` or `join` first",
                 dir.display()
             )
         })?;

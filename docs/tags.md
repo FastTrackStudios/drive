@@ -125,13 +125,13 @@ every computer (the results say so).
 ## The command line
 
 ```text
-drive-agent tag ls                          # every tag, nested, with counts
-drive-agent tag ls THING                    # the tags and fields on a thing
-drive-agent tag add THING TAG…              # makes tags that do not exist yet
-drive-agent tag rm THING TAG…
-drive-agent tag new NAME [--parent TAG]… [--color red] [--shorthand S] [--alias A]… [--category] [--hidden]
-drive-agent tag field THING NAME VALUE [--kind text|multiline|date|datetime]
-drive-agent tag search QUERY…
+drive tag ls                          # every tag, nested, with counts
+drive tag ls THING                    # the tags and fields on a thing
+drive tag add THING TAG…              # makes tags that do not exist yet
+drive tag rm THING TAG…
+drive tag new NAME [--parent TAG]… [--color red] [--shorthand S] [--alias A]… [--category] [--hidden]
+drive tag field THING NAME VALUE [--kind text|multiline|date|datetime]
+drive tag search QUERY…
 ```
 
 A THING is a file on this computer (tagged by its content), `drive:PATH`

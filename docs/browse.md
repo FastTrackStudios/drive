@@ -23,7 +23,7 @@ half: anything on the disk, now, read-only, while the device is on.
   are hidden unless "Hidden" is ticked.
 - **Index this folder** (the folder's header, or the inspector for a
   picked folder) asks the device to add the folder as a location, as
-  `drive-agent location add` does, and index it; "Open location" goes to
+  `drive location add` does, and index it; "Open location" goes to
   it.
 - **Offline:** the header says "Voyager is offline · last seen". Folders
   seen before still list (from the node's memory of them) and their

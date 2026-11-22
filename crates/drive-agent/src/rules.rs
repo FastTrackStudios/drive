@@ -6,15 +6,15 @@
 //! as the app's preview); the changes on disk are [`crate::rules_fs`]'s.
 //!
 //! ```text
-//! drive-agent rules ls                      # every rule: on/off, dry run/live, last runs
-//! drive-agent rules show NAME               # the rule, and each device's latest dry run
-//! drive-agent rules run NAME [--live]       # run it here now (and ask every device and the node)
-//! drive-agent rules journal [NAME]          # what rules did, newest first
-//! drive-agent rules undo ID                 # take an action back
-//! drive-agent rules add FILE.json           # a new rule (off, dry run) from JSON
-//! drive-agent rules on|off NAME             # switch it on or off
-//! drive-agent rules live|dry-run NAME       # let it act, or only say what it would do
-//! drive-agent rules rm NAME
+//! drive rules ls                      # every rule: on/off, dry run/live, last runs
+//! drive rules show NAME               # the rule, and each device's latest dry run
+//! drive rules run NAME [--live]       # run it here now (and ask every device and the node)
+//! drive rules journal [NAME]          # what rules did, newest first
+//! drive rules undo ID                 # take an action back
+//! drive rules add FILE.json           # a new rule (off, dry run) from JSON
+//! drive rules on|off NAME             # switch it on or off
+//! drive rules live|dry-run NAME       # let it act, or only say what it would do
+//! drive rules rm NAME
 //! ```
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1121,7 +1121,7 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
         "ls" => {
             let rules = doc::rules(&e.rules);
             if rules.is_empty() {
-                out("no rules yet (drive-agent rules add FILE.json, or the Drive app's Rules)");
+                out("no rules yet (drive rules add FILE.json, or the Drive app's Rules)");
             }
             for r in rules {
                 out(format!(

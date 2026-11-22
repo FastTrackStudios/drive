@@ -76,7 +76,7 @@ for the new device's key.
 
 | Platform | Integration | Status in the file browser |
 |---|---|---|
-| **Linux** | A FUSE file system (`fuser`) mounted at `~/Drive`: every file listed; bytes fetched on first read | Extended attributes (`user.drive.state`), `drive-agent status`, and file-manager extensions (Nautilus, Dolphin) for emblems |
+| **Linux** | A FUSE file system (`fuser`) mounted at `~/Drive`: every file listed; bytes fetched on first read | Extended attributes (`user.drive.state`), `drive status`, and file-manager extensions (Nautilus, Dolphin) for emblems |
 | **macOS** | A File Provider extension (`NSFileProviderReplicatedExtension`, as iCloud Drive and Dropbox use) in a small Swift app around the Rust agent | Finder's own cloud and download badges, "Download now", "Remove download" |
 | **Windows** | The Cloud Files API (placeholders and hydration; the `cloud-filter` crate) | Explorer's own status column and overlay icons |
 | **Anywhere** | A WebDAV server in the agent: mountable from Finder, Files on iOS, Windows, Linux | None (a plain network drive) |
@@ -125,7 +125,7 @@ computer's **index** travels, so you can search and browse what is on
 Voyager while it is off.
 
 - **Locations** (`locations` in the registry): a folder a device indexes in
-  place (`drive-agent location add Samples ~/Samples`), or a folder in a
+  place (`drive location add Samples ~/Samples`), or a folder in a
   storage it runs (`--storage "Garage Deep"`: an S3 bucket, a WebDAV share,
   walked through OpenDAL, sampled hashes read as byte ranges).
 - **Volumes**: each device's disks (sysinfo), with size and free space;
@@ -136,7 +136,7 @@ Voyager while it is off.
   Published as one blob (postcard + zstd) and as rows in the node's Turso
   database. A watcher re-indexes a location a few seconds after it
   changes; a full pass runs every ten minutes.
-- **Search** (`GET /search`, `drive-agent search`, the app's Computers
+- **Search** (`GET /search`, `drive search`, the app's Computers
   tab): every device's files at once, each with its device, location,
   whether that device is online, and how many copies exist.
 - **Fetch** (`GET /fetch/<space>/<location>?path=`): the node asks the
@@ -145,7 +145,7 @@ Voyager while it is off.
   file is offline". A device with an iroh endpoint instead serves the file
   in place and the node streams the ranges asked for
   ([transfer.md](transfer.md)).
-- **The Computers folder** (`drive-agent mount ~/Drive --computers
+- **The Computers folder** (`drive mount ~/Drive --computers
   ~/Computers`): `Computers/<device>/<location>/…`, read-only, built from
   the indexes this device keeps a copy of (it lists everything offline).
   Reading this device's files reads them in place; another computer's are
@@ -160,19 +160,19 @@ Voyager while it is off.
 ## Copies and protection (built, 2026-11-21)
 
 - **Copies** are found by content (sampled hash + size) across every
-  index: `drive-agent copies LOCATION PATH`, `GET /copies`, the copies
+  index: `drive copies LOCATION PATH`, `GET /copies`, the copies
   panel in the app.
-- **Sites** (`drive-agent site HOLDER SITE`): where a device or storage
+- **Sites** (`drive site HOLDER SITE`): where a device or storage
   physically is (`studio`, `home`, `offsite-vault`).
-- **Policies** (`drive-agent policy add 3-2-1 --scope Samples`): every file
+- **Policies** (`drive policy add 3-2-1 --scope Samples`): every file
   in scope should be on at least N **copies** (locations), M **media**
   (distinct disks or storages: two folders on one disk are one medium),
   and K **offsite** (media at another site than the file's own). The
   3-2-1 rule is 3, 2, 1.
-- **The report** (`drive-agent protection`, `GET /protection`, the app's
+- **The report** (`drive protection`, `GET /protection`, the app's
   Protection tab): per policy and location, how many files meet it, the
   bytes at risk, and the largest files that fall short with what they lack.
-- **Backups** (`drive-agent backup LOCATION STORAGE`): copy a location
+- **Backups** (`drive backup LOCATION STORAGE`): copy a location
   into a storage (skipping what is there), registered and indexed as a
   location of its own, so its files count as copies. Tried with a real
   Garage bucket (S3) as the offsite store.
@@ -184,7 +184,7 @@ before any copy is used in place of another).
 
 ## What each device keeps: roles (built, 2026-11-21)
 
-- **Storage servers** (`drive-agent role storage-server`: the NAS, an
+- **Storage servers** (`drive role storage-server`: the NAS, an
   always-on box with big disks) keep as much as they can: every file's
   bytes in the tree (smallest first, keeping a tenth of the disk free),
   never letting any go, and a **mirror** of every other computer's
@@ -192,11 +192,11 @@ before any copy is used in place of another).
   location of its own (`Projects (mirror)`), so its files count as copies.
 - **Workstations** (`role workstation`, the default: Battleship, Voyager,
   airlock) keep what they are working on: the files under their **active
-  folders** (`drive-agent active add Songs/Song A`) and their pins.
+  folders** (`drive active add Songs/Song A`) and their pins.
   Anything else they opened goes three days after its last use, and only
   once a storage or storage server holds it: a workstation never drops the
   last copy.
-- The agent runs a placement pass every minute (`drive-agent place` runs
+- The agent runs a placement pass every minute (`drive place` runs
   one now); the Drive app's Devices view shows each device's role and
   active folders.
 

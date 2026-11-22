@@ -161,9 +161,9 @@ drive-agent ── drive_kache::s3 ── Store (<agent>/kache: objects/, index.
 On each computer, once (the registry syncs it to the others):
 
 ```bash
-drive-agent kache group auto     # linux-x86_64 on THEBATTLESHIP and the VPS, darwin-arm64 on the Macs
-drive-agent kache status         # the group, who shares it, what is kept here
-drive-agent kache config         # the block for kache, below
+drive kache group auto     # linux-x86_64 on THEBATTLESHIP and the VPS, darwin-arm64 on the Macs
+drive kache status         # the group, who shares it, what is kept here
+drive kache config         # the block for kache, below
 ```
 
 `kache group NAME` sets any name, and `kache group off` leaves the group.
@@ -172,8 +172,8 @@ VPS needs a Drive agent in the space like the other computers.
 
 | Where | Setting | What |
 |---|---|---|
-| `config.json` | `kache.port`, `drive-agent kache port N` | the loopback port (9778) |
-| `config.json` | `kache.budget_gib`, `drive-agent kache budget N` | how much is kept here (20) |
+| `config.json` | `kache.port`, `drive kache port N` | the loopback port (9778) |
+| `config.json` | `kache.budget_gib`, `drive kache budget N` | how much is kept here (20) |
 | `config.json` | `kache.lookup_ms` | how long a miss waits for the group (600) |
 | registry | `devices.<id>.build_group` | the device's group |
 
@@ -230,7 +230,7 @@ environment.variables = {
 If the Drive agent is not running, kache's connection to 127.0.0.1 is
 refused at once. kache counts that against its breaker and compiles: builds
 work as they do now, without sharing. Turn sharing off by removing the
-block, or with `drive-agent kache group off`.
+block, or with `drive kache group off`.
 
 ## Tests
 

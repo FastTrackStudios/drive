@@ -683,7 +683,7 @@ pub async fn rules(ctx: &Ctx, args: &Value) -> Result<Value, String> {
             "rule": r,
             "feeds_itself": eval::feeds_itself(&r),
             "runs": runs(&r.id),
-            "switch": "only a person turns a rule on and makes it live (the Drive app's Rules, or drive-agent rules on|live NAME)"
+            "switch": "only a person turns a rule on and makes it live (the Drive app's Rules, or drive rules on|live NAME)"
         }));
     }
     let out: Vec<Value> = doc::rules(&ctx.e.rules)

@@ -79,7 +79,7 @@ pub enum Place {
     Tag { tag: String },
 }
 
-/// When a rule runs. "Run now" (from the app or `drive-agent rules run`)
+/// When a rule runs. "Run now" (from the app or `drive rules run`)
 /// works whatever this says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Trigger {

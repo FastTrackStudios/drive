@@ -5,26 +5,26 @@ Protocol) can see the owner's files on every computer through Drive and
 help organise them, without being able to lose anything. Written
 2026-11-22 (#43).
 
-`drive-agent mcp` is an MCP server on stdio. It runs wherever the agent
+`drive mcp` is an MCP server on stdio. It runs wherever the agent
 runs and acts as that computer's Drive device: on the node's machine it
 reaches the node over loopback, elsewhere with the device's session
-(`drive-agent sign-in`). It reads the space's synced documents (the
+(`drive sign-in`). It reads the space's synced documents (the
 registry, tags, rules and their journal, projects) and asks the node's
 HTTP API for the rest (search, copies, live browsing, indexing a folder).
 
 ## Adding it to Claude Code
 
-The computer needs a working agent first (`drive-agent init` or `join`,
+The computer needs a working agent first (`drive init` or `join`,
 see [files.md](files.md)). Then:
 
 ```sh
-claude mcp add drive -- drive-agent mcp
+claude mcp add drive -- drive mcp
 ```
 
 With a non-default agent folder, or a name for the history:
 
 ```sh
-claude mcp add drive -- drive-agent --dir ~/.local/share/drive-agent mcp --as claude-code
+claude mcp add drive -- drive --dir ~/.local/share/drive mcp --as claude-code
 ```
 
 The same as JSON (a project's `.mcp.json`, or `claude mcp add-json`):
@@ -44,7 +44,7 @@ The same as JSON (a project's `.mcp.json`, or `claude mcp add-json`):
 ## Other MCP clients
 
 Any client that runs a stdio server takes the same command and arguments:
-`drive-agent [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N]
+`drive [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N]
 [--timeout SECONDS]`. Clients configured with an `mcpServers` map
 (Claude Desktop's `claude_desktop_config.json`, Cursor's `.cursor/mcp.json`)
 take the entry above, `{"command": "drive-agent", "args": ["mcp"]}`; give
@@ -148,8 +148,8 @@ A plan's operations each come out as one of:
 2. **Rules stay a person's decision.** `propose_rule` and `apply_plan`
    create rules off and as dry runs; no tool switches a rule on or makes
    it live, and every run an agent asks for is a dry run. A person does
-   that in the Drive app (Rules) or with `drive-agent rules on NAME` and
-   `drive-agent rules live NAME`. A rule that trashes is refused.
+   that in the Drive app (Rules) or with `drive rules on NAME` and
+   `drive rules live NAME`. A rule that trashes is refused.
 3. **A computer's files move only by rules,** so only after a person
    switches the rule on and live, and only on devices whose owner set
    `allow_rule_moves` in the agent's config; even then a move is a verified
@@ -161,7 +161,7 @@ A plan's operations each come out as one of:
    timeout on every call; unknown arguments are refused.
 5. **Who did it.** Every change records `agent: <client> on <device>` as its
    author (tag assignments' and fields' `by`, a rule's `by`, the documents'
-   history), so the history view and `drive-agent tag ls THING` show what
+   history), so the history view and `drive tag ls THING` show what
    an agent did.
 6. **Same permissions as the device.** The server is this device: it sees
    what the device's agent sees and can do nothing the CLI cannot. Live

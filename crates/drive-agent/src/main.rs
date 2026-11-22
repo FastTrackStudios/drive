@@ -1,74 +1,74 @@
-//! `drive-agent`: this device in a Drive space.
+//! `drive`: this device in a Drive space.
 //!
 //! ```text
-//! drive-agent [--dir DIR] init  --node ws://host:8096/sync --space home --name "Studio PC"
-//! drive-agent [--dir DIR] invite                       # a pairing code for another device
-//! drive-agent [--dir DIR] sign-in | sign-out             # this device signs in as its person (the node's issuer)
-//! drive-agent [--dir DIR] sign-in --node URL --space NAME  # before joining a node that asks for a sign-in
-//! drive-agent [--dir DIR] join  --node URL --space home --name Laptop --code K7Q2XM
-//! drive-agent [--dir DIR] devices | storages
-//! drive-agent [--dir DIR] device rm NAME                # forget a device, its locations and storages
-//! drive-agent [--dir DIR] storage add fs     NAME PATH
-//! drive-agent [--dir DIR] storage add s3     NAME BUCKET ENDPOINT KEY SECRET [REGION]
-//! drive-agent [--dir DIR] storage add webdav NAME ENDPOINT [USER PASSWORD]
-//! drive-agent [--dir DIR] put LOCAL_FILE_OR_FOLDER [FOLDER]
-//! drive-agent [--dir DIR] ls [FOLDER] | status PATH | pin PATH | unpin PATH
-//! drive-agent [--dir DIR] mount MOUNTPOINT [--computers PATH]
+//! drive [--dir DIR] init  --node ws://host:8096/sync --space home --name "Studio PC"
+//! drive [--dir DIR] invite                       # a pairing code for another device
+//! drive [--dir DIR] sign-in | sign-out             # this device signs in as its person (the node's issuer)
+//! drive [--dir DIR] sign-in --node URL --space NAME  # before joining a node that asks for a sign-in
+//! drive [--dir DIR] join  --node URL --space home --name Laptop --code K7Q2XM
+//! drive [--dir DIR] devices | storages
+//! drive [--dir DIR] device rm NAME                # forget a device, its locations and storages
+//! drive [--dir DIR] storage add fs     NAME PATH
+//! drive [--dir DIR] storage add s3     NAME BUCKET ENDPOINT KEY SECRET [REGION]
+//! drive [--dir DIR] storage add webdav NAME ENDPOINT [USER PASSWORD]
+//! drive [--dir DIR] put LOCAL_FILE_OR_FOLDER [FOLDER]
+//! drive [--dir DIR] ls [FOLDER] | status PATH | pin PATH | unpin PATH
+//! drive [--dir DIR] mount MOUNTPOINT [--computers PATH]
 //!                                   # the space as a folder, and every computer's
 //!                                   # files under PATH (runs until stopped)
-//! drive-agent [--dir DIR] serve     # no mount: index, answer the node, watch
+//! drive [--dir DIR] serve     # no mount: index, answer the node, watch
 //!
 //! Every computer's files (indexed in place, searchable while it is off):
-//! drive-agent [--dir DIR] location add NAME PATH        # a folder on this device
-//! drive-agent [--dir DIR] location add NAME PATH --storage STORAGE   # in a storage it runs
-//! drive-agent [--dir DIR] locations | volumes | index [NAME]
-//! drive-agent [--dir DIR] search WORDS…                 # every device's files
-//! drive-agent [--dir DIR] copies LOCATION PATH          # where else a file is
+//! drive [--dir DIR] location add NAME PATH        # a folder on this device
+//! drive [--dir DIR] location add NAME PATH --storage STORAGE   # in a storage it runs
+//! drive [--dir DIR] locations | volumes | index [NAME]
+//! drive [--dir DIR] search WORDS…                 # every device's files
+//! drive [--dir DIR] copies LOCATION PATH          # where else a file is
 //!
 //! Tags and fields (docs/tags.md; THING: a file here, drive:PATH, LOCATION:PATH,
 //! project:NAME, doc:ID):
-//! drive-agent [--dir DIR] tag ls [THING] | add THING TAG… | rm THING TAG…
-//! drive-agent [--dir DIR] tag new NAME [--parent TAG]… [--color C] [--shorthand S] [--alias A]… [--category] [--hidden]
-//! drive-agent [--dir DIR] tag field THING NAME VALUE [--kind text|multiline|date|datetime]
-//! drive-agent [--dir DIR] tag search QUERY…              # drums NOT archived, path:*.wav, kind:audio …
+//! drive [--dir DIR] tag ls [THING] | add THING TAG… | rm THING TAG…
+//! drive [--dir DIR] tag new NAME [--parent TAG]… [--color C] [--shorthand S] [--alias A]… [--category] [--hidden]
+//! drive [--dir DIR] tag field THING NAME VALUE [--kind text|multiline|date|datetime]
+//! drive [--dir DIR] tag search QUERY…              # drums NOT archived, path:*.wav, kind:audio …
 //!
 //! File rules (docs/rules.md; every rule starts off and as a dry run):
-//! drive-agent [--dir DIR] rules ls | show NAME | journal [NAME] | undo ID
-//! drive-agent [--dir DIR] rules run NAME [--live]       # here now, and asked of every device
-//! drive-agent [--dir DIR] rules add FILE.json | on|off NAME | live|dry-run NAME | rm NAME
+//! drive [--dir DIR] rules ls | show NAME | journal [NAME] | undo ID
+//! drive [--dir DIR] rules run NAME [--live]       # here now, and asked of every device
+//! drive [--dir DIR] rules add FILE.json | on|off NAME | live|dry-run NAME | rm NAME
 //!
 //! What this device keeps:
-//! drive-agent [--dir DIR] role storage-server|workstation   # keep everything, or the work at hand
-//! drive-agent [--dir DIR] active [add|rm PATH]          # folders this device is working on
-//! drive-agent [--dir DIR] place                         # one placement pass now
-//! drive-agent [--dir DIR] storage public STORAGE URL|off # files kept available go there (R2), links point at URL
-//! drive-agent [--dir DIR] available                     # put what should be available on the node now
+//! drive [--dir DIR] role storage-server|workstation   # keep everything, or the work at hand
+//! drive [--dir DIR] active [add|rm PATH]          # folders this device is working on
+//! drive [--dir DIR] place                         # one placement pass now
+//! drive [--dir DIR] storage public STORAGE URL|off # files kept available go there (R2), links point at URL
+//! drive [--dir DIR] available                     # put what should be available on the node now
 //!
 //! Protection (3-2-1 and the like):
-//! drive-agent [--dir DIR] site DEVICE_OR_STORAGE SITE   # where it physically is
-//! drive-agent [--dir DIR] policy add NAME [--copies 3 --media 2 --offsite 1] [--scope LOC,LOC]
-//! drive-agent [--dir DIR] protection                    # every policy, checked
-//! drive-agent [--dir DIR] backup LOCATION STORAGE       # copy a location into a storage
+//! drive [--dir DIR] site DEVICE_OR_STORAGE SITE   # where it physically is
+//! drive [--dir DIR] policy add NAME [--copies 3 --media 2 --offsite 1] [--scope LOC,LOC]
+//! drive [--dir DIR] protection                    # every policy, checked
+//! drive [--dir DIR] backup LOCATION STORAGE       # copy a location into a storage
 //!
 //! Static sites (built here with dodeca's `ddc`, served by the node under
 //! /sites/<space>/<id>/, and copied to a public storage if they have one):
-//! drive-agent [--dir DIR] site theme-init [FOLDER]      # the starter theme into the space (Sites/Themes/Base)
-//! drive-agent [--dir DIR] site create TITLE --source FOLDER [--id ID] [--theme FOLDER]
+//! drive [--dir DIR] site theme-init [FOLDER]      # the starter theme into the space (Sites/Themes/Base)
+//! drive [--dir DIR] site create TITLE --source FOLDER [--id ID] [--theme FOLDER]
 //!                         [--overrides FOLDER] [--storage STORAGE] [--base-url URL] [--manual]
-//! drive-agent [--dir DIR] site ls | show ID | rm ID
-//! drive-agent [--dir DIR] site build ID [--force]       # build and publish now
+//! drive [--dir DIR] site ls | show ID | rm ID
+//! drive [--dir DIR] site build ID [--force]       # build and publish now
 //! ```
 //!
 //! kache build caches shared with this device's build group (docs/kache.md):
-//! drive-agent [--dir DIR] kache group NAME|auto|off     # e.g. linux-x86_64, darwin-arm64
-//! drive-agent [--dir DIR] kache status | config         # the group, what is kept; kache's [cache.remote]
-//! drive-agent [--dir DIR] kache budget GIB | port PORT
+//! drive [--dir DIR] kache group NAME|auto|off     # e.g. linux-x86_64, darwin-arm64
+//! drive [--dir DIR] kache status | config         # the group, what is kept; kache's [cache.remote]
+//! drive [--dir DIR] kache budget GIB | port PORT
 //!
 //! AI agents (docs/agents.md): an MCP server on stdio, as this device:
-//! drive-agent [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N] [--timeout SECONDS]
+//! drive [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N] [--timeout SECONDS]
 //!
 //! Sidecars (thumbnails, waveform peaks; made here from this device's files):
-//! drive-agent [--dir DIR] sidecars [--force] [--kind thumb|peaks] [--max N]
+//! drive [--dir DIR] sidecars [--force] [--kind thumb|peaks] [--max N]
 //!                                   # make what the node lacks now (`serve` does it in the background)
 //!
 //! What this command line prints is its output, on stdout; the mount's
@@ -141,7 +141,7 @@ async fn main() {
         _ => default_dir(),
     };
     if let Err(e) = run(&dir, &args).await {
-        let _ = writeln!(std::io::stderr(), "drive-agent: {e}");
+        let _ = writeln!(std::io::stderr(), "drive: {e}");
         std::process::exit(1);
     }
 }
@@ -283,7 +283,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             let cfg = a.cfg.lock().expect("cfg").clone();
             out(format!("Pairing code: {code}   (valid ten minutes)"));
             out(format!(
-                "On the other device: drive-agent join --node {} --space {} --name NAME --code {code}",
+                "On the other device: drive join --node {} --space {} --name NAME --code {code}",
                 cfg.node, cfg.space
             ));
         }
@@ -1139,7 +1139,7 @@ async fn mount_fs<F: fuser::Filesystem + Send + Sync + 'static>(
     }
 }
 
-/// `drive-agent site …`: static sites.
+/// `drive site …`: static sites.
 async fn site_command(dir: &Path, args: &[String]) -> Result<(), String> {
     use drive_files::sites::{self as dsites, Site};
     let a = start(dir).await?;
@@ -1207,7 +1207,7 @@ async fn site_command(dir: &Path, args: &[String]) -> Result<(), String> {
             a.commit_space();
             settle(&a).await;
             out(format!(
-                "Site {id} ({title}) from {}; build it with `drive-agent site build {id}`{}.",
+                "Site {id} ({title}) from {}; build it with `drive site build {id}`{}.",
                 site.source,
                 if site.auto {
                     " (and this device's agent rebuilds it when its pages change)"
@@ -1385,7 +1385,7 @@ async fn kache_command(dir: &Path, args: &[String]) -> Result<(), String> {
                     }
                 ));
                 out(
-                    "The agent serves kache's remote within a minute; `drive-agent kache config` prints kache's settings.",
+                    "The agent serves kache's remote within a minute; `drive kache config` prints kache's settings.",
                 );
             }
         }
@@ -1396,7 +1396,7 @@ async fn kache_command(dir: &Path, args: &[String]) -> Result<(), String> {
             out(format!(
                 "Build group: {}",
                 if group.is_empty() {
-                    "none (`drive-agent kache group auto`)"
+                    "none (`drive kache group auto`)"
                 } else {
                     &group
                 }

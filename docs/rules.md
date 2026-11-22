@@ -14,7 +14,7 @@ Much of what Drive holds exists once. So, in this version:
   yours or writes over one.
 - **Every new rule is off and a dry run.** A dry run works out what the
   rule would do, shows it in the app and changes nothing. A person turns
-  it on and switches it to live (the app asks first; `drive-agent rules
+  it on and switches it to live (the app asks first; `drive rules
   run NAME --live` refuses a rule that is not on and live).
 - **Moves and renames of a computer's files are off per device**
   (`"allow_rule_moves": true` in that device's agent `config.json`, set
@@ -99,7 +99,7 @@ node all decide with this.
 
 ## Who runs what
 
-- **Each device's agent** (`drive-agent serve`) runs the rules whose scope
+- **Each device's agent** (`drive serve`) runs the rules whose scope
   includes it over its own locations (on disk; locations in a storage are
   not yet): after a location is indexed again, on schedules, on requests;
   it fetches copies other devices' rules sent it (from the node, checked),
@@ -143,15 +143,15 @@ Rules, in the sidebar's Space section:
 ## The command line
 
 ```text
-drive-agent rules ls                      # every rule: on/off, dry run/live, last runs
-drive-agent rules show NAME               # the rule (JSON), each device's latest dry run
-drive-agent rules run NAME [--live]       # run it now: here, and asked of every device and the node
-drive-agent rules journal [NAME]          # what rules did, newest first
-drive-agent rules undo ID                 # take an action back (or ask the device that holds it)
-drive-agent rules add FILE.json           # a new rule (off, dry run); locations, devices, tags and projects by name
-drive-agent rules on|off NAME
-drive-agent rules live|dry-run NAME
-drive-agent rules rm NAME                 # the journal stays
+drive rules ls                      # every rule: on/off, dry run/live, last runs
+drive rules show NAME               # the rule (JSON), each device's latest dry run
+drive rules run NAME [--live]       # run it now: here, and asked of every device and the node
+drive rules journal [NAME]          # what rules did, newest first
+drive rules undo ID                 # take an action back (or ask the device that holds it)
+drive rules add FILE.json           # a new rule (off, dry run); locations, devices, tags and projects by name
+drive rules on|off NAME
+drive rules live|dry-run NAME
+drive rules rm NAME                 # the journal stays
 ```
 
 A rule as JSON:
