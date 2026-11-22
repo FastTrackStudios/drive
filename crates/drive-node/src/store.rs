@@ -157,6 +157,13 @@ impl Store {
     /// Replace a location's rows with a new index.
     pub async fn put_index(&self, space: &str, index: &LocationIndex) -> turso::Result<usize> {
         let conn = self.conn.lock().await;
+        // A request cut off mid-way (its client gone, an agent restarted
+        // during a big upload) drops this future after BEGIN and leaves the
+        // transaction open on the shared connection; every later BEGIN would
+        // then fail. Roll any such leftover back first (with none open this
+        // fails harmlessly): the leftover's DELETE is undone, so that
+        // location keeps its previous rows.
+        let _ = conn.execute("ROLLBACK", ()).await;
         conn.execute("BEGIN", ()).await?;
         let result = async {
             conn.execute(
@@ -450,6 +457,27 @@ mod tests {
             mtime: 1,
             sampled: sampled.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_transaction_does_not_block_later_indexes() {
+        let dir = std::env::temp_dir().join(format!("drive-store-tx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("node.db")).await.unwrap();
+        let index = |loc: &str| LocationIndex {
+            location: loc.into(),
+            root: String::new(),
+            built: 1,
+            entries: vec![file("a.wav", "aa11")],
+        };
+        store.put_index("home", &index("l1")).await.unwrap();
+        // A cut-off request left this open.
+        store.conn.lock().await.execute("BEGIN", ()).await.unwrap();
+        assert_eq!(store.put_index("home", &index("l2")).await.unwrap(), 1);
+        let found = store.search_with("home", "a", &[], &[], 10).await.unwrap();
+        assert_eq!(found.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
