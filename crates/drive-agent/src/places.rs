@@ -177,6 +177,17 @@ impl Agent {
     /// and record it in the registry.
     pub async fn index_location(&self, loc: &Location) -> Result<WalkStats, String> {
         let previous = self.cached_index(&loc.id);
+        // A folder this process may not read (macOS privacy protection on a
+        // background service, a drive not mounted, permissions) must never
+        // publish an empty index over a full one: Drive would show the
+        // files as gone.
+        if loc.storage.is_empty() {
+            unreadable_root(Path::new(&loc.path))?;
+        }
+        let had = self
+            .space_files_of(&loc.id)
+            .unwrap_or(0)
+            .max(previous.as_ref().map_or(0, |p| p.entries.len()));
         let (idx, stats) = if loc.storage.is_empty() {
             let (id, root) = (loc.id.clone(), PathBuf::from(&loc.path));
             tokio::task::spawn_blocking(move || index::walk(&id, &root, previous.as_ref()))
@@ -197,6 +208,11 @@ impl Agent {
                 .await
                 .map_err(|e| e.to_string())?
         };
+        if idx.entries.is_empty() && had > 0 {
+            return Err(format!(
+                "found nothing where {had} entries were before: kept the last index (is the folder readable by this process?)"
+            ));
+        }
         let bytes = index::encode(&idx);
         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
         std::fs::write(self.index_cache(&loc.id), &bytes).map_err(|e| e.to_string())?;
@@ -317,5 +333,26 @@ impl Agent {
             return Err(format!("the node refused the bytes ({})", r.status()));
         }
         Ok(h)
+    }
+}
+
+/// Why a location's folder cannot be indexed now, if it cannot: missing, not
+/// a folder, or not listable by this process.
+fn unreadable_root(root: &Path) -> Result<(), String> {
+    match std::fs::read_dir(root) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{} cannot be read: {e}", root.display())),
+    }
+}
+
+impl Agent {
+    /// How many files the space's registry says a location had at its last
+    /// index (what other devices see), when it says.
+    fn space_files_of(&self, location: &str) -> Option<usize> {
+        space::locations(&self.space)
+            .into_iter()
+            .find(|l| l.id == location)
+            .map(|l| l.files as usize)
+            .filter(|n| *n > 0)
     }
 }
