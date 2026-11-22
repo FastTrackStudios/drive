@@ -72,6 +72,40 @@ pub fn volume_of(path: &Path) -> String {
         })
 }
 
+/// Folders a location may hold and still be watched live: a recursive
+/// watch keeps a watch (and the watcher's bookkeeping) per folder, which on
+/// a big sample drive is gigabytes. Bigger locations are rescanned on the
+/// agent's schedule instead.
+pub const WATCH_MAX_DIRS: usize = 20_000;
+
+/// File systems a live watch cannot follow (changes made by other machines
+/// never arrive) or that would walk the network to set one up.
+const UNWATCHABLE_FS: &[&str] = &[
+    "nfs", "cifs", "smb", "afpfs", "webdav", "fuse", "autofs", "9p", "sshfs",
+];
+
+/// Whether a location should be watched live, and if not, why.
+pub fn watch_refusal(path: &Path, dirs: Option<usize>) -> Option<String> {
+    let fs = sysinfo::Disks::new_with_refreshed_list()
+        .ok()
+        .and_then(|disks| {
+            disks
+                .iter()
+                .filter(|d| path.starts_with(d.mount_point()))
+                .max_by_key(|d| d.mount_point().as_os_str().len())
+                .map(|d| d.file_system().to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    if UNWATCHABLE_FS.iter().any(|u| fs.starts_with(u)) {
+        return Some(format!("on a {fs} file system"));
+    }
+    match dirs {
+        None => Some("not indexed yet".into()),
+        Some(n) if n > WATCH_MAX_DIRS => Some(format!("{n} folders")),
+        Some(_) => None,
+    }
+}
+
 /// A path inside a location, made safe: relative, no `..`.
 pub fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
     let rel = Path::new(rel.trim_start_matches('/'));

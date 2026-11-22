@@ -61,7 +61,16 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let mut events = a.drive.events();
     a.report_volumes();
 
-    // Changes under a local location: reindex it a few seconds after they stop.
+    for loc in a.my_locations() {
+        if let Err(e) = a.index_location(&loc).await {
+            tracing::warn!(location.name = %loc.name, error = %e, "a location did not index");
+        }
+    }
+    refresh_view(&a, &view).await;
+
+    // Changes under a local location: reindex it a few seconds after they
+    // stop. Only small locations on local disks are watched live (see
+    // `places::watch_refusal`); the others are rescanned every ten minutes.
     let (changed_tx, mut changed) = mpsc::unbounded_channel::<String>();
     let mut watchers = Vec::new();
     for loc in a
@@ -69,6 +78,13 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
         .into_iter()
         .filter(|l| l.storage.is_empty())
     {
+        let dirs = a
+            .cached_index(&loc.id)
+            .map(|i| i.entries.iter().filter(|e| e.dir).count());
+        if let Some(why) = crate::places::watch_refusal(std::path::Path::new(&loc.path), dirs) {
+            tracing::info!(location.name = %loc.name, watch.skipped = %why, "a location is rescanned every ten minutes instead of watched");
+            continue;
+        }
         let tx = changed_tx.clone();
         let id = loc.id.clone();
         match notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
@@ -88,13 +104,6 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
             Err(e) => tracing::warn!(error = %e, "no file watcher"),
         }
     }
-
-    for loc in a.my_locations() {
-        if let Err(e) = a.index_location(&loc).await {
-            tracing::warn!(location.name = %loc.name, error = %e, "a location did not index");
-        }
-    }
-    refresh_view(&a, &view).await;
 
     // File rules (crate::rules): after a location is indexed, on their
     // schedules and when asked; the first pass catches what changed while
