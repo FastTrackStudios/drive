@@ -291,7 +291,9 @@ impl Agent {
     /// One pass over this device's locations: make the missing sidecars
     /// (of `only` kinds, or all), at most `max_files` files; `force` makes
     /// them again even when the node has them.
+    #[tracing::instrument(name = "drive.sidecars.backfill", skip_all, fields(process.rss_mb = tracing::field::Empty))]
     pub async fn backfill_sidecars(&self, only: &[Kind], force: bool, max_files: usize) -> Pass {
+        let _rss = crate::telemetry::RssOnDrop;
         let mut pass = Pass::default();
         for loc in self.my_locations() {
             // Buckets are read by downloading: not in the background.

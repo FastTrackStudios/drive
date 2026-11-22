@@ -11,7 +11,9 @@ use crate::agent::Agent;
 
 impl Agent {
     /// Put what should be available on the node; returns how many files went up.
+    #[tracing::instrument(name = "drive.available.make", skip_all, fields(process.rss_mb = tracing::field::Empty))]
     pub async fn make_available(&self) -> usize {
+        let _rss = crate::telemetry::RssOnDrop;
         let kinds = Kinds::load(&self.spine);
         let all = projects::projects(&self.space);
         // Files a rule asked to keep highly available (docs/rules.md).
@@ -78,7 +80,9 @@ impl Agent {
     /// Copy every available file into the public storages this device runs
     /// (the R2 bucket), so share links can send people straight there.
     /// Returns how many went up.
+    #[tracing::instrument(name = "drive.available.publish", skip_all, fields(process.rss_mb = tracing::field::Empty))]
     pub async fn publish_available(&self) -> usize {
+        let _rss = crate::telemetry::RssOnDrop;
         let public = space::public(&self.space);
         let mut hashes: Vec<String> = projects::all_available(&self.space)
             .into_iter()

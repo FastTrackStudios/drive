@@ -268,13 +268,16 @@ pub fn decode(bytes: &[u8]) -> Option<LocationIndex> {
 
 /// An index arranged for browsing: each folder's children.
 pub struct Tree {
-    pub index: LocationIndex,
+    /// Shared with whoever else holds the index (an agent keeps one copy
+    /// of each and hands it round).
+    pub index: std::sync::Arc<LocationIndex>,
     children: HashMap<String, Vec<usize>>,
     by_path: HashMap<String, usize>,
 }
 
 impl Tree {
-    pub fn new(index: LocationIndex) -> Tree {
+    pub fn new(index: impl Into<std::sync::Arc<LocationIndex>>) -> Tree {
+        let index = index.into();
         let mut children: HashMap<String, Vec<usize>> = HashMap::new();
         let mut by_path = HashMap::new();
         for (i, e) in index.entries.iter().enumerate() {

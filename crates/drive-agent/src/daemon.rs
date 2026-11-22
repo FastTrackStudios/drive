@@ -32,20 +32,27 @@ pub fn online_devices(a: &Agent) -> HashSet<String> {
     on
 }
 
+#[tracing::instrument(name = "drive.view.refresh", skip_all, fields(view.rebuilt = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
 pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
     let indexes = a.refresh_indexes().await;
     let devices = space::devices(&a.space)
         .into_iter()
         .map(|d| (d.id, d.name))
         .collect();
-    let built = View::build(
-        &a.device_id(),
-        devices,
-        space::locations(&a.space),
-        indexes,
-        online_devices(a),
-    );
-    *view.write().expect("view") = built;
+    let (me, locations, online) = (a.device_id(), space::locations(&a.space), online_devices(a));
+    // The trees of millions of entries are rebuilt only when an index has
+    // changed; who is online changes far more often.
+    let unchanged = view.read().expect("view").built_from(&indexes);
+    tracing::Span::current().record("view.rebuilt", !unchanged);
+    if unchanged {
+        view.write()
+            .expect("view")
+            .set_devices(&me, devices, locations, online);
+    } else {
+        let built = View::build(&me, devices, locations, indexes, online);
+        *view.write().expect("view") = built;
+    }
+    crate::telemetry::mark_rss();
 }
 
 /// Run until the process stops.
@@ -101,8 +108,15 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
 
     // Indexing runs beside the loop, one pass at a time: a big location
     // (millions of files) takes hours to walk, and the node's fetches,
-    // browses and sidecars must be answered meanwhile.
+    // browses and sidecars must be answered meanwhile. Everything else that
+    // reads whole indexes (placement, the view, the rules, the sidecar
+    // backfill) takes the same lock, so only one of them holds an index of
+    // millions of entries in memory at a time: run side by side they took a
+    // 15 GB machine down.
     let indexing = Arc::new(tokio::sync::Mutex::new(()));
+    // A fetch holds its whole file in memory on the way to the node: a few
+    // at a time, so a burst of large files cannot fill the machine.
+    let fetching = Arc::new(tokio::sync::Semaphore::new(4));
     let (indexed_tx, mut indexed) = mpsc::unbounded_channel::<String>();
     {
         let (a, view, lock) = (a.clone(), view.clone(), indexing.clone());
@@ -189,8 +203,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
         tokio::select! {
             ev = events.recv() => match ev {
                 Ok(Event::Fetch { req, location, path }) => {
-                    let a = a.clone();
+                    let (a, fetching) = (a.clone(), fetching.clone());
                     tokio::spawn(async move {
+                        let _slot = fetching.acquire_owned().await;
                         let r = a.answer_fetch(&location, &path).await;
                         if let Err(e) = &r {
                             tracing::warn!(fetch.location = %location, error = %e, "a fetch was refused");
@@ -211,7 +226,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     });
                 }
                 Ok(Event::Browse { req, ask }) => {
-                    let a = a.clone();
+                    let (a, lock) = (a.clone(), indexing.clone());
                     tokio::spawn(async move {
                         let index = matches!(ask, drive_proto::Browse::Index { .. });
                         let r = a.answer_browse(ask).await;
@@ -223,7 +238,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                         // A folder made a location from a browser: index it now
                         // (the full pass every ten minutes keeps it after).
                         if let Some(loc) = added.and_then(|id| a.my_locations().into_iter().find(|l| l.id == id))
-                            && let Err(e) = a.index_location(&loc).await
+                            && let Err(e) = {
+                                let _pass = lock.lock().await;
+                                a.index_location(&loc).await
+                            }
                         {
                             tracing::warn!(location.name = %loc.name, error = %e, "a new location did not index");
                         }
@@ -281,8 +299,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 {
                     last_rules = now;
                     let locs = std::mem::take(&mut rules_due);
-                    let (a, rules, ruling) = (a.clone(), rules.clone(), ruling.clone());
+                    let (a, rules, ruling, lock) = (a.clone(), rules.clone(), ruling.clone(), indexing.clone());
                     tokio::spawn(async move {
+                        let _pass = lock.lock().await;
                         let mut locs = locs;
                         locs.sort();
                         locs.dedup();
@@ -313,8 +332,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     && !placing.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
                     last_place = now;
-                    let (a, placing) = (a.clone(), placing.clone());
+                    let (a, placing, lock) = (a.clone(), placing.clone(), indexing.clone());
                     tokio::spawn(async move {
+                        let _pass = lock.lock().await;
                         a.place().await;
                         a.make_available().await;
                         a.publish_available().await;
@@ -340,8 +360,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     && !backfilling.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
                     last_backfill = now;
-                    let (a, backfilling) = (a.clone(), backfilling.clone());
+                    let (a, backfilling, lock) = (a.clone(), backfilling.clone(), indexing.clone());
                     tokio::spawn(async move {
+                        let _pass = lock.lock().await;
                         let p = a.backfill_sidecars(&[], false, 200).await;
                         if p.files > 0 {
                             tracing::info!(
@@ -360,8 +381,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     a.announce();
                     a.publish_endpoint();
                     if !viewing.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        let (a, view, viewing) = (a.clone(), view.clone(), viewing.clone());
+                        let (a, view, viewing, lock) = (a.clone(), view.clone(), viewing.clone(), indexing.clone());
                         tokio::spawn(async move {
+                            let _pass = lock.lock().await;
                             refresh_view(&a, &view).await;
                             viewing.store(false, std::sync::atomic::Ordering::SeqCst);
                         });

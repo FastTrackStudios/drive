@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use drive_files::index::{self, LocationIndex, WalkStats};
 use drive_files::space::{self, Location, Volume};
@@ -115,6 +116,11 @@ pub fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(root.join(rel))
 }
 
+/// Decoded indexes by location, with the file's stamp (modified, length)
+/// they were read at.
+pub(crate) type IndexCache =
+    std::sync::Mutex<HashMap<String, ((Option<std::time::SystemTime>, u64), Arc<LocationIndex>)>>;
+
 impl Agent {
     pub fn report_volumes(&self) {
         let me = self.device_id();
@@ -166,15 +172,29 @@ impl Agent {
         self.dir.join("indexes").join(format!("{location}.idx"))
     }
 
-    /// A location's index as last downloaded or built here.
-    pub fn cached_index(&self, location: &str) -> Option<LocationIndex> {
-        std::fs::read(self.index_cache(location))
-            .ok()
-            .and_then(|b| index::decode(&b))
+    /// A location's index as last downloaded or built here: decoded once,
+    /// then shared until its file changes.
+    pub fn cached_index(&self, location: &str) -> Option<Arc<LocationIndex>> {
+        let path = self.index_cache(location);
+        let meta = std::fs::metadata(&path).ok()?;
+        let stamp = (meta.modified().ok(), meta.len());
+        if let Some((s, i)) = self.indexes.lock().expect("indexes").get(location)
+            && *s == stamp
+        {
+            return Some(i.clone());
+        }
+        let _span = tracing::info_span!("drive.index.decode", location.id = %location).entered();
+        let decoded = Arc::new(index::decode(&std::fs::read(&path).ok()?)?);
+        self.indexes
+            .lock()
+            .expect("indexes")
+            .insert(location.to_string(), (stamp, decoded.clone()));
+        Some(decoded)
     }
 
     /// Walk one of this device's locations, publish its index to the node
     /// and record it in the registry.
+    #[tracing::instrument(name = "drive.index", skip_all, fields(location.name = %loc.name, index.files = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
     pub async fn index_location(&self, loc: &Location) -> Result<WalkStats, String> {
         if space::is_paused(&self.space, &loc.id) {
             tracing::debug!(location.name = %loc.name, "paused: kept the last index");
@@ -194,7 +214,7 @@ impl Agent {
             .max(previous.as_ref().map_or(0, |p| p.entries.len()));
         let (idx, stats) = if loc.storage.is_empty() {
             let (id, root) = (loc.id.clone(), PathBuf::from(&loc.path));
-            tokio::task::spawn_blocking(move || index::walk(&id, &root, previous.as_ref()))
+            tokio::task::spawn_blocking(move || index::walk(&id, &root, previous.as_deref()))
                 .await
                 .map_err(|e| e.to_string())?
         } else {
@@ -208,7 +228,7 @@ impl Agent {
                 .cloned();
             let own = own.ok_or("this device does not run that location's storage")?;
             let op = own.config.operator().map_err(|e| e.to_string())?;
-            index::walk_storage(&loc.id, &op, &loc.path, previous.as_ref())
+            index::walk_storage(&loc.id, &op, &loc.path, previous.as_deref())
                 .await
                 .map_err(|e| e.to_string())?
         };
@@ -252,24 +272,36 @@ impl Agent {
             index.hashed = stats.hashed,
             "indexed"
         );
+        tracing::Span::current().record("index.files", stats.files);
+        crate::telemetry::mark_rss();
         Ok(stats)
     }
 
     /// Every location's index, downloaded when the registry has a newer
     /// one than this device's copy (so browsing works offline after).
-    pub async fn refresh_indexes(&self) -> HashMap<String, LocationIndex> {
+    #[tracing::instrument(name = "drive.indexes.refresh", skip_all, fields(indexes.count = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
+    pub async fn refresh_indexes(&self) -> HashMap<String, Arc<LocationIndex>> {
         let mut out = HashMap::new();
         for loc in space::locations(&self.space) {
             let have = self.cached_index(&loc.id);
             // The registry records when the index was published; ours is
-            // stale when it was built well before that.
-            let stale = have.as_ref().is_none_or(|h| h.built + 60_000 < loc.built);
+            // stale when it was built well before that. This device's own
+            // locations are indexed here: its copy is the one published.
+            let mine = loc.device == self.device_id();
+            let got = self.fetched.lock().expect("fetched").get(&loc.id).copied();
+            let stale = !mine
+                && got.is_none_or(|g| g < loc.built)
+                && have.as_ref().is_none_or(|h| h.built + 60_000 < loc.built);
             let fresh = if stale && !loc.index.is_empty() {
                 match self.fetch_bytes(&loc.index).await {
                     Ok(bytes) => {
                         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
                         let _ = std::fs::write(self.index_cache(&loc.id), &bytes);
-                        index::decode(&bytes)
+                        self.fetched
+                            .lock()
+                            .expect("fetched")
+                            .insert(loc.id.clone(), loc.built);
+                        self.cached_index(&loc.id)
                     }
                     Err(e) => {
                         tracing::debug!(location.id = %loc.id, error = %e, "an index could not be fetched");
@@ -283,11 +315,14 @@ impl Agent {
                 out.insert(loc.id.clone(), i);
             }
         }
+        tracing::Span::current().record("indexes.count", out.len());
+        crate::telemetry::mark_rss();
         out
     }
 
     /// The node asks for a file in one of this device's locations: put its
     /// bytes on the node and say their hash.
+    #[tracing::instrument(name = "drive.fetch", skip_all, fields(fetch.bytes = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
     pub async fn answer_fetch(&self, location: &str, path: &str) -> Result<String, String> {
         let loc = self
             .my_locations()
@@ -324,6 +359,8 @@ impl Agent {
                 .map_err(|e| e.to_string())?
                 .to_vec()
         };
+        tracing::Span::current().record("fetch.bytes", bytes.len());
+        crate::telemetry::mark_rss();
         let h = drive_files::hash::of_bytes(&bytes);
         let url = format!("{}/blobs/{h}", self.cfg.lock().expect("cfg").node_http());
         let r = self

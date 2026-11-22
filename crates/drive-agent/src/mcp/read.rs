@@ -407,7 +407,8 @@ pub async fn folder_summary(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         let prefix = format!("{path}/");
         let rows = idx
             .entries
-            .into_iter()
+            .iter()
+            .cloned()
             .filter(|e| path.is_empty() || e.path.starts_with(&prefix))
             .map(|e| Row {
                 path: e.path,
@@ -530,7 +531,7 @@ pub async fn duplicates(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let on = ctx.online();
     let mut groups: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
     for (lid, idx) in ctx.indexes().await {
-        for e in idx.entries {
+        for e in idx.entries.iter().cloned() {
             if e.dir || e.sampled.is_empty() || e.size < min {
                 continue;
             }

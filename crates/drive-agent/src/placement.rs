@@ -71,7 +71,9 @@ impl Agent {
     }
 
     /// One pass of this device's role.
+    #[tracing::instrument(name = "drive.place", skip_all, fields(process.rss_mb = tracing::field::Empty))]
     pub async fn place(&self) -> Done {
+        let _rss = crate::telemetry::RssOnDrop;
         let me = self.device_id();
         let role = self.role();
         let files = tree::files(&self.files);

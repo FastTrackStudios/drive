@@ -108,7 +108,7 @@ impl Apps {
         let size = self
             .a
             .cached_index(&loc.id)
-            .and_then(|i| i.entries.into_iter().find(|e| e.path == path && !e.dir))
+            .and_then(|i| i.entries.iter().find(|e| e.path == path && !e.dir).cloned())
             .map(|e| e.size);
         Ok(Source::Remote {
             device: loc.device.clone(),

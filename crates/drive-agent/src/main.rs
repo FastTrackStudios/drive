@@ -100,6 +100,7 @@ mod rules_fs;
 mod sidecars;
 mod sites;
 mod tagging;
+mod telemetry;
 mod transfer;
 mod view;
 
@@ -133,13 +134,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "drive=info".into()),
-        )
-        .init();
+    let _telemetry = telemetry::init("drive-agent");
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let dir = match args.iter().position(|a| a == "--dir") {
         Some(i) if i + 1 < args.len() => {

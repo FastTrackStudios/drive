@@ -31,6 +31,12 @@ sysinfo = { version = "0.40", default-features = false, features = ["disk"] }
 notify = "9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Traces to an OTLP collector, when OTEL_EXPORTER_OTLP_ENDPOINT (or
+# _TRACES_ENDPOINT) is set; nothing is exported otherwise.
+opentelemetry = "0.30"
+opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.30", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots", "trace"] }
+tracing-opentelemetry = "0.31"
 drive-proto = { path = "../drive-proto" }
 drive-transfer = { path = "../drive-transfer" }
 drive-kache = { path = "../drive-kache" }

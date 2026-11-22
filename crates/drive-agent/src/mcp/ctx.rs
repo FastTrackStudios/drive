@@ -31,7 +31,7 @@ pub struct Ctx {
     pub opts: Options,
     writes: AtomicUsize,
     pub(super) plans: std::sync::Mutex<HashMap<String, Plan>>,
-    indexes: tokio::sync::Mutex<Option<(Instant, HashMap<String, LocationIndex>)>>,
+    indexes: tokio::sync::Mutex<Option<(Instant, HashMap<String, std::sync::Arc<LocationIndex>>)>>,
 }
 
 /// A thing an agent names: a Drive file, a computer's file, a project, a
@@ -298,7 +298,7 @@ impl Ctx {
     }
 
     /// Every location's index (cached for a minute).
-    pub async fn indexes(&self) -> HashMap<String, LocationIndex> {
+    pub async fn indexes(&self) -> HashMap<String, std::sync::Arc<LocationIndex>> {
         let mut c = self.indexes.lock().await;
         if let Some((at, idx)) = c.as_ref()
             && at.elapsed() < Duration::from_secs(60)
@@ -310,7 +310,7 @@ impl Ctx {
         idx
     }
 
-    pub async fn index_of(&self, loc: &Location) -> Result<LocationIndex, String> {
+    pub async fn index_of(&self, loc: &Location) -> Result<std::sync::Arc<LocationIndex>, String> {
         self.indexes().await.remove(&loc.id).ok_or_else(|| {
             format!(
                 "{} has no index yet (its device has not walked it)",

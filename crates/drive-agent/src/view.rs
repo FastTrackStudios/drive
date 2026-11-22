@@ -27,7 +27,7 @@ impl View {
         me: &str,
         devices: Vec<(String, String)>,
         locations: Vec<Location>,
-        indexes: HashMap<String, LocationIndex>,
+        indexes: HashMap<String, std::sync::Arc<LocationIndex>>,
         online: HashSet<String>,
     ) -> View {
         let mut copies: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
@@ -47,19 +47,42 @@ impl View {
             .into_iter()
             .map(|(k, v)| (k, Tree::new(v)))
             .collect();
+        let mut v = View {
+            trees,
+            copies,
+            ..View::default()
+        };
+        v.set_devices(me, devices, locations, online);
+        v
+    }
+
+    /// Whether these are exactly the indexes the view was built from (the
+    /// same shared copies): then its trees and copies stand.
+    pub fn built_from(&self, indexes: &HashMap<String, std::sync::Arc<LocationIndex>>) -> bool {
+        self.trees.len() == indexes.len()
+            && indexes.iter().all(|(k, i)| {
+                self.trees
+                    .get(k)
+                    .is_some_and(|t| std::sync::Arc::ptr_eq(&t.index, i))
+            })
+    }
+
+    /// Who is here and where, without rebuilding the trees.
+    pub fn set_devices(
+        &mut self,
+        me: &str,
+        devices: Vec<(String, String)>,
+        locations: Vec<Location>,
+        online: HashSet<String>,
+    ) {
         // Only devices that have a location.
-        let devices = devices
+        self.devices = devices
             .into_iter()
             .filter(|(id, _)| locations.iter().any(|l| &l.device == id))
             .collect();
-        View {
-            me: me.to_string(),
-            devices,
-            locations,
-            trees,
-            online,
-            copies,
-        }
+        self.me = me.to_string();
+        self.locations = locations;
+        self.online = online;
     }
 
     pub(crate) fn device_by_name(&self, name: &str) -> Option<&str> {

@@ -173,6 +173,13 @@ pub struct Agent {
     pub provider: std::sync::OnceLock<drive_transfer::Provider>,
     /// What apps hold pinned here (docs/app-files.md): never evicted.
     pub leases: crate::apps::Leases,
+    /// Every location's index, decoded once and shared until its file
+    /// changes: a big disk's index is millions of entries, and placement,
+    /// the view, the rules and the tags each read every index often.
+    pub(crate) indexes: crate::places::IndexCache,
+    /// Each other device's location: the published index (its registry
+    /// `built`) this device last downloaded, so it is not fetched again.
+    pub(crate) fetched: Mutex<std::collections::HashMap<String, i64>>,
 }
 
 impl Agent {
@@ -225,6 +232,8 @@ impl Agent {
             busy: Mutex::new(HashSet::new()),
             provider: std::sync::OnceLock::new(),
             leases: Default::default(),
+            indexes: Default::default(),
+            fetched: Default::default(),
         }
     }
 
