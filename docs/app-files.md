@@ -254,7 +254,7 @@ came stays in the cache, unpinned.
 | `apps::cache::tests::*`, `apps::leases::tests::*` | LRU skips pinned entries; over budget rather than evict held ones; removals outside the cache refused; a planted symlink not followed; names and partials survive a restart; leases end by release or disconnect. |
 | `drive-local` `no_agent_is_a_clear_error`, `proto::tests::lines_round_trip` | no agent (or a stale socket) is `NotRunning`; the wire's shapes. |
 
-## Measured (THEBATTLESHIP, 2026-11-22)
+## Measured (a workstation, 2026-11-22)
 
 Release builds. A scratch node on its own port, and two agents with their
 own folders over scratch data, joined by pairing code. They talked over
