@@ -68,6 +68,7 @@ impl Fixture {
                 parts: vec![Part {
                     id: "pa".into(),
                     label: "Audio".into(),
+                    space: String::new(),
                     location: "dl".into(),
                     path: "Song A".into(),
                     available: false,

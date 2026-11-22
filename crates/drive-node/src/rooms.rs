@@ -104,6 +104,83 @@ impl Rooms {
         shared.iter().any(|pr| pr.docs.iter().any(|d| d == rest))
     }
 
+    /// Whether someone may change a document: as [`Rooms::may`], except an
+    /// org's registry, which only its members change (a project shared
+    /// with another org is theirs to see, not to rewrite: the registry
+    /// holds what the org lends to other orgs' projects, drive#52).
+    pub async fn may_write(&self, p: &crate::auth::Principal, id: &str) -> bool {
+        if p.all {
+            return true;
+        }
+        if let Some(org) = drive_proto::org_of(id)
+            && id == drive_files::space_doc(org)
+        {
+            return p.member_of(org);
+        }
+        self.may(p, id).await
+    }
+
+    /// Whether someone may read a file or folder (`path`) of a location of
+    /// `space`: a member of that org may read anything of it; anyone else
+    /// only what is inside a part of a project they may see (one of their
+    /// orgs', or shared with one of their orgs), where the part is the
+    /// org's own location or one it lends to that project
+    /// ([`drive_files::projects::Lend`]). Nothing else of the org (drive#52).
+    pub async fn may_read_file(
+        &self,
+        p: &crate::auth::Principal,
+        space: &str,
+        location: &str,
+        path: &str,
+    ) -> bool {
+        use drive_files::projects::{self, Project};
+        if p.member_of(space) {
+            return true;
+        }
+        let path = path.trim_matches('/');
+        if space.is_empty() || location.is_empty() || path.split('/').any(|c| c == ".." || c == ".")
+        {
+            return false;
+        }
+        let sees = |pr: &Project, org: &str| {
+            p.member_of(org) || pr.shared_with.iter().any(|o| p.member_of(o))
+        };
+        let (own, lends) = self
+            .read(&drive_files::space_doc(space), |d| {
+                (projects::projects(d), projects::lends(d))
+            })
+            .await;
+        // The org's own projects shared with one of theirs: their parts in
+        // its own locations.
+        let own_part = own.iter().filter(|pr| sees(pr, space)).any(|pr| {
+            pr.parts.iter().any(|part| {
+                part.space_in(space) == space && part.location == location && part.contains(path)
+            })
+        });
+        if own_part {
+            return true;
+        }
+        // What it lends to other orgs' projects they may see.
+        for l in lends.iter().filter(|l| {
+            l.org != space
+                && l.location == location
+                && (l.path.is_empty()
+                    || path == l.path
+                    || path.starts_with(&format!("{}/", l.path)))
+        }) {
+            let theirs = self
+                .read(&drive_files::space_doc(&l.org), projects::projects)
+                .await;
+            let lent = theirs.iter().any(|pr| {
+                sees(pr, &l.org) && pr.parts.iter().any(|part| l.matches(space, pr, part))
+            });
+            if lent {
+                return true;
+            }
+        }
+        false
+    }
+
     fn refuse(out: &Outbox, who: &crate::auth::Principal, id: &str) {
         tracing::warn!(auth.outcome = "denied", auth.who = %who.who, doc.org = drive_proto::org_of(id).unwrap_or(""), "a document outside the person's orgs was asked for");
         let _ = out.send(ToClient::Error {
@@ -356,8 +433,13 @@ impl Rooms {
             ToNode::Agent { space, .. } => Some(drive_files::space_doc(space)),
             _ => None,
         };
+        let allowed = match (&named, &msg) {
+            (Some(id), ToNode::Update { .. }) => self.may_write(who, id).await,
+            (Some(id), _) => self.may(who, id).await,
+            (None, _) => true,
+        };
         if let Some(id) = named
-            && !self.may(who, &id).await
+            && !allowed
         {
             Self::refuse(out, who, &id);
             return;

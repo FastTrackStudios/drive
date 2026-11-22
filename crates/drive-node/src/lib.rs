@@ -16,6 +16,9 @@ pub mod sites;
 pub mod store;
 pub mod transfer;
 
+#[cfg(test)]
+mod shared_tests;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -177,12 +180,54 @@ async fn guard(
         return next.run(req).await;
     }
     if let Some(org) = org_of_request(req.uri())
-        && !rooms.may(&who, &drive_files::space_doc(&org)).await
+        && !who.member_of(&org)
+        && !shared_file_read(&rooms, &who, &org, req.method().clone(), req.uri().clone()).await
     {
         tracing::warn!(auth.outcome = "denied", auth.who = %who.who, req.org = %org, "a request about an org the person is not in");
         return (StatusCode::FORBIDDEN, "not one of your orgs").into_response();
     }
     next.run(req).await
+}
+
+/// A request of someone outside the org that is a read of files they may
+/// see through a project ([`Rooms::may_read_file`]): a folder of a part
+/// (`/list`), one of its files (`/fetch`), or a sidecar of one. Nothing
+/// else of the org (its search, stats, other locations).
+async fn shared_file_read(
+    rooms: &Rooms,
+    who: &auth::Principal,
+    org: &str,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> bool {
+    if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+        return false;
+    }
+    let query = query_map(&uri);
+    let get = |k: &str| query.get(k).map(String::as_str).unwrap_or("");
+    let path = uri.path();
+    let location = if path == "/list" || path.starts_with("/sidecar/") {
+        get("location").to_string()
+    } else if let Some(rest) = path.strip_prefix("/fetch/") {
+        rest.split('/')
+            .nth(1)
+            .map(percent_decode)
+            .unwrap_or_default()
+    } else {
+        return false;
+    };
+    rooms.may_read_file(who, org, &location, get("path")).await
+}
+
+fn query_map(uri: &axum::http::Uri) -> std::collections::HashMap<String, String> {
+    uri.query()
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            Some((percent_decode(k), percent_decode(v)))
+        })
+        .collect()
 }
 
 async fn guard_writes(

@@ -220,6 +220,33 @@ Drive stays the data platform; apps build on its catalog:
   carries out by downloading the library's files into its container. Same
   registry, same index, same protection report.
 
+## Projects across orgs (built, 2026-11-22)
+
+A project belongs to one org and can be shared with others
+(`share_with_org`): their members see it. Its parts are folders wherever
+they are, also in another org's locations: a church's song whose stems
+are on a member's own computer, registered in their personal org.
+
+- A part names that org (`space`; empty: the project's own), written with
+  `projects::add_part_in`.
+- The other org lends the folder to the project in its own registry
+  (`projects::lend`: the project's org, the project, the part, the
+  location and path). Only that org's members can write its registry, so
+  a part can only reach a folder someone in both orgs chose to lend. Both
+  sides must agree (same location and path); taking either back
+  (`remove_part`, `unlend`) ends it.
+- The node lets whoever may see the project (its org's members, and the
+  members of the orgs it is shared with) read exactly the files of its
+  parts: `/list` of a folder inside a part, `/fetch` of a file in one, the
+  file's sidecars, `/browse/{space}/{device}/file` of a file under a
+  location inside a part (never a listing), and share links. Nothing else
+  of that org: its search, stats, other locations and folders above the
+  part stay its members'.
+- An org's registry is readable by the orgs it shares projects with, but
+  only its members change it.
+- `drive warm --project ORG/NAME` warms another org's project's parts that
+  are in this device's org (a project of the device's own org by `NAME`).
+
 ## Next
 
 - **File-manager status:** a Nautilus extension (nautilus-python) and a
