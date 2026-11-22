@@ -2099,9 +2099,11 @@ checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 name = "drive-agent"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "blake3",
  "drive-files",
  "drive-native",
+ "drive-node",
  "drive-proto",
  "drive-rules",
  "drive-sidecars",

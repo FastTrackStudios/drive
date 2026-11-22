@@ -30,6 +30,9 @@ drive-transfer = { path = "../drive-transfer" }
 
 [dev-dependencies]
 tempfile = "3"
+# The MCP server's tests run a node in the same process.
+drive-node = { path = "../drive-node" }
+axum = "0.8"
 
 [features]
 # The FUSE mount (Linux: libfuse3; macOS: macFUSE). `serve` needs none of it.
