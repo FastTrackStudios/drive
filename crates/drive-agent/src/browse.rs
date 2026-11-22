@@ -255,7 +255,7 @@ impl Agent {
         roots(&crate::places::volumes(&me), home.as_deref())
     }
 
-    fn browse_rules(&self) -> Rules {
+    pub(crate) fn browse_rules(&self) -> Rules {
         Rules::new(&self.browse_roots(), &self.dir)
     }
 

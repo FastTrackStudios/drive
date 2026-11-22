@@ -34,11 +34,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 drive-proto = { path = "../drive-proto" }
 drive-transfer = { path = "../drive-transfer" }
 drive-kache = { path = "../drive-kache" }
+drive-local = { path = "../drive-local" }
+iroh = "1"
 futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
-iroh = "1"
 # The MCP server's tests run a node in the same process.
 drive-node = { path = "../drive-node" }
 axum = "0.8"

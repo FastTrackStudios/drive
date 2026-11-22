@@ -65,6 +65,13 @@
 //! drive [--dir DIR] kache status | config         # the group, what is kept; kache's [cache.remote]
 //! drive [--dir DIR] kache budget GIB | port PORT
 //!
+//! Files for apps (docs/app-files.md; the running agent serves them):
+//! drive [--dir DIR] open TARGET [--hash]          # a real local path for any Drive file
+//! drive [--dir DIR] warm TARGET… [--project NAME] [--kind audio]… [--priority low|normal|high]
+//! drive [--dir DIR] pins                          # what apps hold pinned here, and why
+//! drive [--dir DIR] status                        # the app cache and its pins
+//! drive [--dir DIR] apps budget GIB               # the app cache's size
+//!
 //! AI agents (docs/agents.md): an MCP server on stdio, as this device:
 //! drive [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N] [--timeout SECONDS]
 //!
@@ -76,6 +83,7 @@
 //! diagnostics go through `tracing` to stderr.
 
 mod agent;
+mod apps;
 mod available;
 mod browse;
 #[cfg(feature = "mount")]
@@ -129,7 +137,7 @@ async fn main() {
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "drive_agent=info".into()),
+                .unwrap_or_else(|_| "drive=info".into()),
         )
         .init();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -168,6 +176,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 relay: None,
                 allow_rule_moves: false,
                 kache: Default::default(),
+                apps: Default::default(),
             };
             cfg.save(dir)?;
             let a = Agent::start(dir, cfg.clone()).await;
@@ -201,6 +210,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     relay: None,
                     allow_rule_moves: false,
                     kache: Default::default(),
+                    apps: Default::default(),
                 },
                 (Err(e), _, _) => return Err(format!("{e} (before joining: sign-in --node URL --space NAME)")),
             };
@@ -310,6 +320,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 relay: prior.as_ref().and_then(|c| c.relay.clone()),
                 allow_rule_moves: false,
                 kache: Default::default(),
+                apps: Default::default(),
             };
             let a = Agent::start(dir, cfg.clone()).await;
             let d = space::join(&a.space, &code, this_device(&cfg.device_id, &name))
@@ -518,6 +529,8 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 ));
             }
         }
+        "status" if args.len() < 2 => app_status(dir)?,
+        "open" | "warm" | "pins" | "apps" => app_command(dir, args)?,
         "status" => {
             let a = start(dir).await?;
             let p = args.get(1).ok_or("status PATH")?;
@@ -1465,6 +1478,197 @@ async fn kache_command(dir: &Path, args: &[String]) -> Result<(), String> {
             out("Saved; the agent uses it when it next starts.");
         }
         other => return Err(format!("unknown: kache {other}")),
+    }
+    Ok(())
+}
+
+/// `drive status` with no file: the app cache and what apps hold.
+fn app_status(dir: &Path) -> Result<(), String> {
+    let c = apps::client(dir, "drive status")?;
+    let st = c.status().map_err(|e| e.to_string())?;
+    out(format!(
+        "app cache: {} files, {} of {} ({})",
+        st.cache_files,
+        human(st.cache_bytes),
+        human(st.budget),
+        st.cache_dir.display()
+    ));
+    if st.partial_files > 0 {
+        out(format!(
+            "  {} fetches stopped part way ({}; they resume when asked for again)",
+            st.partial_files,
+            human(st.partial_bytes)
+        ));
+    }
+    let others: Vec<&String> = st.apps.iter().filter(|a| *a != "drive status").collect();
+    out(format!(
+        "apps connected: {}",
+        if others.is_empty() {
+            "none".to_string()
+        } else {
+            others
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ));
+    print_pins(&st.pins);
+    Ok(())
+}
+
+fn print_pins(pins: &[drive_local::Pin]) {
+    if pins.is_empty() {
+        out("nothing pinned by apps");
+        return;
+    }
+    out(format!(
+        "pinned by apps: {} files, {}",
+        pins.len(),
+        human(pins.iter().map(|p| p.size).sum())
+    ));
+    for p in pins {
+        let how = match p.how {
+            drive_local::How::Local => "in place",
+            drive_local::How::Cached | drive_local::How::Fetched => "cached",
+        };
+        out(format!("  {} ({}, {how})", p.path.display(), human(p.size)));
+        for h in &p.holders {
+            out(format!("    {} · {} · {}", h.app, h.why, h.target));
+        }
+    }
+}
+
+/// `open`, `warm`, `pins`, `apps budget`: through the running agent.
+fn app_command(dir: &Path, args: &[String]) -> Result<(), String> {
+    match args[0].as_str() {
+        "open" => {
+            let target = args.get(1).ok_or("open TARGET")?;
+            let c = apps::client(dir, "drive open")?;
+            let mut o = drive_local::OpenOptions::new();
+            o.hash = args.iter().any(|a| a == "--hash");
+            let started = std::time::Instant::now();
+            let f = c.open_with(target, o).map_err(|e| e.to_string())?;
+            out(f.path.display().to_string());
+            let _ = writeln!(
+                std::io::stderr(),
+                "{:?} · {} · {}{} ms",
+                f.how,
+                human(f.size),
+                f.hash
+                    .as_deref()
+                    .map(|h| format!("blake3 {h} · "))
+                    .unwrap_or_default(),
+                started.elapsed().as_millis()
+            );
+        }
+        "warm" => {
+            let mut w = drive_local::Warm::default();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--project" => {
+                        w.project = args.get(i + 1).cloned();
+                        i += 1;
+                    }
+                    "--kind" => {
+                        w.kinds.extend(args.get(i + 1).cloned());
+                        i += 1;
+                    }
+                    "--priority" => {
+                        w.priority = match args.get(i + 1).map(String::as_str) {
+                            Some("low") => drive_local::Priority::Low,
+                            Some("high") => drive_local::Priority::High,
+                            _ => drive_local::Priority::Normal,
+                        };
+                        i += 1;
+                    }
+                    t => w.targets.push(t.to_string()),
+                }
+                i += 1;
+            }
+            if w.targets.is_empty() && w.project.is_none() {
+                return Err(
+                    "warm TARGET… [--project NAME] [--kind KIND]… [--priority low|normal|high]"
+                        .into(),
+                );
+            }
+            // The command line holds nothing once it ends: what came stays
+            // in the cache, unpinned.
+            w.lease = false;
+            let c = apps::client(dir, "drive warm")?;
+            let started = std::time::Instant::now();
+            let job = c.warm(w).map_err(|e| e.to_string())?;
+            let s = &job.started;
+            let _ = writeln!(
+                std::io::stderr(),
+                "{} files ({}), {} here already",
+                s.files,
+                human(s.bytes),
+                s.here
+            );
+            let mut last = None;
+            while let Some(ev) = job.recv() {
+                match ev {
+                    drive_local::Event::Progress(p) => {
+                        if let Some(f) = &p.file
+                            && f.state == drive_local::FileState::Failed
+                        {
+                            let _ = writeln!(
+                                std::io::stderr(),
+                                "  failed: {}: {}",
+                                f.target,
+                                f.error.as_deref().unwrap_or("")
+                            );
+                        }
+                        let _ = write!(
+                            std::io::stderr(),
+                            "\r{}/{} files · {} / {} · {}/s{}        ",
+                            p.files_done,
+                            p.files,
+                            human(p.bytes_done),
+                            human(p.bytes),
+                            human(p.rate),
+                            p.eta_ms
+                                .map(|e| format!(" · {} s left", e / 1000))
+                                .unwrap_or_default()
+                        );
+                    }
+                    drive_local::Event::Done(p) => {
+                        last = Some(p);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let _ = writeln!(std::io::stderr());
+            let p = last.ok_or("the agent went away")?;
+            out(format!(
+                "{} of {} files here, {} failed, {} in {:.1} s",
+                p.files_done,
+                p.files,
+                p.files_failed,
+                human(p.bytes_done),
+                started.elapsed().as_secs_f64()
+            ));
+        }
+        "pins" => {
+            let c = apps::client(dir, "drive pins")?;
+            print_pins(&c.pins().map_err(|e| e.to_string())?);
+        }
+        "apps" => match (args.get(1).map(String::as_str), args.get(2)) {
+            (Some("budget"), Some(n)) => {
+                let gib: u64 = n.parse().map_err(|_| "apps budget GIB")?;
+                let mut cfg = Config::load(dir)?;
+                cfg.apps.budget_gib = Some(gib);
+                cfg.save(dir)?;
+                out(format!(
+                    "the app cache keeps {gib} GiB (from the agent's next start)"
+                ));
+            }
+            _ => return Err("apps budget GIB".into()),
+        },
+        _ => unreachable!(),
     }
     Ok(())
 }

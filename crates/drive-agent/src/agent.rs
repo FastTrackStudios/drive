@@ -67,6 +67,10 @@ pub struct Config {
     /// (docs/kache.md): its port, how much is kept here.
     #[serde(default)]
     pub kache: crate::kache::Settings,
+    /// Files for apps (docs/app-files.md): the app cache's budget, and a
+    /// loopback port beside the socket.
+    #[serde(default)]
+    pub apps: crate::apps::Settings,
 }
 
 impl Config {
@@ -167,6 +171,8 @@ pub struct Agent {
     /// This device's iroh endpoint serving its files (docs/transfer.md),
     /// once the daemon has started it.
     pub provider: std::sync::OnceLock<drive_transfer::Provider>,
+    /// What apps hold pinned here (docs/app-files.md): never evicted.
+    pub leases: crate::apps::Leases,
 }
 
 impl Agent {
@@ -218,6 +224,7 @@ impl Agent {
             http,
             busy: Mutex::new(HashSet::new()),
             provider: std::sync::OnceLock::new(),
+            leases: Default::default(),
         }
     }
 
