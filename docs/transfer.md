@@ -24,6 +24,9 @@ the node to a browser, without being uploaded whole first (#26). Written
   n0's public relays for now, our own later (a setting).
 - **Agents from before** (no endpoint in the registry) keep the old paths.
 - Document sync (Loro) stays on the existing websocket.
+- The endpoint also answers kache build-cache lookups from the device's
+  build group (ALPN `drive/kache/1`, behind the same door;
+  [kache.md](kache.md)).
 
 Code: `crates/drive-transfer` (the endpoint, the provider, the fetcher),
 `crates/drive-agent/src/transfer.rs`, `crates/drive-node/src/transfer.rs`.
