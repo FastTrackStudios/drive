@@ -162,7 +162,9 @@ pub struct Warm {
     /// `drive:FOLDER` or `LOCATION:FOLDER`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
-    /// A project by name or id: every file of its parts.
+    /// A project by name or id (`ORG/NAME`: another org's): every file of
+    /// its parts in this device's org, location folders and Drive-tree
+    /// folders alike.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     /// Only files of these kinds (`audio`, `video`, `image`, … as Drive's

@@ -375,6 +375,9 @@ pub async fn fetch(
                 if c.blobs.has(&got.hash).await.unwrap_or(false) {
                     let mut query = HashMap::new();
                     query.insert("name".to_string(), name);
+                    if crate::wants_inline(&p) {
+                        query.insert("inline".to_string(), "1".to_string());
+                    }
                     return match crate::get_blob_ranged(
                         UrlPath(got.hash),
                         Query(query),
@@ -393,6 +396,7 @@ pub async fn fetch(
                 let reply = crate::transfer::Reply {
                     name,
                     cache: Some(c.blobs.clone()),
+                    inline: crate::wants_inline(&p),
                 };
                 return crate::transfer::respond(t, &got, src, &headers, reply);
             }
@@ -406,6 +410,9 @@ pub async fn fetch(
     };
     let mut query = HashMap::new();
     query.insert("name".to_string(), name);
+    if crate::wants_inline(&p) {
+        query.insert("inline".to_string(), "1".to_string());
+    }
     match crate::get_blob_ranged(UrlPath(hash), Query(query), headers, State(c.blobs)).await {
         Ok(r) => r,
         Err(s) => s.into_response(),

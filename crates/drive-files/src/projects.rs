@@ -11,10 +11,20 @@
 //! the same way wherever they are. [`available`] records what has been put
 //! there, so the node can hand a file out while its computer is off.
 //!
+//! A part may be in another org's location: a song of a church whose
+//! stems are on a member's own computers, registered in their personal
+//! org. Such a part names that org (`space`), and that org lends the
+//! folder to the project ([`lend`], written in its own registry, which
+//! only its members can write): the node then lets whoever may see the
+//! project read exactly the files of that part, and nothing else of the
+//! lending org ([`Lend`], docs/files.md). Without the lend the part does
+//! not resolve for anyone outside the lending org.
+//!
 //! Layout, in the space's registry: `projects`: id → { id, name, kind,
-//! created, parts: part id → { id, label, location, path, available },
-//! docs: doc id → true }; `available`: location → path → { hash, size,
-//! mtime }.
+//! created, parts: part id → { id, label, space, location, path,
+//! available }, docs: doc id → true }; `available`: location → path → {
+//! hash, size, mtime }; `lent`: "org/project/part" → { org, project, part,
+//! location, path }.
 
 use loro::{LoroDoc, LoroMap, LoroValue, ValueOrContainer};
 use serde::Serialize;
@@ -37,11 +47,14 @@ pub struct Project {
 }
 
 /// A folder of a project, on whichever computer (or storage) has it.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Part {
     pub id: String,
     /// `Audio`, `Footage`, `Client mixes`.
     pub label: String,
+    /// The org whose location it is; empty: the project's own.
+    pub space: String,
+    /// A location id of that org, or [`TREE`] for its Drive tree.
     pub location: String,
     /// Inside the location (`""`: all of it).
     pub path: String,
@@ -102,11 +115,29 @@ pub fn remove_project(doc: &LoroDoc, id: &str) -> loro::LoroResult<()> {
     doc.get_map("projects").delete(id)
 }
 
+/// A part's location when it is a folder of the org's Drive tree (an
+/// app's uploads linked to a project).
+pub const TREE: &str = "drive";
+
 /// Add a folder to a project; returns the part's id.
 pub fn add_part(
     doc: &LoroDoc,
     project: &str,
     label: &str,
+    location: &str,
+    path: &str,
+) -> loro::LoroResult<String> {
+    add_part_in(doc, project, label, "", location, path)
+}
+
+/// Add a folder of another org's location (`space`; empty: the project's
+/// own) to a project; returns the part's id. The other org lends it with
+/// [`lend`] in its own registry, so the project's people can read it.
+pub fn add_part_in(
+    doc: &LoroDoc,
+    project: &str,
+    label: &str,
+    space: &str,
     location: &str,
     path: &str,
 ) -> loro::LoroResult<String> {
@@ -116,6 +147,9 @@ pub fn add_part(
         .ensure_mergeable_map(&id)?;
     m.insert("id", id.as_str())?;
     m.insert("label", label)?;
+    if !space.is_empty() {
+        m.insert("space", space)?;
+    }
     m.insert("location", location)?;
     m.insert("path", path.trim_matches('/'))?;
     m.insert("available", false)?;
@@ -177,6 +211,7 @@ pub fn projects(doc: &LoroDoc) -> Vec<Project> {
                         .map(|x| Part {
                             id: s(&x, "id"),
                             label: s(&x, "label"),
+                            space: s(&x, "space"),
                             location: s(&x, "location"),
                             path: s(&x, "path"),
                             available: matches!(
@@ -217,6 +252,7 @@ pub fn projects(doc: &LoroDoc) -> Vec<Project> {
 pub fn in_available_part(projects: &[Project], location: &str, path: &str) -> bool {
     projects.iter().flat_map(|p| &p.parts).any(|part| {
         part.available
+            && part.space.is_empty()
             && part.location == location
             && (part.path.is_empty()
                 || path == part.path
@@ -360,7 +396,91 @@ pub fn shares(doc: &LoroDoc, project: &str) -> Vec<Share> {
     out
 }
 
+/// A folder of this org's location lent to another org's project part
+/// (kept in the lending org's registry; see the module's docs).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Lend {
+    /// The project's org.
+    pub org: String,
+    pub project: String,
+    pub part: String,
+    /// The folder lent: a location of this org, and a path in it.
+    pub location: String,
+    pub path: String,
+}
+
+fn lend_key(org: &str, project: &str, part: &str) -> String {
+    format!("{org}/{project}/{part}")
+}
+
+/// Lend a folder of this org (its registry, `doc`) to another org's
+/// project part.
+pub fn lend(doc: &LoroDoc, l: &Lend) -> loro::LoroResult<()> {
+    let m = doc
+        .get_map("lent")
+        .ensure_mergeable_map(&lend_key(&l.org, &l.project, &l.part))?;
+    m.insert("org", l.org.as_str())?;
+    m.insert("project", l.project.as_str())?;
+    m.insert("part", l.part.as_str())?;
+    m.insert("location", l.location.as_str())?;
+    m.insert("path", l.path.trim_matches('/'))?;
+    Ok(())
+}
+
+/// Take a lend back: the part stops resolving outside this org.
+pub fn unlend(doc: &LoroDoc, org: &str, project: &str, part: &str) -> loro::LoroResult<()> {
+    let lent = doc.get_map("lent");
+    let k = lend_key(org, project, part);
+    if lent.get(&k).is_some() {
+        lent.delete(&k)?;
+    }
+    Ok(())
+}
+
+/// Everything this org lends.
+pub fn lends(doc: &LoroDoc) -> Vec<Lend> {
+    let map = doc.get_map("lent");
+    map.keys()
+        .filter_map(|k| child(&map, &k))
+        .map(|m| Lend {
+            org: s(&m, "org"),
+            project: s(&m, "project"),
+            part: s(&m, "part"),
+            location: s(&m, "location"),
+            path: s(&m, "path"),
+        })
+        .filter(|l| !l.org.is_empty() && !l.part.is_empty())
+        .collect()
+}
+
+impl Lend {
+    /// Whether the part `part` of `project` in org `self.org` is the one
+    /// this lends (`space` being the lending org): the same folder, both
+    /// sides agreeing, so taking either back ends it.
+    pub fn matches(&self, space: &str, project: &Project, part: &Part) -> bool {
+        self.project == project.id
+            && self.part == part.id
+            && part.space == space
+            && part.location == self.location
+            && part.path == self.path
+    }
+}
+
 impl Part {
+    /// The org whose location this part is in, for a project of `org`.
+    pub fn space_in<'a>(&'a self, org: &'a str) -> &'a str {
+        if self.space.is_empty() {
+            org
+        } else {
+            &self.space
+        }
+    }
+
+    /// A folder of the org's Drive tree, not of a location.
+    pub fn in_tree(&self) -> bool {
+        self.location == TREE
+    }
+
     /// Whether a path of its location is inside this part.
     pub fn contains(&self, path: &str) -> bool {
         self.path.is_empty() || path == self.path || path.starts_with(&format!("{}/", self.path))
@@ -475,6 +595,7 @@ mod tests {
         let part = Part {
             id: "x".into(),
             label: "Mixes".into(),
+            space: String::new(),
             location: "l".into(),
             path: "Song A/Mixes".into(),
             available: false,
@@ -492,5 +613,42 @@ mod tests {
         share_with_org(&d, &p, "tombrooksmusic", true).unwrap();
         share_with_org(&d, &p, "cbu", false).unwrap();
         assert_eq!(projects(&d)[0].shared_with, ["tombrooksmusic"]);
+    }
+
+    #[test]
+    fn a_part_in_another_orgs_location_and_its_lend() {
+        // The church's song; its stems on a member's own computer.
+        let church = LoroDoc::new();
+        let p = add_project(&church, "Amazing Grace", "MusicRecording").unwrap();
+        let part = add_part_in(&church, &p, "Stems", "cody", "laptop-music", "AG/Stems").unwrap();
+        let pr = &projects(&church)[0];
+        let x = &pr.parts[0];
+        assert_eq!((x.space.as_str(), x.space_in("church")), ("cody", "cody"));
+        // Not the church's own location: never kept available by the church.
+        assert!(!in_available_part(
+            &projects(&church),
+            "laptop-music",
+            "AG/Stems/a.wav"
+        ));
+
+        let cody = LoroDoc::new();
+        let l = Lend {
+            org: "church".into(),
+            project: p.clone(),
+            part: part.clone(),
+            location: "laptop-music".into(),
+            path: "/AG/Stems/".into(),
+        };
+        lend(&cody, &l).unwrap();
+        let got = lends(&cody);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].matches("cody", pr, x));
+        assert!(!got[0].matches("someone-else", pr, x));
+        // A part moved elsewhere no longer matches its lend.
+        let mut moved = x.clone();
+        moved.path = "AG".into();
+        assert!(!got[0].matches("cody", pr, &moved));
+        unlend(&cody, "church", &p, &part).unwrap();
+        assert!(lends(&cody).is_empty());
     }
 }

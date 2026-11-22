@@ -178,6 +178,12 @@ what a node keeps: "every document in org X", "all media of record Y",
   editor of this org"). Every node checks signatures itself, so
   permissions hold offline. Every update is signed by its device key and
   rejected by peers when the key lacks the role.
+- **People come from the issuer.** An org's members (account, email,
+  name, picture, role) are the issuer's: the node lists them to that
+  org's own signed-in members at `GET /orgs/{org}/members` (asked with
+  their token, kept a minute), and `drive_dioxus::use_members(org)` hands
+  them to an app, so no app keeps its own copy of who is in an org. A node
+  without an issuer lists nobody.
 - **Removing someone** takes effect on every node that hears of it; what
   they already synced, they keep; keys for new data rotate.
 - **Share links** carry a capability: a document (and what it references,
@@ -266,6 +272,15 @@ activity, accounts and orgs). Domain work stays in its app.
 title, subtitle, date, icon, status, colour, and where a tap goes (a deep
 link, or its hosted web build). The overview renders them with no app
 code.
+
+**Recurring events.** An Event may repeat (an RRULE subset:
+`FREQ=WEEKLY;BYDAY=SU`, every other Tuesday, the first Sunday of the
+month, until a date or for a count) with dates left out;
+`drive_spine::calendar(doc, from, to)` lays out every meeting in a range,
+so "every Sunday, 10:30" shows before anyone plans one. An app's own
+event for one meeting (the set for the 29th) names the recurring event
+and the date it stands for (`series`, `occurrence`) and shows in that
+meeting's place, also when moved to another day.
 
 **Projects** link anything from any app: a record in Studio, its sessions
 (Events), client emails (Threads), invoices (Tasks), the band (People).

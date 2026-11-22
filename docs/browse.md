@@ -67,7 +67,7 @@ All under `/browse/{space}/{device}/`:
 |---|---|
 | `GET roots` | `{online, device_name, roots: [{mount, name, fs, total, free, removable, home}]}`; offline: the last roots seen, else the registry's volumes |
 | `GET list?root=&path=&offset=&limit=&hidden=1` | `{online, path, entries: [{name, dir, size, mtime, link}], total, offset, hidden}`; offline: the last answer for that page with `as_of` and `why`, else `503 {"state": "offline", "why": "Voyager is offline"}` |
-| `GET file?root=&path=&name=` | the bytes, streamed 4 MiB at a time from the device; `Range` honoured (`206`, `Content-Range`), so audio and video seek. Always `attachment`, `Content-Security-Policy: sandbox`, `nosniff`: a browsed HTML file never runs on the node's origin |
+| `GET file?root=&path=&name=` | the bytes, streamed 4 MiB at a time from the device; `Range` honoured (`206`, `Content-Range`), so audio and video seek. A download (`attachment`), or shown in place with `&inline=1` when its type runs nothing ([transfer.md](transfer.md)); `nosniff`, and `Content-Security-Policy: sandbox` (all but an inline PDF): a browsed HTML file never runs on the node's origin |
 | `GET sidecar/{kind}?root=&path=&size=&mtime=` | a thumbnail or peaks; see below |
 | `POST index` `{root, path, name}` | `{location}`; `409` when the folder already is one |
 

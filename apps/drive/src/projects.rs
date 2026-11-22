@@ -24,6 +24,8 @@ const KINDS: [(&str, &str); 5] = [
 pub fn ProjectView(space: String, id: String) -> Element {
     let nav = use_nav();
     let reg = use_doc(space_doc(&space));
+    // Parts in the Drive tree (an app's uploads) open at their folder.
+    let tree_doc = use_doc(drive_files::files_doc(&space));
     let spine_doc = use_doc(spine::SPINE);
     let docs = use_docs("");
     let r = reg.loro();
@@ -144,19 +146,41 @@ pub fn ProjectView(space: String, id: String) -> Element {
             div { class: "parts",
                 for part in p.parts.iter() {
                     {
-                        let l = locations.iter().find(|l| l.id == part.location);
-                        let owner = l
-                            .map(|l| {
-                                if l.storage.is_empty() {
-                                    devices.iter().find(|d| d.id == l.device).map_or(String::new(), |d| d.name.clone())
-                                } else {
-                                    storages.iter().find(|s| s.id == l.storage).map_or(String::new(), |s| s.name.clone())
-                                }
-                            })
-                            .unwrap_or_else(|| "a location that is gone".into());
+                        // A part in another org's location (lent to this
+                        // project) names that org; one in the Drive tree, the tree.
+                        let foreign = part.space_in(&space) != space;
+                        let l = if foreign || part.in_tree() {
+                            None
+                        } else {
+                            locations.iter().find(|l| l.id == part.location)
+                        };
+                        let owner = if part.in_tree() {
+                            "Drive".to_string()
+                        } else if foreign {
+                            format!("{}'s computers", part.space)
+                        } else {
+                            l.map(|l| {
+                                    if l.storage.is_empty() {
+                                        devices.iter().find(|d| d.id == l.device).map_or(String::new(), |d| d.name.clone())
+                                    } else {
+                                        storages.iter().find(|s| s.id == l.storage).map_or(String::new(), |s| s.name.clone())
+                                    }
+                                })
+                                .unwrap_or_else(|| "a location that is gone".into())
+                        };
                         let lname = l.map_or(String::new(), |l| l.name.clone());
                         let live = l.is_some_and(|l| up.contains(&l.device));
-                        let go = Place::Location { loc: part.location.clone(), path: part.path.clone() };
+                        let go = if part.in_tree() {
+                            Place::Drive(
+                                drive_files::tree::resolve(&tree_doc.peek(), &part.path)
+                                    .flatten()
+                                    .map(|e| drive_files::tree::id_string(e.id)),
+                            )
+                        } else if foreign {
+                            Place::Overview
+                        } else {
+                            Place::Location { loc: part.location.clone(), path: part.path.clone() }
+                        };
                         let (reg_a, reg_r) = (reg.clone(), reg.clone());
                         let (pa, pr) = (pid.clone(), pid.clone());
                         let (ia, ir) = (part.id.clone(), part.id.clone());

@@ -238,11 +238,75 @@ pub async fn guard(
         tracing::warn!(auth.outcome = "unauthenticated", browse.space = %space, "browsing a device without signing in");
         return (StatusCode::UNAUTHORIZED, "sign in").into_response();
     };
-    if space.is_empty() || !who.member_of(&space) {
+    if space.is_empty()
+        || !(who.member_of(&space) || shared_file(&rooms, &who, &space, req.uri().clone()).await)
+    {
         tracing::warn!(auth.outcome = "denied", auth.who = %who.who, browse.space = %space, "browsing a device of an org the person is not in");
         return (StatusCode::FORBIDDEN, "not one of your orgs").into_response();
     }
     next.run(req).await
+}
+
+/// Someone outside the org may read one file (or its sidecar) of a device
+/// when it is inside a location of that device and a project part they
+/// may see ([`Rooms::may_read_file`]); never list or index anything.
+async fn shared_file(
+    rooms: &Rooms,
+    who: &crate::auth::Principal,
+    space: &str,
+    uri: axum::http::Uri,
+) -> bool {
+    let mut seg = uri.path().trim_start_matches('/').split('/');
+    let (Some(device), Some(what)) = (seg.nth(2), seg.next()) else {
+        return false;
+    };
+    if what != "file" && what != "sidecar" {
+        return false;
+    }
+    let device = crate::percent_decode(device);
+    let q = crate::query_map(&uri);
+    let get = |k: &str| q.get(k).map(String::as_str).unwrap_or("");
+    let Some(full) = joined(get("root"), get("path")) else {
+        return false;
+    };
+    let locations = rooms
+        .read(
+            &drive_files::space_doc(space),
+            drive_files::space::locations,
+        )
+        .await;
+    for l in locations
+        .iter()
+        .filter(|l| l.device == device && l.storage.is_empty())
+    {
+        let base = l.path.trim_end_matches('/');
+        let rel = if full == base {
+            Some("")
+        } else {
+            full.strip_prefix(base).and_then(|r| r.strip_prefix('/'))
+        };
+        if let Some(rel) = rel
+            && rooms.may_read_file(who, space, &l.id, rel).await
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A browse request's `root` and `path` as one absolute path, refused when
+/// the path climbs out (`..`).
+fn joined(root: &str, path: &str) -> Option<String> {
+    let path = path.trim_matches('/');
+    if root.is_empty() || path.split('/').any(|c| c == ".." || c == ".") {
+        return None;
+    }
+    let root = root.trim_end_matches('/');
+    Some(if path.is_empty() {
+        root.to_string()
+    } else {
+        format!("{root}/{path}")
+    })
 }
 
 /// `GET /browse/{space}/{device}/roots`.
@@ -377,7 +441,11 @@ pub async fn file(
                     "" => path_name(&path).to_string(),
                     n => n.to_string(),
                 };
-                let reply = crate::transfer::Reply { name, cache: None };
+                let reply = crate::transfer::Reply {
+                    name,
+                    cache: None,
+                    inline: crate::wants_inline(&p),
+                };
                 return crate::transfer::respond(t, &got, src, &headers, reply);
             }
         }
@@ -459,25 +527,11 @@ pub async fn file(
         "" => path_name(q(&p, "path")).to_string(),
         n => n.to_string(),
     };
-    let safe: String = name
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
-        .collect();
     let h = r.headers_mut();
-    if let Ok(v) = HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
-        h.insert("content-type", v);
-    }
-    // Never shown as a page of the node's own (an HTML file would run).
-    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{safe}\"")) {
-        h.insert("content-disposition", v);
-    }
-    h.insert(
-        "content-security-policy",
-        HeaderValue::from_static("sandbox"),
-    );
-    h.insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
+    crate::file_headers(
+        h,
+        &name,
+        q(&p, "inline") == "1" || q(&p, "inline") == "true",
     );
     h.insert("accept-ranges", HeaderValue::from_static("bytes"));
     h.insert(

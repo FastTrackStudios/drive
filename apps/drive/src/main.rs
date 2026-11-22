@@ -223,10 +223,25 @@ fn Inbox() -> Element {
 #[component]
 fn Calendar() -> Element {
     let doc = use_doc(spine::SPINE);
-    let events = spine::events(&doc.loro());
+    // From the earliest one-off event (or today) to twelve weeks ahead:
+    // recurring events show each of their meetings in that span.
+    let stored = spine::events(&doc.loro());
+    let now = today();
+    let from = stored
+        .iter()
+        .filter(|e| e.repeat.is_empty() && !e.date.is_empty())
+        .map(|e| e.date.clone())
+        .min()
+        .filter(|d| *d < now)
+        .unwrap_or_else(|| now.clone());
+    let to = spine::recur::days(&now)
+        .map(|d| spine::recur::iso(d + 84))
+        .unwrap_or_else(|| now.clone());
+    let events = spine::calendar(&doc.loro(), &from, &to);
     let mut title = use_signal(String::new);
     let mut date = use_signal(|| today());
     let mut time = use_signal(|| "7:00 PM".to_string());
+    let mut weekly = use_signal(|| false);
     let mut days: Vec<String> = events.iter().map(|e| e.date.clone()).collect();
     days.dedup();
     let add = {
@@ -244,10 +259,20 @@ fn Calendar() -> Element {
                         id,
                         title: t,
                         app: "drive".into(),
-                        link: String::new(),
                         date: date(),
                         time: time(),
-                        place: String::new(),
+                        // Every week on the same weekday as its first date.
+                        repeat: if weekly() {
+                            spine::recur::days(&date())
+                                .map(|d| {
+                                    spine::recur::Rule::weekly(&[spine::recur::weekday(d)])
+                                        .to_string()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        },
+                        ..Default::default()
                     },
                 )
             });
@@ -276,6 +301,14 @@ fn Calendar() -> Element {
                     value: "{time}",
                     oninput: move |e| time.set(e.value()),
                 }
+                label { class: "weekly",
+                    input {
+                        r#type: "checkbox",
+                        checked: weekly(),
+                        onchange: move |e: FormEvent| weekly.set(e.checked()),
+                    }
+                    " Every week"
+                }
                 button { class: "primary", onclick: add, "Add" }
             }
             if events.is_empty() {
@@ -287,7 +320,12 @@ fn Calendar() -> Element {
                     for e in events.iter().filter(|e| &e.date == day) {
                         div { key: "{e.id}", class: "event",
                             span { class: "time", "{e.time}" }
-                            span { class: "etitle", "{e.title}" }
+                            span { class: "etitle",
+                                "{e.title}"
+                                if !e.series.is_empty() {
+                                    span { class: "repeats", title: "A recurring event", " ↻" }
+                                }
+                            }
                             if !e.place.is_empty() {
                                 span { class: "place", "{e.place}" }
                             }
@@ -297,11 +335,21 @@ fn Calendar() -> Element {
                             }
                             button {
                                 class: "x",
-                                title: "Remove",
+                                title: if e.is_generated() { "Skip this one" } else { "Remove" },
                                 onclick: {
                                     let doc = doc.clone();
-                                    let id = e.id.clone();
-                                    move |_| doc.edit(|d| spine::remove_event(d, &id))
+                                    let ev = e.clone();
+                                    // One meeting of a recurring event is left
+                                    // out; anything else is removed.
+                                    move |_| {
+                                        doc.edit(|d| {
+                                            if ev.is_generated() {
+                                                spine::skip_occurrence(d, &ev.series, &ev.occurrence, true)
+                                            } else {
+                                                spine::remove_event(d, &ev.id)
+                                            }
+                                        })
+                                    }
                                 },
                                 "✕"
                             }

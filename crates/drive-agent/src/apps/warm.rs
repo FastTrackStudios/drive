@@ -84,16 +84,7 @@ pub async fn expand(apps: &Apps, w: &Warm) -> Result<Vec<(String, Source)>, Stri
         out.extend(expand_target(apps, t).await?);
     }
     if let Some(p) = &w.project {
-        let project = projects::projects(&apps.a.space)
-            .into_iter()
-            .find(|x| x.id == *p || x.name.eq_ignore_ascii_case(p))
-            .ok_or_else(|| format!("no project {p}"))?;
-        for part in &project.parts {
-            let Some(loc) = apps.location(&part.location) else {
-                continue;
-            };
-            out.extend(location_folder(apps, &loc, &part.path)?);
-        }
+        out.extend(project_files(apps, p).await?);
     }
     if !w.kinds.is_empty() {
         let kinds = drive_spine::kinds::Kinds::load(&apps.a.spine);
@@ -114,6 +105,59 @@ pub async fn expand(apps: &Apps, w: &Warm) -> Result<Vec<(String, Source)>, Stri
     }
     let mut seen = HashSet::new();
     out.retain(|(label, _)| seen.insert(label.clone()));
+    Ok(out)
+}
+
+/// A project's files: `NAME` (or id) of this device's org, or `ORG/NAME`
+/// of another org (a church's song whose parts are on this computer). A
+/// part counts here when it is in this org's locations (its own, or lent
+/// to the other org's project, drive#52); parts on other orgs' computers
+/// are theirs to warm. A part in the Drive tree ([`projects::TREE`]) warms
+/// that folder of the tree.
+async fn project_files(apps: &Apps, p: &str) -> Result<Vec<(String, Source)>, String> {
+    let mine = apps
+        .a
+        .space_id
+        .strip_suffix("/drive:space")
+        .unwrap_or_default()
+        .to_string();
+    let own = projects::projects(&apps.a.space)
+        .into_iter()
+        .find(|x| x.id == p || x.name.eq_ignore_ascii_case(p));
+    let (org, project) = match (own, p.split_once('/')) {
+        (Some(x), _) => (mine.clone(), x),
+        (None, Some((org, name))) if !org.is_empty() => {
+            let id = drive_files::space_doc(org);
+            let doc = apps.a.drive.open(&id).await;
+            // Refused or offline: what this device has of it, if anything.
+            let _ = tokio::time::timeout(Duration::from_secs(5), apps.a.drive.synced(&id)).await;
+            let x = projects::projects(&doc)
+                .into_iter()
+                .find(|x| x.id == name || x.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("no project {name} in {org}"))?;
+            (org.to_string(), x)
+        }
+        _ => return Err(format!("no project {p}")),
+    };
+    let mut out = Vec::new();
+    for part in &project.parts {
+        if part.space_in(&org) != mine {
+            tracing::debug!(
+                part.space = part.space_in(&org),
+                "a part on another org's computers is not warmed here"
+            );
+            continue;
+        }
+        // A folder of the Drive tree (an app's uploads), as `drive:FOLDER`.
+        if part.in_tree() {
+            out.extend(expand_target(apps, &format!("drive:{}", part.path)).await?);
+            continue;
+        }
+        let Some(loc) = apps.location(&part.location) else {
+            continue;
+        };
+        out.extend(location_folder(apps, &loc, &part.path)?);
+    }
     Ok(out)
 }
 

@@ -33,7 +33,17 @@ use crate::store::Found;
 struct Resolved {
     share: Share,
     project: Project,
+    /// The project's org.
+    space: String,
     files: Vec<(Part, Found)>,
+    /// Each org whose locations hold parts (the project's own, and those
+    /// that lend it folders): what the share needs to know of it.
+    spaces: HashMap<String, SpaceView>,
+}
+
+/// One org's side of a share.
+#[derive(Default)]
+struct SpaceView {
     /// location id → (its device, its name, its device's name).
     locations: HashMap<String, (String, String, String)>,
     /// location id → path → its record, for files kept available.
@@ -48,11 +58,10 @@ struct Resolved {
     holders: HashMap<String, Vec<String>>,
 }
 
-async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, StatusCode> {
-    let doc = drive_files::space_doc(space_id);
-    let (share, all, locations, devices, public, available, holders) = c
+async fn view(c: &Catalog, space_id: &str) -> SpaceView {
+    let (locations, devices, public, available, holders) = c
         .rooms
-        .read(&doc, |d| {
+        .read(&drive_files::space_doc(space_id), |d| {
             let locations = space::locations(d);
             let available: HashMap<String, HashMap<String, Available>> = locations
                 .iter()
@@ -72,8 +81,6 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
                 })
                 .collect();
             (
-                projects::share(d, token),
-                projects::projects(d),
                 locations,
                 space::devices(d),
                 space::public(d),
@@ -82,55 +89,11 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
             )
         })
         .await;
-    let Some(share) = share else {
-        tracing::warn!(share.space = %space_id, "a share link that does not exist was asked for");
-        return Err(StatusCode::NOT_FOUND);
-    };
-    let project = all
-        .into_iter()
-        .find(|p| p.id == share.project)
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let kinds = c
-        .rooms
-        .read(&drive_spine::spine_doc(space_id), Kinds::load)
-        .await;
-    let allowed: Vec<String> = share
-        .kinds
-        .iter()
-        .flat_map(|k| kinds.family(k).into_iter().map(|x| x.id.clone()))
-        .collect();
-    // A file inside two parts (Mixes inside the song's folder) is listed
-    // once, under the most specific part.
-    let mut parts: Vec<&Part> = project.parts.iter().collect();
-    parts.sort_by_key(|p| std::cmp::Reverse(p.path.len()));
-    let mut seen = std::collections::HashSet::new();
-    let mut files = Vec::new();
-    for part in parts {
-        let found = c
-            .rooms
-            .store
-            .under(space_id, &part.location, &part.path)
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "a share's files could not be listed");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        for f in found {
-            if (allowed.is_empty() || allowed.contains(&kinds.of_file(&f.name, false).id))
-                && seen.insert((f.location.clone(), f.path.clone()))
-            {
-                files.push((part.clone(), f));
-            }
-        }
-    }
     let names: HashMap<&str, &str> = devices
         .iter()
         .map(|d| (d.id.as_str(), d.name.as_str()))
         .collect();
-    Ok(Resolved {
-        share,
-        project,
-        files,
+    SpaceView {
         locations: locations
             .iter()
             .map(|l| {
@@ -153,36 +116,137 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
             .map(|d| d.id.clone())
             .collect(),
         holders,
+    }
+}
+
+async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, StatusCode> {
+    let doc = drive_files::space_doc(space_id);
+    let (share, all) = c
+        .rooms
+        .read(&doc, |d| (projects::share(d, token), projects::projects(d)))
+        .await;
+    let Some(share) = share else {
+        tracing::warn!(share.space = %space_id, "a share link that does not exist was asked for");
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let mut project = all
+        .into_iter()
+        .find(|p| p.id == share.project)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    // A part in another org's location only when that org lends it to
+    // this project (drive#52): otherwise it is not this link's to give.
+    let mut lent = HashMap::new();
+    let mut kept_parts = Vec::new();
+    for part in std::mem::take(&mut project.parts) {
+        let theirs = part.space_in(space_id).to_string();
+        if part.in_tree() {
+            continue; // Drive tree folders are not offered by share links yet.
+        }
+        if theirs != space_id {
+            if !lent.contains_key(&theirs) {
+                let l = c
+                    .rooms
+                    .read(&drive_files::space_doc(&theirs), projects::lends)
+                    .await;
+                lent.insert(theirs.clone(), l);
+            }
+            let ok = lent[&theirs]
+                .iter()
+                .any(|l| l.org == space_id && l.matches(&theirs, &project, &part));
+            if !ok {
+                continue;
+            }
+        }
+        kept_parts.push(part);
+    }
+    project.parts = kept_parts;
+    let kinds = c
+        .rooms
+        .read(&drive_spine::spine_doc(space_id), Kinds::load)
+        .await;
+    let allowed: Vec<String> = share
+        .kinds
+        .iter()
+        .flat_map(|k| kinds.family(k).into_iter().map(|x| x.id.clone()))
+        .collect();
+    // A file inside two parts (Mixes inside the song's folder) is listed
+    // once, under the most specific part.
+    let mut parts: Vec<&Part> = project.parts.iter().collect();
+    parts.sort_by_key(|p| std::cmp::Reverse(p.path.len()));
+    let mut seen = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    let mut spaces = HashMap::new();
+    for part in parts {
+        let theirs = part.space_in(space_id);
+        if !spaces.contains_key(theirs) {
+            spaces.insert(theirs.to_string(), view(c, theirs).await);
+        }
+        let found = c
+            .rooms
+            .store
+            .under(theirs, &part.location, &part.path)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "a share's files could not be listed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        for f in found {
+            if (allowed.is_empty() || allowed.contains(&kinds.of_file(&f.name, false).id))
+                && seen.insert((theirs.to_string(), f.location.clone(), f.path.clone()))
+            {
+                files.push((part.clone(), f));
+            }
+        }
+    }
+    Ok(Resolved {
+        share,
+        project,
+        space: space_id.to_string(),
+        files,
+        spaces,
     })
 }
 
 impl Resolved {
+    /// The org whose location a part is in.
+    fn space_of<'a>(&'a self, part: &'a Part) -> &'a str {
+        part.space_in(&self.space)
+    }
+
+    fn view(&self, part: &Part) -> Option<&SpaceView> {
+        self.spaces.get(self.space_of(part))
+    }
+
     fn kept(&self, part: &Part, f: &Found) -> Option<&Available> {
-        self.available
+        self.view(part)?
+            .available
             .get(&part.location)?
             .get(&f.path)
             .filter(|a| a.size == f.size && a.mtime == f.mtime)
     }
 
     /// Where a kept-available file is in a public storage, if it is.
-    fn public_url(&self, a: &Available) -> Option<String> {
-        let held = self.holders.get(&a.hash)?;
-        self.public
+    fn public_url(&self, part: &Part, a: &Available) -> Option<String> {
+        let v = self.view(part)?;
+        let held = v.holders.get(&a.hash)?;
+        v.public
             .iter()
             .find(|(sid, _)| held.contains(sid))
             .map(|(_, url)| format!("{url}/{}", drive_files::blob::key(&a.hash)))
     }
 
-    fn on(&self, location: &str) -> bool {
-        self.locations
-            .get(location)
-            .is_some_and(|(dev, _, _)| self.online.contains(dev))
+    fn on(&self, part: &Part, location: &str) -> bool {
+        self.view(part).is_some_and(|v| {
+            v.locations
+                .get(location)
+                .is_some_and(|(dev, _, _)| v.online.contains(dev))
+        })
     }
 
     /// Whether a file can be had now: kept available, or some computer
     /// with a copy (its own, a storage server's mirror, …) is on.
-    async fn reachable(&self, c: &Catalog, space_id: &str, part: &Part, f: &Found) -> bool {
-        if self.kept(part, f).is_some() || self.on(&part.location) {
+    async fn reachable(&self, c: &Catalog, part: &Part, f: &Found) -> bool {
+        if self.kept(part, f).is_some() || self.on(part, &part.location) {
             return true;
         }
         if f.sampled.is_empty() {
@@ -190,11 +254,11 @@ impl Resolved {
         }
         c.rooms
             .store
-            .copies(space_id, &f.sampled, f.size)
+            .copies(self.space_of(part), &f.sampled, f.size)
             .await
             .unwrap_or_default()
             .iter()
-            .any(|x| self.on(&x.location))
+            .any(|x| self.on(part, &x.location))
     }
 
     fn find(&self, part_id: &str, path: &str) -> Option<&(Part, Found)> {
@@ -205,18 +269,16 @@ impl Resolved {
 }
 
 /// Bring a file's bytes to the node from the best online source; its hash.
-async fn bring(
-    c: &Catalog,
-    space_id: &str,
-    r: &Resolved,
-    part: &Part,
-    f: &Found,
-) -> Result<Got, &'static str> {
+async fn bring(c: &Catalog, r: &Resolved, part: &Part, f: &Found) -> Result<Got, &'static str> {
     if let Some(a) = r.kept(part, f) {
         if c.blobs.has(&a.hash).await.unwrap_or(false) {
             return Ok(Got::Blob(a.hash.clone()));
         }
     }
+    let space_id = r.space_of(part);
+    let Some(v) = r.view(part) else {
+        return Err("every computer that has this file is off");
+    };
     // Every location holding the same content, storage servers first, then
     // the part's own, then the rest; only those whose device is on.
     let mut sources: Vec<(u8, String, String)> = Vec::new();
@@ -228,13 +290,13 @@ async fn bring(
             .await
             .unwrap_or_default()
         {
-            let Some((dev, _, _)) = r.locations.get(&copy.location) else {
+            let Some((dev, _, _)) = v.locations.get(&copy.location) else {
                 continue;
             };
-            if !r.online.contains(dev) {
+            if !v.online.contains(dev) {
                 continue;
             }
-            let rank = if r.servers.contains(dev) {
+            let rank = if v.servers.contains(dev) {
                 0
             } else if copy.location == part.location {
                 1
@@ -245,9 +307,9 @@ async fn bring(
         }
     }
     if sources.is_empty()
-        && r.locations
+        && v.locations
             .get(&part.location)
-            .is_some_and(|(d, _, _)| r.online.contains(d))
+            .is_some_and(|(d, _, _)| v.online.contains(d))
     {
         sources.push((1, part.location.clone(), f.path.clone()));
     }
@@ -255,7 +317,7 @@ async fn bring(
     for (_, loc, path) in sources {
         // Over iroh when that computer serves files that way: streamed,
         // not uploaded whole first (docs/transfer.md).
-        if let Some((dev, _, _)) = r.locations.get(&loc) {
+        if let Some((dev, _, _)) = v.locations.get(&loc) {
             let ask = drive_proto::Browse::ProvideLocation {
                 location: loc.clone(),
                 path: path.clone(),
@@ -308,7 +370,7 @@ pub async fn page(
     let total: i64 = r.files.iter().map(|(_, f)| f.size).sum();
     let mut ok_files = std::collections::HashSet::new();
     for (p, f) in &r.files {
-        if r.reachable(&c, &space_id, p, f).await {
+        if r.reachable(&c, p, f).await {
             ok_files.insert((p.id.clone(), f.path.clone()));
         }
     }
@@ -337,8 +399,8 @@ pub async fn page(
             continue;
         }
         let from = r
-            .locations
-            .get(&part.location)
+            .view(part)
+            .and_then(|v| v.locations.get(&part.location))
             .map_or(String::new(), |(_, _, dev)| dev.clone());
         body.push_str(&format!(
             "<h2>{} <span>{}</span></h2><ul>",
@@ -584,13 +646,16 @@ pub async fn file(
         tracing::warn!(share.space = %space_id, "a file outside a share was asked for");
         return StatusCode::NOT_FOUND.into_response();
     };
-    if let Some(url) = r.kept(part, f).and_then(|a| r.public_url(a)) {
+    if let Some(url) = r.kept(part, f).and_then(|a| r.public_url(part, a)) {
         return Redirect::temporary(&url).into_response();
     }
-    match bring(&c, &space_id, &r, part, f).await {
+    match bring(&c, &r, part, f).await {
         Ok(Got::Blob(hash)) => {
             let mut query = HashMap::new();
             query.insert("name".to_string(), f.name.clone());
+            if crate::wants_inline(&q) {
+                query.insert("inline".to_string(), "1".to_string());
+            }
             match crate::get_blob_ranged(
                 UrlPath(hash),
                 Query(query),
@@ -608,6 +673,7 @@ pub async fn file(
                 let reply = crate::transfer::Reply {
                     name: f.name.clone(),
                     cache: Some(c.blobs.clone()),
+                    inline: crate::wants_inline(&q),
                 };
                 crate::transfer::respond(t, &got, src, &headers, reply)
             }
@@ -696,7 +762,7 @@ pub async fn zip(
         let mut missing = Vec::new();
         for (part, f) in &r.files {
             let entry = format!("{}/{}", part.label, part.relative(&f.path));
-            let bytes = match bring(&c, &space_id, &r, part, f).await {
+            let bytes = match bring(&c, &r, part, f).await {
                 Ok(Got::Blob(h)) => c.blobs.get(&h).await.ok().map(Entry::Bytes),
                 Ok(Got::Device(got, src)) => c.rooms.transfer.get().map(|t| {
                     let (tx, rx) = tokio::sync::mpsc::channel(16);

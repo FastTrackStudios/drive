@@ -137,6 +137,8 @@ pub async fn provide(
 /// What the response says about the file.
 pub struct Reply {
     pub name: String,
+    /// Shown in place when its type allows (`?inline=1`).
+    pub inline: bool,
     /// Keep what is fetched in the blob store (`/fetch`, share links).
     pub cache: Option<BlobStore>,
 }
@@ -195,27 +197,8 @@ pub fn respond(
             r.headers_mut().insert("content-range", v);
         }
     }
-    let safe: String = reply
-        .name
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
-        .collect();
     let h = r.headers_mut();
-    if let Ok(v) = HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
-        h.insert("content-type", v);
-    }
-    // A device's file never shows as a page of the node's own.
-    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{safe}\"")) {
-        h.insert("content-disposition", v);
-    }
-    h.insert(
-        "content-security-policy",
-        HeaderValue::from_static("sandbox"),
-    );
-    h.insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
-    );
+    crate::file_headers(h, &reply.name, reply.inline);
     h.insert("accept-ranges", HeaderValue::from_static("bytes"));
     h.insert(
         "cache-control",

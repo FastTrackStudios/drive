@@ -800,3 +800,106 @@ async fn warming_a_project_streams_progress_and_watches_see_new_versions() {
         "{got:?}"
     );
 }
+
+/// `ORG/NAME`: another org's project whose part is lent from this one's
+/// location (a church's song with its stems on Voyager, drive#52).
+#[tokio::test(flavor = "multi_thread")]
+async fn warming_another_orgs_project_takes_its_parts_on_this_orgs_computers() {
+    let w = world().await;
+    let mine =
+        w.v.a
+            .space_id
+            .strip_suffix("/drive:space")
+            .unwrap()
+            .to_string();
+    let church = w.v.a.drive.open("church/drive:space").await;
+    w.v.a.drive.synced("church/drive:space").await;
+    let p = projects::add_project(&church, "Amazing Grace", "MusicRecording").unwrap();
+    let part = projects::add_part_in(&church, &p, "Kits", &mine, &w.loc.id, "Kits").unwrap();
+    // A part on some other org's computer: not this device's to warm.
+    projects::add_part_in(&church, &p, "Video", "editors", "their-disk", "").unwrap();
+    w.v.a.drive.commit("church/drive:space");
+    projects::lend(
+        &w.v.a.space,
+        &projects::Lend {
+            org: "church".into(),
+            project: p.clone(),
+            part,
+            location: w.loc.id.clone(),
+            path: "Kits".into(),
+        },
+    )
+    .unwrap();
+    w.v.a.commit_space();
+
+    let ask = |project: &str| drive_local::Warm {
+        project: Some(project.into()),
+        ..Default::default()
+    };
+    // Battleship's copies of both registries catch up.
+    let mut got = Vec::new();
+    for _ in 0..100 {
+        got = match super::warm::expand(&w.b.apps, &ask("church/Amazing Grace")).await {
+            Ok(v) => v.into_iter().map(|(label, _)| label).collect(),
+            Err(_) => Vec::new(),
+        };
+        got.sort();
+        if got.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(got, ["Scratch:Kits/kick.wav", "Scratch:Kits/snare.wav"]);
+    assert!(
+        super::warm::expand(&w.b.apps, &ask("church/No Such Song"))
+            .await
+            .is_err()
+    );
+}
+
+/// A project's part in the Drive tree (an app's uploads) warms that folder
+/// of the tree (drive#54).
+#[tokio::test(flavor = "multi_thread")]
+async fn warming_a_project_takes_its_drive_tree_parts() {
+    let w = world().await;
+    let songs = tree::mkdir(&w.v.a.files, None, "Uploads").unwrap();
+    let ag = tree::mkdir(&w.v.a.files, Some(songs), "Amazing Grace").unwrap();
+    let chart = tree::create_file(&w.v.a.files, Some(ag), "chart.pdf").unwrap();
+    tree::set_content(&w.v.a.files, chart, 3, &"a".repeat(64)).unwrap();
+    let other = tree::create_file(&w.v.a.files, Some(songs), "elsewhere.pdf").unwrap();
+    tree::set_content(&w.v.a.files, other, 3, &"b".repeat(64)).unwrap();
+    w.v.a.commit_files();
+    let p = projects::add_project(&w.v.a.space, "Amazing Grace", "MusicRecording").unwrap();
+    projects::add_part(
+        &w.v.a.space,
+        &p,
+        "Charts",
+        projects::TREE,
+        "Uploads/Amazing Grace",
+    )
+    .unwrap();
+    projects::add_part(&w.v.a.space, &p, "Kits", &w.loc.id, "Kits").unwrap();
+    w.v.a.commit_space();
+    let got: Vec<String> = super::warm::expand(
+        &w.v.apps,
+        &drive_local::Warm {
+            project: Some("Amazing Grace".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|(label, _)| label)
+    .collect();
+    let mut got = got;
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            "Scratch:Kits/kick.wav",
+            "Scratch:Kits/snare.wav",
+            "drive:Uploads/Amazing Grace/chart.pdf"
+        ]
+    );
+}

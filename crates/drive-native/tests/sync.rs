@@ -63,3 +63,40 @@ async fn a_copy_on_disk_opens_and_syncs_later() {
     b.synced("test:doc").await;
     eventually(|| db.get_map("m").get("k").is_some()).await;
 }
+
+/// An edit of one document made (and committed) inside an edit of another
+/// reaches the node, both of them (drive#53).
+#[tokio::test]
+async fn a_nested_edit_reaches_the_node() {
+    let (url, _data) = node().await;
+    let dir = tempfile::tempdir().unwrap();
+    let a = Drive::connect(&url, "a", dir.path()).await;
+    let reg = a.open("o/drive:projects").await;
+    let meta = a.open("other/studio:files:s").await;
+    a.synced("o/drive:projects").await;
+    a.synced("other/studio:files:s").await;
+    meta.get_map("org").insert("id", "other").unwrap();
+    // registry.edit(|reg| meta.edit(|m| …)): the inner commit first.
+    reg.get_map("projects")
+        .ensure_mergeable_map("p")
+        .unwrap()
+        .insert("part", "x")
+        .unwrap();
+    let m = meta.get_map("links").ensure_mergeable_map("part").unwrap();
+    m.insert("kind", "chart").unwrap();
+    a.commit("other/studio:files:s");
+    a.commit("o/drive:projects");
+
+    // Another client with nothing on disk: the node has both edits.
+    let b_dir = tempfile::tempdir().unwrap();
+    let b = Drive::connect(&url, "b", b_dir.path()).await;
+    let reg_b = b.open("o/drive:projects").await;
+    let meta_b = b.open("other/studio:files:s").await;
+    b.synced("o/drive:projects").await;
+    b.synced("other/studio:files:s").await;
+    eventually(|| {
+        meta_b.get_deep_value() == meta.get_deep_value()
+            && reg_b.get_deep_value() == reg.get_deep_value()
+    })
+    .await;
+}
