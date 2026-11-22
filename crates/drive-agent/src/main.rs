@@ -137,7 +137,7 @@ async fn main() {
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "drive_agent=info".into()),
+                .unwrap_or_else(|_| "drive=info".into()),
         )
         .init();
     let mut args: Vec<String> = std::env::args().skip(1).collect();

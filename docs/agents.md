@@ -59,7 +59,7 @@ the full path to `drive-agent` when the client does not run with your
 | `--timeout SECONDS` | 90 | how long one tool call may take |
 
 stdout is the protocol's; the server's own events go to stderr through
-`tracing` (`RUST_LOG=drive_agent=debug` for more): one `mcp.tool` span per
+`tracing` (`RUST_LOG=drive=debug` for more): one `mcp.tool` span per
 call with `mcp.tool`, `mcp.client`, `mcp.dry_run`, `mcp.outcome` (`ok`,
 `error`, `refused`, `unknown`), `mcp.writes` and `mcp.ms`; a refusal is
 one `warn`.
