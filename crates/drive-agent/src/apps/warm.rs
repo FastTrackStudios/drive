@@ -112,7 +112,8 @@ pub async fn expand(apps: &Apps, w: &Warm) -> Result<Vec<(String, Source)>, Stri
 /// of another org (a church's song whose parts are on this computer). A
 /// part counts here when it is in this org's locations (its own, or lent
 /// to the other org's project, drive#52); parts on other orgs' computers
-/// are theirs to warm.
+/// are theirs to warm. A part in the Drive tree ([`projects::TREE`]) warms
+/// that folder of the tree.
 async fn project_files(apps: &Apps, p: &str) -> Result<Vec<(String, Source)>, String> {
     let mine = apps
         .a
@@ -145,6 +146,11 @@ async fn project_files(apps: &Apps, p: &str) -> Result<Vec<(String, Source)>, St
                 part.space = part.space_in(&org),
                 "a part on another org's computers is not warmed here"
             );
+            continue;
+        }
+        // A folder of the Drive tree (an app's uploads), as `drive:FOLDER`.
+        if part.in_tree() {
+            out.extend(expand_target(apps, &format!("drive:{}", part.path)).await?);
             continue;
         }
         let Some(loc) = apps.location(&part.location) else {

@@ -653,6 +653,9 @@ pub async fn file(
         Ok(Got::Blob(hash)) => {
             let mut query = HashMap::new();
             query.insert("name".to_string(), f.name.clone());
+            if crate::wants_inline(&q) {
+                query.insert("inline".to_string(), "1".to_string());
+            }
             match crate::get_blob_ranged(
                 UrlPath(hash),
                 Query(query),
@@ -670,6 +673,7 @@ pub async fn file(
                 let reply = crate::transfer::Reply {
                     name: f.name.clone(),
                     cache: Some(c.blobs.clone()),
+                    inline: crate::wants_inline(&q),
                 };
                 crate::transfer::respond(t, &got, src, &headers, reply)
             }

@@ -441,7 +441,11 @@ pub async fn file(
                     "" => path_name(&path).to_string(),
                     n => n.to_string(),
                 };
-                let reply = crate::transfer::Reply { name, cache: None };
+                let reply = crate::transfer::Reply {
+                    name,
+                    cache: None,
+                    inline: crate::wants_inline(&p),
+                };
                 return crate::transfer::respond(t, &got, src, &headers, reply);
             }
         }
@@ -523,25 +527,11 @@ pub async fn file(
         "" => path_name(q(&p, "path")).to_string(),
         n => n.to_string(),
     };
-    let safe: String = name
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
-        .collect();
     let h = r.headers_mut();
-    if let Ok(v) = HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
-        h.insert("content-type", v);
-    }
-    // Never shown as a page of the node's own (an HTML file would run).
-    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{safe}\"")) {
-        h.insert("content-disposition", v);
-    }
-    h.insert(
-        "content-security-policy",
-        HeaderValue::from_static("sandbox"),
-    );
-    h.insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
+    crate::file_headers(
+        h,
+        &name,
+        q(&p, "inline") == "1" || q(&p, "inline") == "true",
     );
     h.insert("accept-ranges", HeaderValue::from_static("bytes"));
     h.insert(

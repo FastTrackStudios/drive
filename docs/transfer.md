@@ -94,6 +94,19 @@ decode, and the node would wait).
 | `/s/{space}/{token}/file` | as `/fetch` | as before |
 | `/s/{space}/{token}/zip` | each file streamed into the zip as it comes, and kept | as before |
 
+How a file is answered (`/fetch`, `/blobs/{hash}?name=`,
+`/browse/.../file`, `/s/.../file`): its `Content-Type` from its name,
+`nosniff`, and a download (`Content-Disposition: attachment`, the name
+as `filename` and, beyond ASCII, `filename*`). `?inline=1` shows it in
+place instead when its type runs nothing: a PDF, an image other than
+SVG, audio, video, plain text. HTML, SVG, scripts and unknown types are
+downloads whatever is asked. Everything is served with
+`Content-Security-Policy: sandbox` except a PDF shown in place (the
+browser's own viewer refuses a sandboxed PDF; it runs nothing against the
+node's origin), so an app can put a chart in an `<iframe>` or a new tab
+straight from its URL, no blob URL needed. A blob asked for by hash
+alone is sandboxed too.
+
 A blob is written under a temporary key and renamed to its own only once
 every byte came and the hash checks out (`BlobStore::writer`): a client
 that leaves early never leaves half a blob, and the rest is fetched in the

@@ -537,21 +537,94 @@ pub(crate) async fn get_blob_ranged(
         "cache-control",
         axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
-    if let Some(name) = query.0.get("name") {
-        let safe: String = name
-            .chars()
-            .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
-            .collect();
-        if let Ok(v) = axum::http::HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
-            h.insert("content-type", v);
-        }
-        if let Ok(v) =
-            axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{safe}\""))
-        {
-            h.insert("content-disposition", v);
-        }
+    match query.0.get("name") {
+        Some(name) => file_headers(h, name, wants_inline(&query.0)),
+        None => nameless(h),
     }
     Ok(with_accept_ranges(r))
+}
+
+/// Whether a request asks to see a file in place (`?inline=1`).
+pub(crate) fn wants_inline(q: &std::collections::HashMap<String, String>) -> bool {
+    q.get("inline").is_some_and(|v| v == "1" || v == "true")
+}
+
+/// Whether a type may be shown in place: one that runs nothing (a PDF,
+/// an image other than SVG, audio, video, plain text). HTML, SVG, scripts
+/// and everything unknown are always downloads.
+pub(crate) fn shows_inline(mime: &str) -> bool {
+    matches!(mime, "application/pdf" | "text/plain")
+        || (mime.starts_with("image/") && mime != "image/svg+xml")
+        || mime.starts_with("audio/")
+        || mime.starts_with("video/")
+}
+
+/// The headers of a file served by name: its type, and a download unless
+/// `inline` asks to show it in place and its type runs nothing
+/// ([`shows_inline`]). Never sniffed, and sandboxed (an HTML file never
+/// runs as a page of the node), except a PDF shown in place: the
+/// browser's own viewer refuses a sandboxed one, and it runs nothing
+/// against this origin.
+pub(crate) fn file_headers(h: &mut axum::http::HeaderMap, name: &str, inline: bool) {
+    use axum::http::HeaderValue;
+    let safe: String = name
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+        .collect();
+    let mime = drive_files::tree::mime_of(&safe);
+    let ctype = if mime == "text/plain" {
+        "text/plain; charset=utf-8"
+    } else {
+        mime
+    };
+    h.insert("content-type", HeaderValue::from_static(ctype));
+    let show = inline && shows_inline(mime);
+    // An ASCII name for every browser, the real one (RFC 6266) beside it.
+    let ascii: String = safe
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let utf8: String = safe
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    let how = if show { "inline" } else { "attachment" };
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "{how}; filename=\"{ascii}\"; filename*=UTF-8''{utf8}"
+    )) {
+        h.insert("content-disposition", v);
+    }
+    if !(show && mime == "application/pdf") {
+        h.insert(
+            "content-security-policy",
+            HeaderValue::from_static("sandbox"),
+        );
+    }
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+}
+
+/// A blob asked for by hash alone: whatever it holds never runs as a page
+/// of the node.
+fn nameless(h: &mut axum::http::HeaderMap) {
+    h.insert(
+        "content-security-policy",
+        axum::http::HeaderValue::from_static("sandbox"),
+    );
 }
 
 fn with_accept_ranges(mut r: axum::response::Response) -> axum::response::Response {
@@ -648,19 +721,9 @@ pub(crate) async fn get_blob(
         "cache-control",
         axum::http::HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
-    if let Some(name) = q.get("name") {
-        let safe: String = name
-            .chars()
-            .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
-            .collect();
-        if let Ok(v) = axum::http::HeaderValue::from_str(drive_files::tree::mime_of(&safe)) {
-            h.insert("content-type", v);
-        }
-        if let Ok(v) =
-            axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{safe}\""))
-        {
-            h.insert("content-disposition", v);
-        }
+    match q.get("name") {
+        Some(name) => file_headers(h, name, wants_inline(&q)),
+        None => nameless(h),
     }
     Ok(resp)
 }
@@ -707,5 +770,110 @@ mod range_tests {
         assert_eq!(byte_range("bytes=5-1", 1000), None);
         assert_eq!(byte_range("items=0-1", 1000), None);
         assert_eq!(byte_range("bytes=0-0", 0), None);
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    fn headers(name: &str, inline: bool) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        file_headers(&mut h, name, inline);
+        h
+    }
+
+    fn hv<'a>(h: &'a axum::http::HeaderMap, k: &str) -> &'a str {
+        h.get(k).map_or("", |v| v.to_str().unwrap_or(""))
+    }
+
+    #[test]
+    fn safe_types_show_in_place_when_asked_and_the_rest_download() {
+        let pdf = headers("Chart.pdf", true);
+        assert_eq!(hv(&pdf, "content-type"), "application/pdf");
+        assert!(hv(&pdf, "content-disposition").starts_with("inline;"));
+        // The browser's PDF viewer refuses a sandboxed document.
+        assert_eq!(hv(&pdf, "content-security-policy"), "");
+        for (name, ty) in [
+            ("cover.jpg", "image/jpeg"),
+            ("mix.wav", "audio/wav"),
+            ("take.mp4", "video/mp4"),
+            ("lyrics.txt", "text/plain; charset=utf-8"),
+        ] {
+            let h = headers(name, true);
+            assert_eq!(hv(&h, "content-type"), ty, "{name}");
+            assert!(
+                hv(&h, "content-disposition").starts_with("inline;"),
+                "{name}"
+            );
+            assert_eq!(hv(&h, "content-security-policy"), "sandbox", "{name}");
+            assert_eq!(hv(&h, "x-content-type-options"), "nosniff");
+        }
+        // Anything that could run is a sandboxed download, asked or not.
+        for name in ["page.html", "logo.svg", "app.js", "thing.bin"] {
+            let h = headers(name, true);
+            assert!(
+                hv(&h, "content-disposition").starts_with("attachment;"),
+                "{name}"
+            );
+            assert_eq!(hv(&h, "content-security-policy"), "sandbox", "{name}");
+        }
+        // Not asked: a download, even a PDF.
+        let h = headers("Chart.pdf", false);
+        assert!(hv(&h, "content-disposition").starts_with("attachment;"));
+        assert_eq!(hv(&h, "content-security-policy"), "sandbox");
+        // A name beyond ASCII keeps its name.
+        let h = headers("Ave María.pdf", false);
+        assert_eq!(
+            hv(&h, "content-disposition"),
+            "attachment; filename=\"Ave Mar_a.pdf\"; filename*=UTF-8''Ave%20Mar%C3%ADa.pdf"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blob_shown_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = StorageConfig::Fs {
+            root: dir.path().to_string_lossy().into_owned(),
+        }
+        .blobs()
+        .unwrap();
+        let hash = blobs.put(b"%PDF-1.7 not really".to_vec()).await.unwrap();
+        let app = Router::new()
+            .route("/blobs/{hash}", get(get_blob_ranged))
+            .with_state(blobs);
+        let ask = |url: String, range: bool| {
+            let mut r = axum::http::Request::get(url);
+            if range {
+                r = r.header("range", "bytes=0-3");
+            }
+            app.clone()
+                .oneshot(r.body(axum::body::Body::empty()).unwrap())
+        };
+        for range in [false, true] {
+            let r = ask(format!("/blobs/{hash}?name=Chart.pdf&inline=1"), range)
+                .await
+                .unwrap();
+            let h = r.headers();
+            assert_eq!(h["content-type"], "application/pdf");
+            assert!(
+                h["content-disposition"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("inline;")
+            );
+            let r = ask(format!("/blobs/{hash}?name=page.html&inline=1"), range)
+                .await
+                .unwrap();
+            let h = r.headers();
+            assert!(
+                h["content-disposition"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("attachment;")
+            );
+            assert_eq!(h["content-security-policy"], "sandbox");
+        }
     }
 }

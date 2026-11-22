@@ -232,11 +232,17 @@ sends `Event::Gone`. A computer that is off sends nothing until it is back.
 
 ```bash
 drive open TARGET [--hash]       # prints the path; how, size, hash and time on stderr
-drive warm TARGET… [--project NAME] [--kind audio]… [--priority low|normal|high]
+drive warm TARGET… [--project NAME|ORG/NAME] [--kind audio]… [--priority low|normal|high]
 drive pins                       # what apps hold, by app, and why
 drive status                     # the app cache: files, bytes, budget, partials, apps, pins
 drive apps budget GIB
 ```
+
+A project's parts expand like targets: a location folder as
+`LOCATION:FOLDER`, a folder of the Drive tree (an app's uploads linked to
+the project) as `drive:FOLDER`. `ORG/NAME` names another org's project;
+its parts in this device's org are warmed (lent to it, docs/files.md),
+the rest are other computers' to warm.
 
 The command line's own opens and warms hold nothing once it exits: what
 came stays in the cache, unpinned.
@@ -251,6 +257,8 @@ came stays in the cache, unpinned.
 | `only_this_user_on_loopback_gets_in` | non-loopback binds are refused. Another uid is refused. The socket is 0600 and a second agent does not take it over. On the port, the right token gets in and a wrong one is refused. |
 | `location_files_are_never_written` | location files made 0444 in 0555 folders. Open with hash, `resolve_many`, warm, watch, and another computer fetching them all leave every name, byte, time and mode as it was, and nothing is copied into the cache. |
 | `warming_a_project_streams_progress_and_watches_see_new_versions` | a project's audio (3 `.wav`, not the note) warmed from the other computer at high priority: fetching and ready events per file, totals, done. Warmed again, all are here and held. A local file's new version and a tree file's new hash reach their watchers. |
+| `warming_a_project_takes_its_drive_tree_parts` | a project with a Drive-tree part and a location part warms the tree folder's files (not its neighbours) and the location folder's. |
+| `warming_another_orgs_project_takes_its_parts_on_this_orgs_computers` | `church/Amazing Grace`, whose part is lent from this org's location, warms that folder; its part on another org's computer is left out; an unknown project is an error. |
 | `apps::cache::tests::*`, `apps::leases::tests::*` | LRU skips pinned entries; over budget rather than evict held ones; removals outside the cache refused; a planted symlink not followed; names and partials survive a restart; leases end by release or disconnect. |
 | `drive-local` `no_agent_is_a_clear_error`, `proto::tests::lines_round_trip` | no agent (or a stale socket) is `NotRunning`; the wire's shapes. |
 

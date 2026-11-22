@@ -67,7 +67,7 @@
 //!
 //! Files for apps (docs/app-files.md; the running agent serves them):
 //! drive [--dir DIR] open TARGET [--hash]          # a real local path for any Drive file
-//! drive [--dir DIR] warm TARGET… [--project NAME] [--kind audio]… [--priority low|normal|high]
+//! drive [--dir DIR] warm TARGET… [--project NAME|ORG/NAME] [--kind audio]… [--priority low|normal|high]
 //! drive [--dir DIR] pins                          # what apps hold pinned here, and why
 //! drive [--dir DIR] status                        # the app cache and its pins
 //! drive [--dir DIR] apps budget GIB               # the app cache's size
@@ -1589,7 +1589,7 @@ fn app_command(dir: &Path, args: &[String]) -> Result<(), String> {
             }
             if w.targets.is_empty() && w.project.is_none() {
                 return Err(
-                    "warm TARGET… [--project NAME] [--kind KIND]… [--priority low|normal|high]"
+                    "warm TARGET… [--project NAME|ORG/NAME] [--kind KIND]… [--priority low|normal|high]"
                         .into(),
                 );
             }
