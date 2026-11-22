@@ -25,7 +25,7 @@ use std::path::Path;
 pub use fetch::{Fetcher, Source};
 pub use iroh::{EndpointAddr, EndpointId};
 pub use iroh_blobs::Hash;
-pub use provide::{Allow, Provided, Provider};
+pub use provide::{Allow, Extra, Provided, Provider};
 
 /// How a device's endpoint reaches others.
 #[derive(Clone, Debug, Default)]

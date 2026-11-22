@@ -2102,6 +2102,7 @@ dependencies = [
  "axum",
  "blake3",
  "drive-files",
+ "drive-kache",
  "drive-native",
  "drive-node",
  "drive-proto",
@@ -2111,6 +2112,8 @@ dependencies = [
  "drive-spine",
  "drive-transfer",
  "fuser",
+ "futures",
+ "iroh",
  "libc",
  "loro",
  "notify",
@@ -2199,6 +2202,28 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "zstd 0.14.4",
+]
+
+[[package]]
+name = "drive-kache"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "bytes",
+ "drive-transfer",
+ "futures",
+ "httpdate",
+ "iroh",
+ "opendal",
+ "opendal-http-transport-reqwest",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

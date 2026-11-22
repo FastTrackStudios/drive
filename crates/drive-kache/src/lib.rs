@@ -1,0 +1,316 @@
+//! kache build caches shared peer to peer through Drive (docs/kache.md).
+//!
+//! kache's remote cache speaks S3, GCS, OCI or a shared folder; it has no
+//! peer-to-peer backend. So the agent offers it a **local S3-compatible
+//! endpoint** on loopback ([`s3`]) and does the sharing behind it:
+//!
+//! - objects kache stores are kept in the agent's own folder, under a
+//!   size budget, least recently used let go first ([`store`]);
+//! - an object not kept here is asked of the device's **build group**
+//!   (the other devices whose builds share keys: same OS and CPU) over
+//!   the agent's iroh endpoint ([`peers`]), all of them at once with a
+//!   short timeout, and fetched from the first that has it as a
+//!   BLAKE3-verified blob (iroh-blobs, `drive-transfer`), then kept here;
+//! - nothing is announced: a peer finds a key by asking when it misses.
+
+pub mod peers;
+pub mod s3;
+pub mod store;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use drive_transfer::{EndpointAddr, EndpointId, Fetcher};
+use futures::future::{BoxFuture, FutureExt, Shared};
+
+pub use store::{Commit, Cond, Obj, Store};
+
+/// The bucket kache is told to use; any other is answered as missing.
+pub const BUCKET: &str = "kache";
+
+/// The port the agent listens on by default (127.0.0.1 only).
+pub const DEFAULT_PORT: u16 = 9778;
+
+/// The local copy's size by default: 20 GiB.
+pub const DEFAULT_BUDGET: u64 = 20 << 30;
+
+/// Make a kept file fetchable by peers: its iroh-blobs hash (hex).
+pub type ProvideFn =
+    Arc<dyn Fn(PathBuf) -> BoxFuture<'static, Result<String, String>> + Send + Sync>;
+/// Stop serving a file that was let go.
+pub type ForgetFn = Arc<dyn Fn(PathBuf) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Another device of this one's build group.
+#[derive(Clone, Debug)]
+pub struct Peer {
+    pub id: EndpointId,
+    pub addr: EndpointAddr,
+    /// Its name, for logs.
+    pub name: String,
+}
+
+/// This device's build group as it is now, itself left out.
+pub type Members = Arc<dyn Fn() -> Vec<Peer> + Send + Sync>;
+
+/// How this device reaches its peers: its own endpoint (so their doors
+/// know it), a fetcher on it, and its provider.
+pub struct Link {
+    pub endpoint: iroh::Endpoint,
+    pub fetcher: Arc<Fetcher>,
+    pub provide: ProvideFn,
+    pub forget: ForgetFn,
+}
+
+#[derive(Clone, Debug)]
+pub struct Timeouts {
+    /// Asking every peer whether it has a key: a miss answers within this.
+    pub lookup: Duration,
+    /// Asking every peer for its keys under a prefix (LIST).
+    pub list: Duration,
+    /// A peer that did not answer is not asked again for this long.
+    pub down_for: Duration,
+    /// A whole fetch from a peer.
+    pub fetch: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Timeouts {
+            lookup: Duration::from_millis(600),
+            list: Duration::from_secs(2),
+            down_for: Duration::from_secs(30),
+            fetch: Duration::from_secs(600),
+        }
+    }
+}
+
+/// What a peer said it has.
+#[derive(Clone, Debug)]
+pub struct Found {
+    pub peer: Peer,
+    pub size: u64,
+    pub hash: String,
+}
+
+type Flight = Shared<BoxFuture<'static, Result<(), String>>>;
+
+/// A listing kept for its later pages: (prefix, when, (key, size, hash)).
+type Listed = (String, Instant, Vec<(String, u64, String)>);
+
+/// The shared cache of one device.
+pub struct Kache {
+    pub store: Store,
+    members: Members,
+    pub timeouts: Timeouts,
+    link: OnceLock<Link>,
+    inflight: Mutex<HashMap<String, Flight>>,
+    down: Mutex<HashMap<EndpointId, Instant>>,
+    conns: Mutex<HashMap<EndpointId, iroh::endpoint::Connection>>,
+    listed: Mutex<Option<Listed>>,
+}
+
+impl Kache {
+    pub fn new(store: Store, members: Members, timeouts: Timeouts) -> Arc<Kache> {
+        Arc::new(Kache {
+            store,
+            members,
+            timeouts,
+            link: OnceLock::new(),
+            inflight: Mutex::new(HashMap::new()),
+            down: Mutex::new(HashMap::new()),
+            conns: Mutex::new(HashMap::new()),
+            listed: Mutex::new(None),
+        })
+    }
+
+    /// Reach peers through this device's endpoint (once it is up). Before
+    /// that, and without peers, the cache is this device's alone.
+    pub fn attach(&self, link: Link) {
+        let _ = self.link.set(link);
+    }
+
+    pub fn members(&self) -> Vec<Peer> {
+        (self.members)()
+    }
+
+    /// Whether `id` may ask this device for its cache: one of its group.
+    pub fn is_member(&self, id: &EndpointId) -> bool {
+        self.members().iter().any(|p| &p.id == id)
+    }
+
+    /// An object kept here, or else found on a peer (not fetched).
+    pub async fn head(&self, key: &str) -> Option<(u64, String, u64)> {
+        if let Some((_, o)) = self.store.get(key) {
+            return Some((o.size, o.hash, o.modified));
+        }
+        let f = self.find(key).await?;
+        Some((f.size, f.hash, store::now_ms()))
+    }
+
+    /// An object's file here: kept, or fetched from a peer now. Peers'
+    /// copies arrive verified (BLAKE3) and are kept even when the asker
+    /// gave up waiting.
+    pub async fn open(self: &Arc<Self>, key: &str) -> Result<Option<(PathBuf, Obj)>, String> {
+        if let Some(got) = self.store.get(key) {
+            return Ok(Some(got));
+        }
+        let flight = {
+            let mut inflight = self.inflight.lock().expect("inflight");
+            match inflight.get(key) {
+                Some(f) => f.clone(),
+                None => {
+                    let me = self.clone();
+                    let k = key.to_string();
+                    let task = tokio::spawn(async move {
+                        let r = me.fetch_from_group(&k).await;
+                        me.inflight.lock().expect("inflight").remove(&k);
+                        r
+                    });
+                    let f: Flight = async move {
+                        task.await
+                            .unwrap_or_else(|e| Err(format!("fetch task: {e}")))
+                    }
+                    .boxed()
+                    .shared();
+                    inflight.insert(key.to_string(), f.clone());
+                    f
+                }
+            }
+        };
+        flight.await?;
+        Ok(self.store.get(key))
+    }
+
+    async fn fetch_from_group(&self, key: &str) -> Result<(), String> {
+        let Some(found) = self.find(key).await else {
+            return Ok(());
+        };
+        let started = Instant::now();
+        let r = tokio::time::timeout(self.timeouts.fetch, self.fetch(key, &found))
+            .await
+            .unwrap_or_else(|_| Err("the fetch took too long".into()));
+        match &r {
+            Ok(()) => tracing::info!(
+                kache.outcome = "fetched",
+                kache.peer = %found.peer.name,
+                kache.bytes = found.size,
+                kache.ms = started.elapsed().as_millis() as u64,
+                transfer.path = self.link.get().map_or("none", |l| l.fetcher.path_kind(&found.peer.id)),
+                "a cache object came from a peer"
+            ),
+            Err(e) => tracing::warn!(
+                kache.outcome = "fetch_failed",
+                kache.peer = %found.peer.name,
+                error = %e,
+                "a cache object a peer has could not be fetched; kache compiles instead"
+            ),
+        }
+        r
+    }
+
+    async fn fetch(&self, key: &str, found: &Found) -> Result<(), String> {
+        use futures::StreamExt;
+        use std::io::Write;
+        let link = self.link.get().ok_or("not linked")?;
+        let hash: drive_transfer::Hash = found.hash.parse().map_err(|_| "a bad hash")?;
+        let (tmp, mut file) = self.store.temp().map_err(|e| e.to_string())?;
+        let mut hasher = blake3::Hasher::new();
+        let mut n = 0u64;
+        let result: Result<(), String> = async {
+            if found.size > 0 {
+                let src = drive_transfer::Source {
+                    addr: found.peer.addr.clone(),
+                    hash,
+                    size: found.size,
+                };
+                let mut s = std::pin::pin!(link.fetcher.stream(src, 0, found.size - 1));
+                while let Some(chunk) = s.next().await {
+                    let chunk = chunk.map_err(|e| e.to_string())?;
+                    hasher.update(&chunk);
+                    file.write_all(&chunk).map_err(|e| e.to_string())?;
+                    n += chunk.len() as u64;
+                }
+            }
+            file.flush().map_err(|e| e.to_string())?;
+            let got = hasher.finalize().to_hex().to_string();
+            if n != found.size || got != found.hash {
+                return Err("the bytes that came do not match their hash".into());
+            }
+            Ok(())
+        }
+        .await;
+        drop(file);
+        if let Err(e) = result {
+            self.store.discard(&tmp);
+            return Err(e);
+        }
+        // Stored here meanwhile (kache put it): keep that one.
+        let (_, gone) = self
+            .store
+            .commit(key, &tmp, n, &found.hash, &Cond::IfAbsent)
+            .map_err(|e| e.to_string())?;
+        self.forget(gone).await;
+        Ok(())
+    }
+
+    /// Tell the provider to stop serving files let go.
+    pub async fn forget(&self, gone: Vec<PathBuf>) {
+        if let Some(link) = self.link.get() {
+            for p in gone {
+                (link.forget)(p).await;
+            }
+        }
+    }
+
+    /// Keys under `prefix` here and on every peer that answers in time:
+    /// (key, size, hash), in order. Kept for a few seconds, for the pages
+    /// of one listing.
+    pub async fn list(&self, prefix: &str) -> Vec<(String, u64, String)> {
+        if let Some((p, at, keys)) = self.listed.lock().expect("listed").as_ref()
+            && p == prefix
+            && at.elapsed() < Duration::from_secs(10)
+        {
+            return keys.clone();
+        }
+        let mut all: std::collections::BTreeMap<String, (u64, String)> = self
+            .store
+            .list(prefix)
+            .into_iter()
+            .map(|(k, o)| (k, (o.size, o.hash)))
+            .collect();
+        for (k, size, hash) in self.list_peers(prefix).await {
+            all.entry(k).or_insert((size, hash));
+        }
+        let keys: Vec<(String, u64, String)> =
+            all.into_iter().map(|(k, (s, h))| (k, s, h)).collect();
+        *self.listed.lock().expect("listed") =
+            Some((prefix.to_string(), Instant::now(), keys.clone()));
+        keys
+    }
+
+    /// Keep connections to the group open, so a lookup does not pay for
+    /// dialing (every 20 s; until the process stops).
+    pub async fn keep_warm(self: Arc<Self>) {
+        loop {
+            for p in self.members() {
+                let me = self.clone();
+                tokio::spawn(async move {
+                    if tokio::time::timeout(Duration::from_secs(10), me.conn(&p))
+                        .await
+                        .is_ok_and(|r| r.is_ok())
+                    {
+                        me.down.lock().expect("down").remove(&p.id);
+                    }
+                });
+            }
+            tokio::time::sleep(Duration::from_secs(20)).await;
+        }
+    }
+}
+
+/// The objects' ETag: their BLAKE3, quoted (a strong tag).
+pub fn etag(hash: &str) -> String {
+    format!("\"{hash}\"")
+}

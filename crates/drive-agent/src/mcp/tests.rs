@@ -133,6 +133,7 @@ async fn world(max_writes: usize) -> World {
         allow_evict: false,
         relay: None,
         allow_rule_moves: false,
+        kache: Default::default(),
     };
     cfg.save(agent_dir.path()).unwrap();
     let author = "agent: test-client on Battleship".to_string();

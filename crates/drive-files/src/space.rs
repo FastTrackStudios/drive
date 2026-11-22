@@ -12,6 +12,8 @@
 //! - `sites`: device or storage id → where it physically is (`home`,
 //!   `studio`, `cloud`), for offsite copies;
 //! - `policies`: protection rules (3-2-1 and the like) over locations;
+//! - `devices.<id>.build_group`: which devices share kache build caches
+//!   (docs/kache.md);
 //! - `nodes`: the iroh endpoint ids of the nodes that keep the space (a
 //!   device's own endpoint is `iroh` in its `devices` entry).
 //!
@@ -181,6 +183,32 @@ pub fn allowed_endpoints(doc: &LoroDoc) -> std::collections::HashSet<String> {
         .into_values()
         .map(|(id, _)| id)
         .chain(node_endpoints(doc))
+        .collect()
+}
+
+/// A device's build group (docs/kache.md): devices of one group share
+/// their kache build caches (same OS and CPU, so the same keys: e.g.
+/// `linux-x86_64`, `darwin-arm64`). Empty: none.
+pub fn set_build_group(doc: &LoroDoc, device: &str, group: &str) -> loro::LoroResult<()> {
+    let m = doc.get_map("devices").ensure_mergeable_map(device)?;
+    if group.is_empty() {
+        if m.get("build_group").is_some() {
+            m.delete("build_group")?;
+        }
+    } else if s(&m, "build_group") != group {
+        m.insert("build_group", group)?;
+    }
+    Ok(())
+}
+
+/// Device id → build group, for devices that have one.
+pub fn build_groups(doc: &LoroDoc) -> std::collections::HashMap<String, String> {
+    let map = doc.get_map("devices");
+    map.keys()
+        .filter_map(|k| {
+            let g = s(&child(&map, &k)?, "build_group");
+            (!g.is_empty()).then(|| (k.to_string(), g))
+        })
         .collect()
 }
 
@@ -706,6 +734,22 @@ mod tests {
         assert_eq!(devices(&d).len(), 2);
         let allowed = allowed_endpoints(&d);
         assert!(allowed.contains("e1") && allowed.contains("n1") && allowed.len() == 2);
+    }
+
+    #[test]
+    fn build_groups_beside_devices() {
+        let d = LoroDoc::new();
+        set_endpoint(&d, "pc", "e1", "{}").unwrap();
+        set_build_group(&d, "pc", "linux-x86_64").unwrap();
+        set_build_group(&d, "mac", "darwin-arm64").unwrap();
+        set_build_group(&d, "vps", "linux-x86_64").unwrap();
+        let g = build_groups(&d);
+        assert_eq!(g["pc"], "linux-x86_64");
+        assert_eq!(g.len(), 3);
+        set_build_group(&d, "vps", "").unwrap();
+        assert!(!build_groups(&d).contains_key("vps"));
+        // The endpoint stays as it was.
+        assert_eq!(endpoints(&d)["pc"].0, "e1");
     }
 
     #[test]
