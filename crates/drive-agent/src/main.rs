@@ -59,6 +59,11 @@
 //! drive-agent [--dir DIR] site build ID [--force]       # build and publish now
 //! ```
 //!
+//! kache build caches shared with this device's build group (docs/kache.md):
+//! drive-agent [--dir DIR] kache group NAME|auto|off     # e.g. linux-x86_64, darwin-arm64
+//! drive-agent [--dir DIR] kache status | config         # the group, what is kept; kache's [cache.remote]
+//! drive-agent [--dir DIR] kache budget GIB | port PORT
+//!
 //! AI agents (docs/agents.md): an MCP server on stdio, as this device:
 //! drive-agent [--dir DIR] mcp [--as NAME] [--max-writes N] [--page-max N] [--timeout SECONDS]
 //!
@@ -77,6 +82,7 @@ mod computers;
 mod daemon;
 #[cfg(feature = "mount")]
 mod fs;
+mod kache;
 mod mcp;
 mod placement;
 mod places;
@@ -160,6 +166,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 allow_evict: false,
                 relay: None,
                 allow_rule_moves: false,
+                kache: Default::default(),
             };
             cfg.save(dir)?;
             let a = Agent::start(dir, cfg.clone()).await;
@@ -192,6 +199,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     allow_evict: false,
                     relay: None,
                     allow_rule_moves: false,
+                    kache: Default::default(),
                 },
                 (Err(e), _, _) => return Err(format!("{e} (before joining: sign-in --node URL --space NAME)")),
             };
@@ -300,6 +308,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 allow_evict: false,
                 relay: prior.as_ref().and_then(|c| c.relay.clone()),
                 allow_rule_moves: false,
+                kache: Default::default(),
             };
             let a = Agent::start(dir, cfg.clone()).await;
             let d = space::join(&a.space, &code, this_device(&cfg.device_id, &name))
@@ -798,6 +807,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 ));
             }
         }
+        "kache" => kache_command(dir, &args[1..]).await?,
         "role" => {
             let role = args.get(1).ok_or("role storage-server|workstation")?;
             if role != "storage-server" && role != "workstation" {
@@ -1341,6 +1351,102 @@ async fn node_get(
         return Err(format!("the node answered {}", r.status()));
     }
     r.json().await.map_err(|e| e.to_string())
+}
+
+async fn kache_command(dir: &Path, args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "group" => {
+            let name = args.get(1).ok_or("kache group NAME|auto|off")?;
+            let group = match name.as_str() {
+                "off" => String::new(),
+                "auto" => kache::default_group(),
+                g => g.to_string(),
+            };
+            let a = start(dir).await?;
+            space::set_build_group(&a.space, &a.device_id(), &group).map_err(|e| e.to_string())?;
+            a.commit_space();
+            settle(&a).await;
+            if group.is_empty() {
+                out(
+                    "This device shares no build cache now; its agent stops serving kache's remote within a minute.",
+                );
+            } else {
+                let peers = kache::group_peers(&a.space, &a.device_id());
+                out(format!(
+                    "Build group {group}: shared with {}.",
+                    if peers.is_empty() {
+                        "no other device yet".to_string()
+                    } else {
+                        peers
+                            .iter()
+                            .map(|p| p.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                ));
+                out(
+                    "The agent serves kache's remote within a minute; `drive-agent kache config` prints kache's settings.",
+                );
+            }
+        }
+        "status" => {
+            let a = start(dir).await?;
+            let settings = a.cfg.lock().expect("cfg").kache.clone();
+            let group = kache::my_group(&a);
+            out(format!(
+                "Build group: {}",
+                if group.is_empty() {
+                    "none (`drive-agent kache group auto`)"
+                } else {
+                    &group
+                }
+            ));
+            if !group.is_empty() {
+                let peers = kache::group_peers(&a.space, &a.device_id());
+                let names: Vec<String> = peers.iter().map(|p| p.name.clone()).collect();
+                out(format!(
+                    "Shared with: {}",
+                    if names.is_empty() {
+                        "no other device yet".into()
+                    } else {
+                        names.join(", ")
+                    }
+                ));
+            }
+            let (n, bytes) = drive_kache::store::summary(&a.dir.join("kache"));
+            out(format!(
+                "Kept here: {n} objects, {} of {}",
+                human(bytes),
+                human(settings.budget())
+            ));
+            out(format!(
+                "Endpoint: http://127.0.0.1:{} (bucket `{}`)",
+                settings.port(),
+                drive_kache::BUCKET
+            ));
+        }
+        "config" => {
+            let port = Config::load(dir)?.kache.port();
+            out(kache::remote_block(port));
+        }
+        "budget" | "port" => {
+            let what = args[0].as_str();
+            let n: u64 = args
+                .get(1)
+                .and_then(|v| v.parse().ok())
+                .ok_or(format!("kache {what} NUMBER"))?;
+            let mut cfg = Config::load(dir)?;
+            if what == "budget" {
+                cfg.kache.budget_gib = Some(n);
+            } else {
+                cfg.kache.port = Some(u16::try_from(n).map_err(|_| "a port is below 65536")?);
+            }
+            cfg.save(dir)?;
+            out("Saved; the agent uses it when it next starts.");
+        }
+        other => return Err(format!("unknown: kache {other}")),
+    }
+    Ok(())
 }
 
 async fn start(dir: &Path) -> Result<Agent, String> {

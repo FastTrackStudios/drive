@@ -55,8 +55,28 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
         (c.space.clone(), c.device_id.clone())
     };
     a.drive.register_agent(&space_name, &me);
-    if let Err(e) = a.start_transfer().await {
-        tracing::warn!(error = %e, "files are not served over iroh; the node fetches them the old way");
+    // The build cache (docs/kache.md): its lookups are one of the
+    // endpoint's protocols, so it opens first.
+    let kache = match crate::kache::open(&a) {
+        Ok(k) => Some(k),
+        Err(e) => {
+            tracing::warn!(error = %e, "no kache build cache on this device");
+            None
+        }
+    };
+    let extra = kache
+        .iter()
+        .map(drive_kache::peers::protocol)
+        .collect::<Vec<_>>();
+    match a.start_transfer(extra).await {
+        Ok(()) => {
+            if let Some(k) = kache {
+                crate::kache::run(a.clone(), k);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "files are not served over iroh; the node fetches them the old way");
+        }
     }
     let mut events = a.drive.events();
     a.report_volumes();

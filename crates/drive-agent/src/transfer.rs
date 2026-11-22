@@ -27,13 +27,15 @@ pub fn settings(relay: Option<String>) -> Settings {
 }
 
 impl Agent {
-    /// Start serving files over iroh and say so in the registry.
-    pub async fn start_transfer(&self) -> Result<(), String> {
+    /// Start serving files over iroh (and `extra` protocols beside them:
+    /// the kache lookups) and say so in the registry.
+    pub async fn start_transfer(&self, extra: Vec<drive_transfer::Extra>) -> Result<(), String> {
         let relay = self.cfg.lock().expect("cfg").relay.clone();
         let doc = self.space.clone();
         let allow: Allow =
             Arc::new(move |id| space::allowed_endpoints(&doc).contains(&id.to_string()));
-        let p = Provider::start(&self.dir.join("transfer"), &settings(relay), allow).await?;
+        let p = Provider::start_with(&self.dir.join("transfer"), &settings(relay), allow, extra)
+            .await?;
         p.online(std::time::Duration::from_secs(5)).await;
         tracing::info!(transfer.endpoint = %p.id().fmt_short(), "serving files over iroh");
         let _ = self.provider.set(p);

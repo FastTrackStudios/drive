@@ -1,0 +1,28 @@
+[package]
+name = "drive-kache"
+description = "kache build caches shared peer to peer through Drive: a local S3-compatible endpoint (loopback only) whose objects are kept in the agent's folder under a size budget and fetched from the device's build group over iroh when missing (docs/kache.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+drive-transfer = { path = "../drive-transfer" }
+iroh = "1"
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+bytes = "1"
+blake3 = "1"
+httpdate = "1"
+serde.workspace = true
+serde_json.workspace = true
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false }
+# The S3 client kache itself uses (OpenDAL's S3 service, the version kache
+# 2.x pins), so the tests speak to the endpoint exactly as kache does.
+opendal = { version = "=0.59.5", default-features = false, features = ["services-s3", "http-transport-reqwest", "executors-tokio"] }
+opendal-http-transport-reqwest = { version = "=0.59.5", default-features = false, features = ["rustls"] }

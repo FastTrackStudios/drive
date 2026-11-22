@@ -63,6 +63,10 @@ pub struct Config {
     /// `.drive-trash`, never deleted.
     #[serde(default)]
     pub allow_rule_moves: bool,
+    /// kache build caches shared with this device's build group
+    /// (docs/kache.md): its port, how much is kept here.
+    #[serde(default)]
+    pub kache: crate::kache::Settings,
 }
 
 impl Config {
