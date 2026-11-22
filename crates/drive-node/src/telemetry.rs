@@ -73,6 +73,52 @@ pub fn exporting() -> bool {
     named("OTEL_EXPORTER_OTLP_ENDPOINT") || named("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 }
 
+/// A page's spans (OTLP over HTTP, JSON or protobuf), passed on to the
+/// collector this node exports to: the page needs no address of its own,
+/// and the collector no browser rules. 404 when the node exports nothing.
+pub async fn relay(
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::http::StatusCode {
+    use axum::http::StatusCode;
+    let url = match (
+        std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+        std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"),
+    ) {
+        (Ok(t), _) if !t.trim().is_empty() => t,
+        (_, Ok(e)) if !e.trim().is_empty() => format!("{}/v1/traces", e.trim_end_matches('/')),
+        _ => return StatusCode::NOT_FOUND,
+    };
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(reqwest::Client::new);
+    let kind = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    match client
+        .post(url)
+        .header("content-type", kind)
+        .body(body)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => StatusCode::NO_CONTENT,
+        Ok(r) => {
+            tracing::warn!(
+                otlp.status = r.status().as_u16(),
+                "the collector refused a page's spans"
+            );
+            StatusCode::BAD_GATEWAY
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "the collector did not answer");
+            StatusCode::BAD_GATEWAY
+        }
+    }
+}
+
 /// Each request as a span, under the caller's trace when it sent one.
 pub async fn requests(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
@@ -115,6 +161,9 @@ fn route_of(path: &str) -> String {
                 | "index"
                 | "s"
                 | "sites"
+                | "otlp"
+                | "v1"
+                | "traces"
         )
     };
     parts

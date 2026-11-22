@@ -299,6 +299,7 @@ async fn a_share_link_offers_a_lent_part_and_only_while_it_is_lent() {
     let catalog = crate::catalog::Catalog {
         rooms: w.rooms.clone(),
         blobs,
+        names: Default::default(),
     };
     let app = Router::new()
         .route("/s/{space}/{token}", get(crate::share::page))

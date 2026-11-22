@@ -364,6 +364,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
     let catalog = catalog::Catalog {
         rooms: rooms.clone(),
         blobs: blobs.clone(),
+        names: Default::default(),
     };
     let sidecar_store = Arc::new(
         sidecars::Sidecars::open(data, blobs.clone(), data.join("blobs"))
@@ -395,6 +396,13 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
     let api = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
+        // A page's own spans, on to the collector this node exports to
+        // (telemetry::relay): off unless the node has one.
+        .route(
+            "/otlp/v1/traces",
+            axum::routing::post(telemetry::relay)
+                .layer(axum::extract::DefaultBodyLimit::max(1 << 20)),
+        )
         .with_state(rooms.clone())
         .merge(
             Router::new()

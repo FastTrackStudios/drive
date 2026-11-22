@@ -23,7 +23,13 @@ use crate::store::Found;
 pub struct Catalog {
     pub rooms: Arc<Rooms>,
     pub blobs: BlobStore,
+    /// Each space's names, as of a version of its document.
+    pub names: NameCache,
 }
+
+/// A space's names (locations, devices, storages, what the node keeps) by
+/// space, with the version of the space document they were read from.
+pub type NameCache = Arc<std::sync::Mutex<HashMap<String, (loro::Frontiers, Arc<DocNames>)>>>;
 
 type Q = Query<HashMap<String, String>>;
 
@@ -89,47 +95,80 @@ struct Hit {
     available: Option<String>,
 }
 
-struct Names {
+/// What the space document says of its locations, read once per version
+/// of the document: every request names its hits from it.
+pub struct DocNames {
     locations: HashMap<String, space::Location>,
     devices: HashMap<String, String>,
     storages: HashMap<String, String>,
-    online: Vec<String>,
     available: HashMap<String, HashMap<String, drive_files::projects::Available>>,
 }
 
-#[tracing::instrument(name = "drive.names", skip_all)]
+struct Names {
+    doc: Arc<DocNames>,
+    online: Vec<String>,
+}
+
+fn doc_names(d: &loro::LoroDoc) -> DocNames {
+    let locations: HashMap<String, space::Location> = space::locations(d)
+        .into_iter()
+        .map(|l| (l.id.clone(), l))
+        .collect();
+    let available = locations
+        .keys()
+        .map(|l| (l.clone(), drive_files::projects::available(d, l)))
+        .collect();
+    DocNames {
+        locations,
+        devices: space::devices(d)
+            .into_iter()
+            .map(|x| (x.id, x.name))
+            .collect(),
+        storages: space::storages(d)
+            .into_iter()
+            .map(|x| (x.id, x.name))
+            .collect(),
+        available,
+    }
+}
+
+/// The space's names: read from its document only when the document has
+/// changed since the last read (under the rooms' lock, which every sync
+/// shares, only the version is compared).
+#[tracing::instrument(name = "drive.names", skip_all, fields(names.cached = tracing::field::Empty))]
 async fn names(c: &Catalog, space_id: &str) -> Names {
-    let (locations, devices, storages, available) = c
+    let cached = c.names.lock().expect("names").get(space_id).cloned();
+    let (version, fresh) = c
         .rooms
         .read(&drive_files::space_doc(space_id), |d| {
-            let locations: HashMap<String, space::Location> = space::locations(d)
-                .into_iter()
-                .map(|l| (l.id.clone(), l))
-                .collect();
-            let available = locations
-                .keys()
-                .map(|l| (l.clone(), drive_files::projects::available(d, l)))
-                .collect();
-            (
-                locations,
-                space::devices(d)
-                    .into_iter()
-                    .map(|x| (x.id, x.name))
-                    .collect(),
-                space::storages(d)
-                    .into_iter()
-                    .map(|x| (x.id, x.name))
-                    .collect(),
-                available,
-            )
+            let v = d.oplog_frontiers();
+            match &cached {
+                Some((at, _)) if *at == v => (v, None),
+                _ => (v, Some(doc_names(d))),
+            }
         })
         .await;
+    tracing::Span::current().record("names.cached", fresh.is_none());
+    let doc = match (fresh, cached) {
+        (Some(n), _) => {
+            let n = Arc::new(n);
+            c.names
+                .lock()
+                .expect("names")
+                .insert(space_id.to_string(), (version, n.clone()));
+            n
+        }
+        (None, Some((_, n))) => n,
+        (None, None) => Arc::new(DocNames {
+            locations: HashMap::new(),
+            devices: HashMap::new(),
+            storages: HashMap::new(),
+            available: HashMap::new(),
+        }),
+    };
     Names {
-        locations,
-        devices,
-        storages,
+        doc,
         online: c.rooms.agents_online(space_id).await,
-        available,
     }
 }
 
@@ -154,9 +193,10 @@ async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
             locs.dedup();
             locs.len()
         };
-        let loc = n.locations.get(&f.location);
+        let loc = n.doc.locations.get(&f.location);
         let device = loc.map(|l| l.device.clone()).unwrap_or_default();
         let available = n
+            .doc
             .available
             .get(&f.location)
             .and_then(|m| m.get(&f.path))
@@ -165,9 +205,9 @@ async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
         out.push(Hit {
             available,
             location_name: loc.map(|l| l.name.clone()).unwrap_or_default(),
-            device_name: n.devices.get(&device).cloned().unwrap_or_default(),
+            device_name: n.doc.devices.get(&device).cloned().unwrap_or_default(),
             storage: loc
-                .and_then(|l| n.storages.get(&l.storage).cloned())
+                .and_then(|l| n.doc.storages.get(&l.storage).cloned())
                 .unwrap_or_default(),
             online: n.online.contains(&device),
             device,
