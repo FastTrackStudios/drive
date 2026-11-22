@@ -97,6 +97,7 @@ struct Names {
     available: HashMap<String, HashMap<String, drive_files::projects::Available>>,
 }
 
+#[tracing::instrument(name = "drive.names", skip_all)]
 async fn names(c: &Catalog, space_id: &str) -> Names {
     let (locations, devices, storages, available) = c
         .rooms
@@ -132,6 +133,7 @@ async fn names(c: &Catalog, space_id: &str) -> Names {
     }
 }
 
+#[tracing::instrument(name = "drive.hits", skip_all, fields(hits.count = found.len()))]
 async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
     let n = names(c, space_id).await;
     let mut out = Vec::with_capacity(found.len());

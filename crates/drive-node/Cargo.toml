@@ -23,6 +23,12 @@ serde_json.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.7", features = ["fs", "trace"] }
+# Traces to an OTLP collector when OTEL_EXPORTER_OTLP_ENDPOINT (or
+# _TRACES_ENDPOINT) is set, joined to a caller's trace by its traceparent.
+opentelemetry = "0.30"
+opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.30", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots", "trace"] }
+tracing-opentelemetry = "0.31"
 turso = "0.8"
 futures = "0.3"
 tracing = "0.1"

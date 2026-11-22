@@ -22,6 +22,8 @@ mod shared_tests;
 #[cfg(test)]
 mod members_tests;
 
+pub mod telemetry;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -513,7 +515,7 @@ fn mount(api: Router, apps: Vec<(String, PathBuf)>) -> Router {
         }
         tracing::info!(app.prefix = %prefix, app.dir = %dir.display(), "serving app");
     }
-    app
+    app.layer(axum::middleware::from_fn(telemetry::requests))
 }
 
 async fn sync(

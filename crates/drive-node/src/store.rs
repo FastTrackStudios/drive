@@ -39,6 +39,13 @@ fn int(v: Value) -> i64 {
     }
 }
 
+/// A file name's extension, lowercase, without the dot (`""` for none).
+fn ext_of(name: &str) -> String {
+    name.rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default()
+}
+
 impl Store {
     pub async fn open(path: &Path) -> turso::Result<Store> {
         let db = turso::Builder::new_local(&path.to_string_lossy())
@@ -69,6 +76,30 @@ impl Store {
         .await?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS entries_content ON entries (space, sampled, size)",
+            (),
+        )
+        .await?;
+        // A file's extension, lowercase, so a search by kind (`.setlist`,
+        // `.kf`) reads its rows by an index instead of matching every name.
+        // Added to older databases (the error when it is there already is
+        // the column existing), and filled in once for their rows.
+        let _ = conn
+            .execute(
+                "ALTER TABLE entries ADD COLUMN ext TEXT NOT NULL DEFAULT ''",
+                (),
+            )
+            .await;
+        // The extension first: a lookup by kind is then a plain index
+        // range, whatever the planner makes of the space.
+        let _ = conn.execute("DROP INDEX IF EXISTS entries_ext", ()).await;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS entries_kind ON entries (ext, space)",
+            (),
+        )
+        .await?;
+        conn.execute(
+            "UPDATE entries SET ext = replace(lname, rtrim(lname, replace(lname, '.', '')), '') \
+             WHERE ext = '' AND dir = 0 AND lname LIKE '%.%'",
             (),
         )
         .await?;
@@ -173,8 +204,8 @@ impl Store {
             .await?;
             let mut stmt = conn
                 .prepare(
-                    "INSERT INTO entries (space, location, parent, path, name, lname, dir, size, mtime, sampled) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO entries (space, location, parent, path, name, lname, dir, size, mtime, sampled, ext) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )
                 .await?;
             for e in &index.entries {
@@ -189,6 +220,7 @@ impl Store {
                     Value::Integer(e.size as i64),
                     Value::Integer(e.mtime),
                     Value::Text(e.sampled.clone()),
+                    Value::Text(if e.dir { String::new() } else { ext_of(e.name()) }),
                 ])
                 .await?;
             }
@@ -244,6 +276,7 @@ impl Store {
     /// As [`Store::search`], and (when `sampled` is not empty) only files
     /// with one of those contents (sampled hashes): every copy of the
     /// files a tag is on.
+    #[tracing::instrument(name = "drive.store.search", skip_all)]
     pub async fn search_with(
         &self,
         space: &str,
@@ -276,6 +309,26 @@ impl Store {
         if words.is_empty() && exts.is_empty() && sampled.is_empty() {
             return Ok(Vec::new());
         }
+        // Files of some kinds, nothing else asked: one index range per kind.
+        if words.is_empty() && sampled.is_empty() {
+            let conn = self.conn.lock().await;
+            let mut out = Vec::new();
+            for e in &exts {
+                let mut rows = conn
+                    .query(
+                        "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
+                         WHERE ext = ?1 AND space = ?2 AND dir = 0",
+                        vec![Value::Text(e.clone()), Value::Text(space.into())],
+                    )
+                    .await?;
+                while let Some(row) = rows.next().await? {
+                    out.push(Self::found(&row)?);
+                }
+            }
+            out.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+            out.truncate(limit.clamp(1, 1000) as usize);
+            return Ok(out);
+        }
         let mut sql = String::from(
             "SELECT location, path, name, dir, size, mtime, sampled FROM entries WHERE space = ?1",
         );
@@ -285,12 +338,12 @@ impl Store {
             sql.push_str(&format!(" AND lname LIKE ?{}", params.len()));
         }
         if !exts.is_empty() {
-            sql.push_str(" AND dir = 0 AND (");
+            sql.push_str(" AND dir = 0 AND ext IN (");
             for (i, e) in exts.iter().enumerate() {
-                params.push(Value::Text(format!("%.{e}")));
+                params.push(Value::Text(e.clone()));
                 sql.push_str(&format!(
-                    "{}lname LIKE ?{}",
-                    if i > 0 { " OR " } else { "" },
+                    "{}?{}",
+                    if i > 0 { ", " } else { "" },
                     params.len()
                 ));
             }
@@ -348,6 +401,7 @@ impl Store {
     }
 
     /// A folder's entries in a location's index (`""`: its root).
+    #[tracing::instrument(name = "drive.store.list", skip_all)]
     pub async fn list_dir(
         &self,
         space: &str,
@@ -423,6 +477,7 @@ impl Store {
     }
 
     /// Every location holding this content.
+    #[tracing::instrument(name = "drive.store.copies", skip_all)]
     pub async fn copies(&self, space: &str, sampled: &str, size: i64) -> turso::Result<Vec<Found>> {
         let conn = self.conn.lock().await;
         let mut rows = conn
@@ -477,6 +532,65 @@ mod tests {
         assert_eq!(store.put_index("home", &index("l2")).await.unwrap(), 1);
         let found = store.search_with("home", "a", &[], &[], 10).await.unwrap();
         assert_eq!(found.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn search_by_kind_reads_the_extension() {
+        let dir = std::env::temp_dir().join(format!("drive-store-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("node.db")).await.unwrap();
+        let mut entries = vec![
+            file("Set/JT's Recital.SETLIST", "a1"),
+            file("Charts/Know Me.kf", "b2"),
+            file("Charts/kf-notes.txt", "c3"),
+            file("Makefile", "d4"),
+        ];
+        entries.push(IndexEntry {
+            dir: true,
+            ..file("Old.setlist", "")
+        });
+        store
+            .put_index(
+                "home",
+                &LocationIndex {
+                    location: "l1".into(),
+                    root: String::new(),
+                    built: 1,
+                    entries,
+                },
+            )
+            .await
+            .unwrap();
+        let names = |found: Vec<Found>| {
+            let mut v: Vec<String> = found.into_iter().map(|f| f.path).collect();
+            v.sort();
+            v
+        };
+        let found = store
+            .search_with("home", "", &[".setlist".into(), "KF".into()], &[], 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            names(found),
+            vec!["Charts/Know Me.kf", "Set/JT's Recital.SETLIST"]
+        );
+        // A database from before the column: filled in when it opens.
+        store
+            .conn
+            .lock()
+            .await
+            .execute("UPDATE entries SET ext = ''", ())
+            .await
+            .unwrap();
+        drop(store);
+        let store = Store::open(&dir.join("node.db")).await.unwrap();
+        let found = store
+            .search_with("home", "", &["kf".into()], &[], 10)
+            .await
+            .unwrap();
+        assert_eq!(names(found), vec!["Charts/Know Me.kf"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

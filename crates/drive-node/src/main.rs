@@ -79,12 +79,7 @@ fn args() -> Result<Args, String> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "drive_node=info,tower_http=warn".into()),
-        )
-        .init();
+    let _telemetry = drive_node::telemetry::init("drive-node", "drive_node=info,tower_http=warn");
     let args = match args() {
         Ok(a) => a,
         Err(e) => {
