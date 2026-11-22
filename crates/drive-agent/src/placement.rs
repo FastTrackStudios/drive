@@ -139,7 +139,12 @@ impl Agent {
                 "eviction is off: copies kept"
             );
         }
-        for h in p.evict.iter().filter(|_| may_evict) {
+        for h in p
+            .evict
+            .iter()
+            .filter(|_| may_evict)
+            .filter(|h| !self.leases.holds_hash(h))
+        {
             if std::fs::remove_file(self.cache_path(h)).is_ok() {
                 let _ = space::set_held(&self.space, &me, h, None);
                 done.evicted += 1;

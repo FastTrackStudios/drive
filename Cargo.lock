@@ -2103,6 +2103,7 @@ dependencies = [
  "blake3",
  "drive-files",
  "drive-kache",
+ "drive-local",
  "drive-native",
  "drive-node",
  "drive-proto",
@@ -2224,6 +2225,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "drive-local"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

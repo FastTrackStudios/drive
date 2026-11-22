@@ -64,11 +64,29 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
             None
         }
     };
-    let extra = kache
+    let mut extra = kache
         .iter()
         .map(drive_kache::peers::protocol)
         .collect::<Vec<_>>();
-    match a.start_transfer(extra).await {
+    // Files for apps (docs/app-files.md): its peer protocol is one of the
+    // endpoint's too; its socket serves whether or not the endpoint starts.
+    let apps = match crate::apps::Apps::open(&a) {
+        Ok(x) => {
+            extra.push(crate::apps::peer::protocol(&a, &x));
+            Some(x)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "no files for apps on this device");
+            None
+        }
+    };
+    let transfer = a.start_transfer(extra).await;
+    if let Some(x) = apps
+        && let Err(e) = crate::apps::serve(x).await
+    {
+        tracing::warn!(error = %e, "apps cannot reach this agent");
+    }
+    match transfer {
         Ok(()) => {
             if let Some(k) = kache {
                 crate::kache::run(a.clone(), k);

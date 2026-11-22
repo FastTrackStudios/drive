@@ -31,11 +31,19 @@ impl Agent {
     /// the kache lookups) and say so in the registry.
     pub async fn start_transfer(&self, extra: Vec<drive_transfer::Extra>) -> Result<(), String> {
         let relay = self.cfg.lock().expect("cfg").relay.clone();
+        self.start_transfer_with(settings(relay), extra).await
+    }
+
+    /// [`Agent::start_transfer`] with these endpoint settings.
+    pub async fn start_transfer_with(
+        &self,
+        settings: Settings,
+        extra: Vec<drive_transfer::Extra>,
+    ) -> Result<(), String> {
         let doc = self.space.clone();
         let allow: Allow =
             Arc::new(move |id| space::allowed_endpoints(&doc).contains(&id.to_string()));
-        let p = Provider::start_with(&self.dir.join("transfer"), &settings(relay), allow, extra)
-            .await?;
+        let p = Provider::start_with(&self.dir.join("transfer"), &settings, allow, extra).await?;
         p.online(std::time::Duration::from_secs(5)).await;
         tracing::info!(transfer.endpoint = %p.id().fmt_short(), "serving files over iroh");
         let _ = self.provider.set(p);

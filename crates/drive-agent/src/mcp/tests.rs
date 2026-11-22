@@ -134,6 +134,7 @@ async fn world(max_writes: usize) -> World {
         relay: None,
         allow_rule_moves: false,
         kache: Default::default(),
+        apps: Default::default(),
     };
     cfg.save(agent_dir.path()).unwrap();
     let author = "agent: test-client on Battleship".to_string();
