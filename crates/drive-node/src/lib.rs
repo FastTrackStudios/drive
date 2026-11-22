@@ -19,6 +19,9 @@ pub mod transfer;
 #[cfg(test)]
 mod shared_tests;
 
+#[cfg(test)]
+mod members_tests;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -105,6 +108,37 @@ async fn orgs(
     axum::Json(
         serde_json::json!({ "signed_in": true, "who": who.who, "auth": sign_in, "default": default, "orgs": orgs }),
     )
+}
+
+/// `/orgs/{org}/members`: who is in an org, as the issuer says (account,
+/// email, name, picture, role), for that org's own signed-in members. A
+/// node without an issuer knows no people: the list is empty.
+async fn members(
+    State((rooms, _)): State<(Arc<Rooms>, String)>,
+    UrlPath(org): UrlPath<String>,
+    headers: axum::http::HeaderMap,
+    peer: Remote,
+) -> axum::response::Response {
+    let local = auth::is_local(peer_addr(&peer), &headers);
+    let token = auth::bearer(&headers);
+    let Some(who) = rooms.auth.principal(token.as_deref(), local).await else {
+        return (StatusCode::UNAUTHORIZED, "sign in").into_response();
+    };
+    if !who.member_of(&org) {
+        tracing::warn!(auth.outcome = "denied", auth.who = %who.who, req.org = %org, "an org's members asked for by someone outside it");
+        return (StatusCode::FORBIDDEN, "not one of your orgs").into_response();
+    }
+    // This computer itself, unsigned: nobody to ask the issuer as.
+    if who.all && token.is_none() {
+        return axum::Json(serde_json::json!({ "org": org, "members": [] })).into_response();
+    }
+    match rooms.auth.members(token.as_deref(), &org).await {
+        Ok(m) => axum::Json(serde_json::json!({ "org": org, "members": m })).into_response(),
+        Err(why) => {
+            tracing::warn!(req.org = %org, auth.why = %why, "the issuer did not list an org's members");
+            (StatusCode::BAD_GATEWAY, "the issuer did not answer").into_response()
+        }
+    }
 }
 
 /// Every org the node keeps documents for.
@@ -361,6 +395,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         .merge(
             Router::new()
                 .route("/orgs", get(orgs))
+                .route("/orgs/{org}/members", get(members))
                 .with_state((rooms.clone(), default_org)),
         )
         .merge(

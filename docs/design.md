@@ -178,6 +178,12 @@ what a node keeps: "every document in org X", "all media of record Y",
   editor of this org"). Every node checks signatures itself, so
   permissions hold offline. Every update is signed by its device key and
   rejected by peers when the key lacks the role.
+- **People come from the issuer.** An org's members (account, email,
+  name, picture, role) are the issuer's: the node lists them to that
+  org's own signed-in members at `GET /orgs/{org}/members` (asked with
+  their token, kept a minute), and `drive_dioxus::use_members(org)` hands
+  them to an app, so no app keeps its own copy of who is in an org. A node
+  without an issuer lists nobody.
 - **Removing someone** takes effect on every node that hears of it; what
   they already synced, they keep; keys for new data rotate.
 - **Share links** carry a capability: a document (and what it references,

@@ -227,6 +227,25 @@ pub enum Browsed {
 }
 
 /// A file a device serves over iroh: fetch it from `endpoint` by `hash`.
+/// A member of an org, as the issuer knows them (`GET /orgs/{org}/members`
+/// on the node).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgMember {
+    /// Their account at the issuer.
+    pub account: String,
+    #[serde(default)]
+    pub email: String,
+    /// Their display name; empty when they never gave one.
+    #[serde(default)]
+    pub name: String,
+    /// A picture's URL, if any.
+    #[serde(default)]
+    pub image: String,
+    /// `owner`, `admin` or `member`.
+    #[serde(default)]
+    pub role: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Provided {
     /// Its full BLAKE3 hash (hex): also its blob name on the node.

@@ -53,6 +53,8 @@ pub struct Auth {
     pub issuer: Option<String>,
     http: reqwest::Client,
     cache: Mutex<HashMap<[u8; 32], (Instant, Principal)>>,
+    /// An org's members, by its slug, as the issuer last said.
+    members: Mutex<HashMap<String, (Instant, Vec<drive_proto::OrgMember>)>>,
 }
 
 impl Auth {
@@ -64,6 +66,7 @@ impl Auth {
                 .build()
                 .expect("an HTTP client"),
             cache: Mutex::new(HashMap::new()),
+            members: Mutex::new(HashMap::new()),
         }
     }
 
@@ -104,6 +107,75 @@ impl Auth {
         cache.retain(|_, (at, _)| at.elapsed() < KEEP);
         cache.insert(key, (Instant::now(), p.clone()));
         Some(p)
+    }
+
+    /// Who is in `org`, as the issuer says (asked with the token of one of
+    /// its members, which the caller has checked), kept a minute. Without
+    /// an issuer nobody is listed: the node knows no people.
+    pub async fn members(
+        &self,
+        token: Option<&str>,
+        org: &str,
+    ) -> Result<Vec<drive_proto::OrgMember>, String> {
+        let Some(issuer) = &self.issuer else {
+            return Ok(Vec::new());
+        };
+        if let Some((at, m)) = self.members.lock().await.get(org)
+            && at.elapsed() < KEEP
+        {
+            return Ok(m.clone());
+        }
+        let token = token
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .ok_or("asking the issuer needs a sign-in")?;
+        let post = |path: &str, body: String| {
+            self.http
+                .post(format!("{issuer}/auth/organization/{path}"))
+                .bearer_auth(token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+        };
+        let list: serde_json::Value = answer(post("list", "{}".into()).await).await?;
+        let id = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|b| b["organization"]["slug"] == org)
+            .and_then(|b| b["organization"]["id"].as_str())
+            .ok_or_else(|| format!("the issuer has no org {org} for this person"))?
+            .to_string();
+        let body = serde_json::json!({ "organization_id": id }).to_string();
+        let found: serde_json::Value = answer(post("members", body).await).await?;
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        let mut members: Vec<drive_proto::OrgMember> = found
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|m| drive_proto::OrgMember {
+                account: text(&m["user"]["id"]),
+                email: text(&m["user"]["email"]),
+                name: text(&m["user"]["name"]),
+                image: text(&m["user"]["image"]),
+                role: text(&m["member"]["role"]),
+            })
+            .filter(|m| !m.account.is_empty())
+            .collect();
+        members.sort_by(|a, b| {
+            let key = |m: &drive_proto::OrgMember| {
+                if m.name.is_empty() {
+                    m.email.to_lowercase()
+                } else {
+                    m.name.to_lowercase()
+                }
+            };
+            key(a).cmp(&key(b))
+        });
+        let mut cache = self.members.lock().await;
+        cache.retain(|_, (at, _)| at.elapsed() < KEEP);
+        cache.insert(org.to_string(), (Instant::now(), members.clone()));
+        Ok(members)
     }
 
     async fn ask(&self, issuer: &str, token: &str) -> Result<Principal, String> {
@@ -158,6 +230,15 @@ impl Auth {
             all: false,
         })
     }
+}
+
+/// An issuer's JSON answer, or why not.
+async fn answer(r: Result<reqwest::Response, reqwest::Error>) -> Result<serde_json::Value, String> {
+    let r = r.map_err(|e| format!("the issuer is unreachable: {e}"))?;
+    if !r.status().is_success() {
+        return Err(format!("the issuer answered {}", r.status()));
+    }
+    r.json().await.map_err(|e| e.to_string())
 }
 
 /// The token of a request: its `Bearer`, or the `drive_token` cookie the

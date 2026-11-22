@@ -28,7 +28,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 pub use drive_client::{Drive, Event, Me, Status, loro};
-pub use drive_proto::{DocInfo, Peer};
+pub use drive_proto::{DocInfo, OrgMember, Peer};
 use futures_util::StreamExt;
 use serde::Serialize;
 
@@ -563,6 +563,38 @@ fn list_docs(ctx: DriveCtx, prefix: String) -> Signal<Vec<DocInfo>> {
         }
     });
     sig
+}
+
+/// Who is in an org (empty: the org this browser is in), as the issuer
+/// knows them: account, email, name, picture and role, through the node's
+/// `/orgs/{org}/members` (signed-in members of that org only). A node
+/// without an issuer lists nobody. Asked again when `org` changes; the
+/// node keeps the issuer's answer a minute.
+pub fn use_members(org: impl Into<String>) -> Resource<Result<Vec<OrgMember>, String>> {
+    let ctx = use_drive();
+    let org = org.into();
+    let org = if org.is_empty() { ctx.org.clone() } else { org };
+    use_resource(use_reactive!(|org| async move { members(&org).await }))
+}
+
+/// [`use_members`] outside a component.
+pub async fn members(org: &str) -> Result<Vec<OrgMember>, String> {
+    let bearer = auth::fresh_token(60_000.0)
+        .await
+        .map(|t| format!("Bearer {t}"));
+    let headers: Vec<(&str, &str)> = bearer
+        .iter()
+        .map(|b| ("authorization", b.as_str()))
+        .collect();
+    let org_path: String = js_sys::encode_uri_component(org).into();
+    let url = format!("/orgs/{org_path}/members");
+    match auth::fetch("GET", &url, &headers, None).await {
+        Some((200, v)) => serde_json::from_value(v["members"].clone()).map_err(|e| e.to_string()),
+        Some((401, _)) => Err("sign in to see who is in this org".into()),
+        Some((403, _)) => Err("only this org's members see who is in it".into()),
+        Some((s, _)) => Err(format!("the node answered {s}")),
+        None => Err("the node did not answer".into()),
+    }
 }
 
 async fn gloo_sleep(ms: u32) {
