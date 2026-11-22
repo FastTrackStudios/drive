@@ -192,6 +192,10 @@ impl Agent {
             .filter_map(|s| s.config.blobs().ok().map(|b| (s.id.clone(), b)))
             .collect();
         let _ = std::fs::create_dir_all(dir.join("cache"));
+        // Every HTTP call to the node carries this device's session, as the
+        // sync connection does: a node reached from another computer refuses
+        // uploads (an index, a blob) without it.
+        let http = http_client(cfg.token.as_deref());
         let agent = Agent {
             dir: dir.to_path_buf(),
             cfg: Mutex::new(cfg),
@@ -202,7 +206,7 @@ impl Agent {
             files_id,
             space_id,
             stores,
-            http: reqwest::Client::new(),
+            http,
             busy: Mutex::new(HashSet::new()),
             provider: std::sync::OnceLock::new(),
         };
@@ -469,4 +473,20 @@ pub fn this_device(id: &str, name: &str) -> Device {
         approved_by: String::new(),
         added: drive_files::now_ms(),
     }
+}
+
+/// The agent's HTTP client: its session token, if it has one, on every
+/// request.
+fn http_client(token: Option<&str>) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(t) = token.filter(|t| !t.is_empty())
+        && let Ok(mut v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))
+    {
+        v.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap_or_default()
 }
