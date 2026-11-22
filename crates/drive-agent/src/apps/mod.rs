@@ -40,6 +40,8 @@ pub use leases::Leases;
 
 /// The app cache's budget by default: 100 GiB.
 pub const DEFAULT_BUDGET_GIB: u64 = 100;
+/// A Unix socket's path must be shorter than this (macOS: 104 bytes).
+const SOCKET_PATH_MAX: usize = 100;
 /// Longest request line accepted.
 const MAX_LINE: usize = 1 << 20;
 
@@ -152,13 +154,25 @@ impl Apps {
 /// (or where there are no Unix sockets). Runs until the process stops.
 pub async fn serve(apps: Arc<Apps>) -> Result<(), String> {
     let dir = apps.a.dir.clone();
-    let port = apps.a.cfg.lock().expect("cfg").apps.port;
+    #[allow(unused_mut)]
+    let mut port = apps.a.cfg.lock().expect("cfg").apps.port;
     #[cfg(unix)]
     {
-        let l = bind_socket(&dir)?;
-        tracing::info!(apps.socket = %dir.join(drive_local::SOCKET).display(), "serving files to apps");
-        let a = apps.clone();
-        tokio::spawn(async move { accept_unix(a, l).await });
+        let sock = dir.join(drive_local::SOCKET);
+        if sock.as_os_str().len() >= SOCKET_PATH_MAX {
+            // Socket paths are short (104 bytes on macOS): a folder this
+            // deep serves on the loopback port instead.
+            tracing::info!(
+                apps.socket_len = sock.as_os_str().len(),
+                "the agent's folder is too deep for a socket; apps reach it on a loopback port"
+            );
+            port = port.or(Some(0));
+        } else {
+            let l = bind_socket(&dir)?;
+            tracing::info!(apps.socket = %sock.display(), "serving files to apps");
+            let a = apps.clone();
+            tokio::spawn(async move { accept_unix(a, l).await });
+        }
     }
     #[cfg(not(unix))]
     let port = port.or(Some(0));

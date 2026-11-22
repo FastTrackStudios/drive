@@ -472,18 +472,21 @@ impl Drop for Watch {
 
 /// Reach the agent: its socket, else its loopback port.
 fn dial(dir: &Path) -> Result<(Conn, Option<String>)> {
+    let sock = dir.join(SOCKET);
+    #[allow(unused_mut)]
+    let mut why = format!("nothing answers at {}", sock.display());
     #[cfg(unix)]
-    {
-        let sock = dir.join(SOCKET);
-        match std::os::unix::net::UnixStream::connect(&sock) {
-            Ok(s) => return Ok((Conn::Unix(s), None)),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                ) => {}
-            Err(e) => return Err(Error::Io(e)),
+    match std::os::unix::net::UnixStream::connect(&sock) {
+        Ok(s) => return Ok((Conn::Unix(s), None)),
+        // Not there, or a path too long for a socket (the agent then
+        // serves on a loopback port): try the port.
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(Error::Refused(format!("{}: {e}", sock.display())));
         }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            why = format!("{}: {e}", sock.display());
+        }
+        Err(_) => {}
     }
     let port_file = dir.join(PORT_FILE);
     if let Ok(text) = std::fs::read_to_string(&port_file)
@@ -494,13 +497,11 @@ fn dial(dir: &Path) -> Result<(Conn, Option<String>)> {
                 let _ = s.set_nodelay(true);
                 return Ok((Conn::Tcp(s), Some(p.token)));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
-            Err(e) => return Err(Error::Io(e)),
+            Err(e) => why = format!("{why}; loopback port {}: {e}", p.port),
         }
     }
     Err(Error::NotRunning(format!(
-        "nothing answers at {} (start it with `drive serve`)",
-        dir.join(SOCKET).display()
+        "{why} (start it with `drive serve`)"
     )))
 }
 
