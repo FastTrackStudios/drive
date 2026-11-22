@@ -273,6 +273,15 @@ title, subtitle, date, icon, status, colour, and where a tap goes (a deep
 link, or its hosted web build). The overview renders them with no app
 code.
 
+**Recurring events.** An Event may repeat (an RRULE subset:
+`FREQ=WEEKLY;BYDAY=SU`, every other Tuesday, the first Sunday of the
+month, until a date or for a count) with dates left out;
+`drive_spine::calendar(doc, from, to)` lays out every meeting in a range,
+so "every Sunday, 10:30" shows before anyone plans one. An app's own
+event for one meeting (the set for the 29th) names the recurring event
+and the date it stands for (`series`, `occurrence`) and shows in that
+meeting's place, also when moved to another day.
+
 **Projects** link anything from any app: a record in Studio, its sessions
 (Events), client emails (Threads), invoices (Tasks), the band (People).
 
