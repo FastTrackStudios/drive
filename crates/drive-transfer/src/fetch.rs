@@ -49,6 +49,15 @@ impl Fetcher {
         })
     }
 
+    /// Dial from an endpoint that already exists (a device's provider), so
+    /// the peers see this device's own id.
+    pub fn on(endpoint: iroh::Endpoint) -> Fetcher {
+        Fetcher {
+            endpoint,
+            conns: Mutex::new(HashMap::new()),
+        }
+    }
+
     pub fn id(&self) -> EndpointId {
         self.endpoint.id()
     }

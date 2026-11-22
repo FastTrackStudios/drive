@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use iroh::endpoint::{Accepting, Connection};
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{BlobFormat, BlobsProtocol};
@@ -42,10 +42,13 @@ pub struct Provider {
     served: Served,
 }
 
-/// The blobs protocol behind a door: only peers `allow` lets in.
-#[derive(Clone)]
+/// Another protocol the endpoint speaks beside the blobs (its ALPN and its
+/// handler), behind the same door: the kache lookups (`drive-kache`).
+pub type Extra = (Vec<u8>, Box<dyn DynProtocolHandler>);
+
+/// A protocol behind a door: only peers `allow` lets in.
 struct Gate {
-    blobs: BlobsProtocol,
+    inner: Box<dyn DynProtocolHandler>,
     allow: Allow,
 }
 
@@ -74,11 +77,11 @@ impl ProtocolHandler for Gate {
     }
 
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        self.blobs.accept(conn).await
+        self.inner.accept(conn).await
     }
 
     async fn shutdown(&self) {
-        self.blobs.shutdown().await
+        self.inner.shutdown().await
     }
 }
 
@@ -93,18 +96,45 @@ impl Provider {
     /// Start serving: the endpoint (its key in `dir/iroh.key`), the blob
     /// store (outboards in `dir/blobs`), and what was hashed before.
     pub async fn start(dir: &Path, settings: &Settings, allow: Allow) -> Result<Provider, String> {
+        Provider::start_with(dir, settings, allow, Vec::new()).await
+    }
+
+    /// [`Provider::start`], also speaking `extra` protocols, each behind
+    /// the same door as the blobs.
+    pub async fn start_with(
+        dir: &Path,
+        settings: &Settings,
+        allow: Allow,
+        extra: Vec<Extra>,
+    ) -> Result<Provider, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let key = crate::secret_key(&dir.join("iroh.key"))?;
         let store = FsStore::load(dir.join("blobs"))
             .await
             .map_err(|e| format!("blob store: {e}"))?;
-        let endpoint = crate::endpoint(key, settings, vec![iroh_blobs::ALPN.to_vec()]).await?;
+        let mut alpns = vec![iroh_blobs::ALPN.to_vec()];
+        alpns.extend(extra.iter().map(|(alpn, _)| alpn.clone()));
+        let endpoint = crate::endpoint(key, settings, alpns).await?;
         // Read-only: the default events refuse pushes (a peer writing into
         // the store) and observing; every get is served.
         let blobs = BlobsProtocol::new(&store, None);
-        let router = Router::builder(endpoint)
-            .accept(iroh_blobs::ALPN, Gate { blobs, allow })
-            .spawn();
+        let mut router = Router::builder(endpoint).accept(
+            iroh_blobs::ALPN,
+            Gate {
+                inner: blobs.into(),
+                allow: allow.clone(),
+            },
+        );
+        for (alpn, inner) in extra {
+            router = router.accept(
+                alpn,
+                Gate {
+                    inner,
+                    allow: allow.clone(),
+                },
+            );
+        }
+        let router = router.spawn();
         Ok(Provider {
             router,
             store,
@@ -115,6 +145,12 @@ impl Provider {
     /// This device's endpoint id.
     pub fn id(&self) -> EndpointId {
         self.router.endpoint().id()
+    }
+
+    /// The endpoint itself: to dial other devices from this device's own
+    /// id ([`crate::Fetcher::on`]), which their doors know.
+    pub fn endpoint(&self) -> &iroh::Endpoint {
+        self.router.endpoint()
     }
 
     /// Where it can be reached now (relay and direct addresses).
@@ -174,6 +210,13 @@ impl Provider {
             hash: hash.clone(),
         });
         Ok(Provided { hash, size, mtime })
+    }
+
+    /// Stop serving a file this device no longer has (a cache object let
+    /// go): its entry in the blob store goes; the file is not touched.
+    pub async fn forget(&self, file: &Path) {
+        let key = file.to_string_lossy().into_owned();
+        let _ = self.store.tags().delete(format!("path:{key}")).await;
     }
 
     pub async fn shutdown(&self) {
