@@ -428,6 +428,32 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn listing_reflects_local_writes_and_removals_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::open(dir.path(), 1024).unwrap();
+        let cache = Kache::new(store, Arc::new(Vec::new), Default::default());
+        let prefix = "artifacts/";
+        let key = "artifacts/new";
+        assert!(cache.list(prefix).await.is_empty());
+
+        let (path, mut file) = cache.store.temp().unwrap();
+        use std::io::Write;
+        file.write_all(b"new").unwrap();
+        drop(file);
+        let hash = blake3::hash(b"new").to_hex().to_string();
+        cache
+            .store
+            .commit(key, &path, 3, &hash, &Cond::Any)
+            .unwrap();
+        let after_put = cache.list(prefix).await;
+        cache.store.remove(key).unwrap();
+        let after_remove = cache.list(prefix).await;
+
+        assert_eq!(after_put, [(key.to_string(), 3, hash)]);
+        assert!(after_remove.is_empty());
+    }
+
+    #[tokio::test]
     async fn delimiter_pages_emit_each_prefix_once() {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::Store::open(dir.path(), 1024).unwrap();
