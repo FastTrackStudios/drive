@@ -1,6 +1,6 @@
 [package]
 name = "drive-dioxus"
-description = "Drive for Dioxus apps: live documents and presence as signals, and the shared pieces (avatars, status, cursors)"
+description = "Drive for Dioxus apps: live documents and presence as signals, and the shared pieces (avatars, status, cursors), in a browser or a native app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,8 +13,16 @@ dioxus.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-util = "0.3"
+sha2 = "0.10"
+
+# In a browser: the page's storage, location, cookies and fetch.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Window", "Location", "Storage", "Response", "Request", "RequestInit", "Headers", "Document", "HtmlDocument"] }
-sha2 = "0.10"
+
+# Natively (a desktop or phone build): HTTP to the node, randomness.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+getrandom = "0.3"

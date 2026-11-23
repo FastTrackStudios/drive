@@ -6,10 +6,21 @@
 //!
 //! The node says whether it needs a sign-in and where the issuer is
 //! (`/orgs`: `auth`, `signed_in`); without an issuer nothing here runs.
+//!
+//! A native app (a desktop or phone build) keeps its tokens in a file
+//! beside its copies (`crate::env`) and calls the node it runs beside,
+//! which counts a request from its own computer as signed in ("this
+//! computer"). TODO(native sign-in): signing in to a node on another
+//! computer — open the issuer in the system browser with a redirect to
+//! `http://127.0.0.1:<port>/auth/callback` (RFC 8252's loopback redirect),
+//! catch the code on that port, trade it here as `finish` does. The issuer
+//! must list a loopback redirect for the `drive` client. Until then
+//! [`begin`] natively opens the node's own page in the browser instead.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use wasm_bindgen::JsCast;
+
+use crate::env;
 
 const TOKENS: &str = "drive:auth";
 const PENDING: &str = "drive:auth-pending";
@@ -41,18 +52,12 @@ struct Pending {
     client_id: String,
 }
 
-fn local() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok()?
-}
-
 fn now() -> f64 {
-    js_sys::Date::now()
+    env::now_ms()
 }
 
 fn origin() -> String {
-    web_sys::window()
-        .and_then(|w| w.location().origin().ok())
-        .unwrap_or_default()
+    env::origin()
 }
 
 fn redirect_uri() -> String {
@@ -62,24 +67,20 @@ fn redirect_uri() -> String {
 /// 32 random bytes, hex (`crypto.getRandomValues`: there on every page,
 /// where `randomUUID` needs a secure one).
 fn random() -> String {
-    js_sys::eval("Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('')")
-        .ok()
-        .and_then(|v| v.as_string())
-        .filter(|s| s.len() == 64)
-        .unwrap_or_default()
+    env::random_hex32()
 }
 
 fn enc(s: &str) -> String {
-    js_sys::encode_uri_component(s).into()
+    env::encode_component(s)
 }
 
 fn load() -> Option<Tokens> {
-    serde_json::from_str(&local()?.get_item(TOKENS).ok()??).ok()
+    serde_json::from_str(&env::get(TOKENS)?).ok()
 }
 
 fn save(t: &Tokens) {
-    if let (Some(s), Ok(j)) = (local(), serde_json::to_string(t)) {
-        let _ = s.set_item(TOKENS, &j);
+    if let Ok(j) = serde_json::to_string(t) {
+        env::set(TOKENS, &j);
     }
     set_cookie(
         &t.access_token,
@@ -96,11 +97,7 @@ fn set_cookie(token: &str, max_age: u64) {
         enc(token),
         if secure { "; Secure" } else { "" }
     );
-    if let Some(doc) = web_sys::window().and_then(|w| w.document())
-        && let Ok(html) = doc.dyn_into::<web_sys::HtmlDocument>()
-    {
-        let _ = html.set_cookie(&cookie);
-    }
+    env::set_cookie(&cookie);
 }
 
 /// The access token to send, if signed in (it may be about to run out:
@@ -116,22 +113,29 @@ pub fn bearer() -> Option<String> {
 
 /// Forget the tokens (signing out of every app on this address).
 pub fn sign_out() {
-    if let Some(s) = local() {
-        let _ = s.remove_item(TOKENS);
-    }
+    env::remove(TOKENS);
     set_cookie("", 0);
 }
 
 /// Go to the issuer to sign in; it comes back to `/auth/callback`.
 pub fn begin(issuer: &Issuer) {
+    // Natively there is no page to come back to yet (see the module's
+    // TODO): the node's own page signs in, in the browser.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = issuer;
+        env::go(&origin());
+        return;
+    }
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unreachable_code))]
     let (verifier, state) = (random(), random());
     if verifier.is_empty() || state.is_empty() {
         // No randomness, no sign-in: a guessable verifier is no PKCE.
         return;
     }
     let challenge = base64_url(&Sha256::digest(verifier.as_bytes()));
-    let return_to = web_sys::window()
-        .and_then(|w| w.location().href().ok())
+    let return_to = Some(env::href())
+        .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "/".into());
     let pending = Pending {
         state: state.clone(),
@@ -140,8 +144,8 @@ pub fn begin(issuer: &Issuer) {
         issuer: issuer.issuer.clone(),
         client_id: issuer.client_id.clone(),
     };
-    if let (Some(s), Ok(j)) = (local(), serde_json::to_string(&pending)) {
-        let _ = s.set_item(PENDING, &j);
+    if let Ok(j) = serde_json::to_string(&pending) {
+        env::set(PENDING, &j);
     }
     let url = format!(
         "{}/oauth2/authorize?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
@@ -152,29 +156,16 @@ pub fn begin(issuer: &Issuer) {
         enc(&challenge),
         enc(&state)
     );
-    if let Some(w) = web_sys::window() {
-        let _ = w.location().set_href(&url);
-    }
+    env::go(&url);
 }
 
 /// Whether this page is the issuer coming back.
 pub fn is_callback() -> bool {
-    web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
-        .is_some_and(|p| p == crate::mount::page("/auth/callback"))
+    cfg!(target_arch = "wasm32") && env::pathname() == crate::mount::page("/auth/callback")
 }
 
 fn query(name: &str) -> Option<String> {
-    let search = web_sys::window()?.location().search().ok()?;
-    search.trim_start_matches('?').split('&').find_map(|kv| {
-        let (k, v) = kv.split_once('=')?;
-        (k == name).then(|| {
-            js_sys::decode_uri_component(v)
-                .ok()
-                .and_then(|s| s.as_string())
-                .unwrap_or_else(|| v.to_string())
-        })
-    })
+    env::query_param(&env::search(), name)
 }
 
 /// Finish signing in (on `/auth/callback`): trade the code for tokens and
@@ -185,8 +176,7 @@ pub async fn finish() -> Result<(), String> {
     }
     let code = query("code").ok_or("the issuer sent no code")?;
     let state = query("state").unwrap_or_default();
-    let pending: Pending = local()
-        .and_then(|s| s.get_item(PENDING).ok().flatten())
+    let pending: Pending = env::get(PENDING)
         .and_then(|j| serde_json::from_str(&j).ok())
         .ok_or("this browser did not start that sign-in")?;
     if pending.state != state {
@@ -201,17 +191,13 @@ pub async fn finish() -> Result<(), String> {
     );
     let t = token_request(&pending.issuer, &pending.client_id, &body, None).await?;
     save(&t);
-    if let Some(s) = local() {
-        let _ = s.remove_item(PENDING);
-    }
-    if let Some(w) = web_sys::window() {
-        let back = if pending.return_to.contains("/auth/callback") {
-            crate::mount::page("/")
-        } else {
-            pending.return_to
-        };
-        let _ = w.location().replace(&back);
-    }
+    env::remove(PENDING);
+    let back = if pending.return_to.contains("/auth/callback") {
+        crate::mount::page("/")
+    } else {
+        pending.return_to
+    };
+    env::replace(&back);
     Ok(())
 }
 
@@ -284,38 +270,16 @@ async fn token_request(
     })
 }
 
-/// One HTTP request from the browser: its status and JSON body. A root
-/// path is the node's, reached under the app's mount (`mount::api`).
+/// One HTTP request (from the browser, or natively to the node): its
+/// status and JSON body. A root path is the node's, reached under the
+/// app's mount (`mount::api`).
 pub async fn fetch(
     method: &str,
     url: &str,
     headers: &[(&str, &str)],
     body: Option<&str>,
 ) -> Option<(u16, serde_json::Value)> {
-    let init = web_sys::RequestInit::new();
-    init.set_method(method);
-    let h = web_sys::Headers::new().ok()?;
-    for (k, v) in headers {
-        h.set(k, v).ok()?;
-    }
-    init.set_headers(&h);
-    if let Some(b) = body {
-        init.set_body(&wasm_bindgen::JsValue::from_str(b));
-    }
-    let w = web_sys::window()?;
-    let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(
-        w.fetch_with_str_and_init(&crate::mount::api(url), &init),
-    )
-    .await
-    .ok()?
-    .dyn_into()
-    .ok()?;
-    let status = resp.status();
-    let text = wasm_bindgen_futures::JsFuture::from(resp.text().ok()?)
-        .await
-        .ok()?
-        .as_string()
-        .unwrap_or_default();
+    let (status, text) = env::http(method, url, headers, body).await?;
     Some((
         status,
         serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),

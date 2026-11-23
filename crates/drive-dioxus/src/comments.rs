@@ -13,7 +13,7 @@ use drive_spine::comments::{self, Anchor, New, Target, Thread};
 use crate::{use_doc, use_drive};
 
 fn now() -> i64 {
-    js_sys::Date::now() as i64
+    crate::env::now_ms() as i64
 }
 
 fn clock(ms: i64) -> String {
@@ -30,15 +30,15 @@ pub fn ago(ms: i64) -> String {
         3600..86_400 => format!("{} h ago", d / 3600),
         86_400..172_800 => "yesterday".into(),
         _ => {
-            let date = js_sys::Date::new(&(ms as f64).into());
+            let (month, day, year) = crate::env::date_parts(ms as f64);
             const M: [&str; 12] = [
                 "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ];
             format!(
                 "{} {}, {}",
-                M[date.get_month() as usize],
-                date.get_date(),
-                date.get_full_year()
+                M[month as usize % 12],
+                day,
+                year
             )
         }
     }
@@ -117,17 +117,16 @@ pub fn CommentsPanel(
                 return Some(ms);
             }
             let id = player.as_ref()?;
-            let v = js_sys::eval(&format!(
+            crate::env::eval_f64(&format!(
                 "(document.getElementById({id:?})||{{}}).currentTime"
             ))
-            .ok()?;
-            v.as_f64().map(|s| (s * 1000.0).round() as i64)
+            .map(|s| (s * 1000.0).round() as i64)
         }
     };
     let seek: Option<EventHandler<i64>> = match (on_seek, player.clone()) {
         (Some(h), _) => Some(h),
         (None, Some(id)) => Some(EventHandler::new(move |ms: i64| {
-            let _ = js_sys::eval(&format!(
+            crate::env::eval(&format!(
                 "(()=>{{const p=document.getElementById({id:?});if(p){{p.currentTime={};p.play()}}}})()",
                 ms as f64 / 1000.0
             ));

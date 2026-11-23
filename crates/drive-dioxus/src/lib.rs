@@ -34,6 +34,7 @@ use serde::Serialize;
 
 pub mod auth;
 pub mod comments;
+pub mod env;
 mod keyed;
 pub mod mount;
 pub mod text;
@@ -90,21 +91,14 @@ impl DriveCtx {
 
     /// Move to another org: every app on this address follows (reloads).
     pub fn set_org(&self, org: &str) {
-        if let Some(s) = local() {
-            let _ = s.set_item(ORG_KEY, org);
-        }
-        if let Some(w) = web_sys::window() {
-            let _ = w.location().set_search("");
-            let _ = w.location().reload();
-        }
+        env::set(ORG_KEY, org);
+        env::reload_without_query();
     }
 
     /// Sign out of every app on this address.
     pub fn sign_out(&self) {
         auth::sign_out();
-        if let Some(w) = web_sys::window() {
-            let _ = w.location().reload();
-        }
+        env::reload();
     }
 
     /// Change your name and colour, in every app on this address.
@@ -117,31 +111,14 @@ impl DriveCtx {
 
 const ORG_KEY: &str = "drive:org";
 
-fn local() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok()?
-}
-
 /// The org named by the page (`?org=`) or last used here.
 fn known_org() -> Option<String> {
-    let search = web_sys::window()?.location().search().ok()?;
-    let from_url = search
-        .trim_start_matches('?')
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("org="))
-        .map(|v| {
-            js_sys::decode_uri_component(v)
-                .ok()
-                .and_then(|s| s.as_string())
-                .unwrap_or_else(|| v.to_string())
-        })
-        .filter(|v| !v.is_empty());
-    if let Some(o) = &from_url
-        && let Some(s) = local()
-    {
-        let _ = s.set_item(ORG_KEY, o);
+    let from_url = env::query_param(&env::search(), "org").filter(|v| !v.is_empty());
+    if let Some(o) = &from_url {
+        env::set(ORG_KEY, o);
     }
     from_url
-        .or_else(|| local()?.get_item(ORG_KEY).ok().flatten())
+        .or_else(|| env::get(ORG_KEY))
         .filter(|v| !v.is_empty())
 }
 
@@ -204,9 +181,7 @@ async fn boot() -> Boot {
         .or(default)
         .or_else(|| orgs.first().cloned())
         .unwrap_or_else(|| "home".to_string());
-    if let Some(s) = local() {
-        let _ = s.set_item(ORG_KEY, &org);
-    }
+    env::set(ORG_KEY, &org);
     Boot::Ready {
         org,
         token: if issuer.is_some() { token } else { None },
@@ -274,22 +249,9 @@ fn SignInScreen(issuer: auth::Issuer) -> Element {
 }
 
 /// The node's sync socket for an app under a mount (`None`: the page's
-/// own host, at the root).
+/// own host, at the root; natively, the node the client is configured for).
 fn sync_url() -> Option<String> {
-    if mount::get().is_empty() {
-        return None;
-    }
-    let loc = web_sys::window()?.location();
-    let proto = if loc.protocol().ok()? == "https:" {
-        "wss"
-    } else {
-        "ws"
-    };
-    Some(format!(
-        "{proto}://{}{}",
-        loc.host().ok()?,
-        mount::api("/sync")
-    ))
+    env::sync_url()
 }
 
 #[component]
@@ -302,9 +264,7 @@ fn BootMessage(why: String) -> Element {
                 button {
                     style: BUTTON,
                     onclick: move |_| {
-                        if let Some(w) = web_sys::window() {
-                            let _ = w.location().set_href(&mount::page("/"));
-                        }
+                        env::go(&mount::page("/"));
                     },
                     "Try again"
                 }
@@ -356,11 +316,7 @@ fn Connected(
                 drive_client::sleep(60_000).await;
                 match auth::fresh_token(5.0 * 60_000.0).await {
                     Some(t) => ctx.drive.set_token(Some(t)),
-                    None => {
-                        if let Some(w) = web_sys::window() {
-                            let _ = w.location().reload();
-                        }
-                    }
+                    None => env::reload(),
                 }
             }
         }
@@ -606,7 +562,7 @@ pub async fn members(org: &str) -> Result<Vec<OrgMember>, String> {
         .iter()
         .map(|b| ("authorization", b.as_str()))
         .collect();
-    let org_path: String = js_sys::encode_uri_component(org).into();
+    let org_path = env::encode_component(org);
     let url = format!("/orgs/{org_path}/members");
     match auth::fetch("GET", &url, &headers, None).await {
         Some((200, v)) => serde_json::from_value(v["members"].clone()).map_err(|e| e.to_string()),

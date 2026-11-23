@@ -48,6 +48,37 @@ pub fn set_data_dir(dir: impl Into<std::path::PathBuf>) {
     platform::set_data_dir(dir.into());
 }
 
+/// Where a native build keeps what it keeps (see [`set_data_dir`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn data_dir() -> Option<std::path::PathBuf> {
+    platform::dir()
+}
+
+/// Run `fut` on the client's own Tokio runtime and wait for it, from any
+/// executor (a Blitz window's has no Tokio): for what needs Tokio, such as
+/// an HTTP client. `None` if it panicked.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn on_runtime<T: Send + 'static>(
+    fut: impl std::future::Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    platform::on_runtime(fut).await
+}
+
+/// The node's HTTP address natively (`DRIVE_NODE` as http/https, without
+/// `/sync`): where an app's calls to the node go.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn node_http() -> String {
+    let ws = platform::default_url();
+    let base = ws.strip_suffix("/sync").unwrap_or(&ws);
+    if let Some(rest) = base.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = base.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        base.to_string()
+    }
+}
+
 /// The connection's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {

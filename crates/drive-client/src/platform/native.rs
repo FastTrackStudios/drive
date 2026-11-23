@@ -52,6 +52,16 @@ pub(crate) fn spawn(fut: impl Future<Output = ()> + Send + 'static) {
     runtime().spawn(fut);
 }
 
+pub(crate) async fn on_runtime<T: Send + 'static>(
+    fut: impl Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = futures_channel::oneshot::channel();
+    runtime().spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.await.ok()
+}
+
 pub(crate) fn after(ms: u32, f: impl FnOnce() + Send + 'static) {
     runtime().spawn(async move {
         tokio::time::sleep(Duration::from_millis(u64::from(ms))).await;
@@ -75,7 +85,7 @@ pub(crate) fn set_data_dir(dir: PathBuf) {
 
 /// Where this device's copies are: set by the app, `DRIVE_CLIENT_DIR`, or
 /// the user's data folder.
-fn dir() -> Option<PathBuf> {
+pub(crate) fn dir() -> Option<PathBuf> {
     if let Some(d) = DIR.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return Some(d);
     }
