@@ -366,6 +366,50 @@ async fn open_resolves_each_kind_of_source() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_complete_partial_ignores_the_range_error_body() {
+    let (url, _node) = node().await;
+    let device = device(&url, "range-test", "Range test").await;
+    let bytes = b"already downloaded";
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    let path = device.a.cache_path(&hash);
+    let partial = path.with_extension("part");
+    std::fs::write(&partial, bytes).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = axum::Router::new().route(
+        "/blobs/{hash}",
+        axum::routing::get(move |headers: axum::http::HeaderMap| async move {
+            assert_eq!(headers["range"], format!("bytes={}-", bytes.len()));
+            (
+                axum::http::StatusCode::RANGE_NOT_SATISFIABLE,
+                "range outside the file",
+            )
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    device.a.cfg.lock().unwrap().node = format!("ws://{address}/sync");
+
+    let result = device
+        .apps
+        .materialize(
+            &Source::Tree {
+                hash,
+                size: bytes.len() as u64,
+            },
+            &OpenOptions::new(),
+            &nothing,
+        )
+        .await;
+    server.abort();
+
+    let file = result.unwrap();
+    assert_eq!(file.path, path);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert!(!partial.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_fetch_resumes_and_partials_are_never_handed_out() {
     let w = world().await;
     let big = pattern(48 << 20, 7);
