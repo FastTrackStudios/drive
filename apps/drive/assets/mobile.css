@@ -10,8 +10,8 @@
 
 /* Quick Look full screen on a phone, over the pill and the bar. */
 .fullview.phone { position: fixed; inset: 0; z-index: 80; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
-.fvbody.swiped { padding: 0; overflow: hidden; }
-.fvswipe { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px; }
+.fullview.phone .fvhead { flex: 1; min-width: 0; }
+.fullview.phone .fvbody { padding: 8px; }
 
 /* The uploads' accessory. */
 .uploads { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
