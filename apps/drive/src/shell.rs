@@ -275,6 +275,60 @@ pub fn title_of(p: &Place) -> &'static str {
     }
 }
 
+fn volume_crumbs(
+    registry: &loro::LoroDoc,
+    device: &str,
+    root: &str,
+    path: &str,
+) -> Vec<(String, Option<Place>)> {
+    let device_name = space::devices(registry)
+        .into_iter()
+        .find(|d| d.id == device)
+        .map_or_else(|| device.to_string(), |d| d.name);
+    let root_name = space::volumes(registry)
+        .into_iter()
+        .find(|v| v.device == device && v.mount == root)
+        .map_or_else(|| root.to_string(), |v| v.name);
+    crate::browse::volume_crumbs(device, root, path, &device_name, &root_name)
+}
+
+#[cfg(test)]
+#[test]
+fn volume_breadcrumbs_link_to_parents_on_the_same_device() {
+    let registry = loro::LoroDoc::new();
+    let crumbs = volume_crumbs(&registry, "device", "/mnt/media", "Music//Mixes");
+    assert_eq!(
+        crumbs,
+        [
+            ("device".into(), None),
+            (
+                "/mnt/media".into(),
+                Some(Place::Volume {
+                    device: "device".into(),
+                    root: "/mnt/media".into(),
+                    path: "".into(),
+                })
+            ),
+            (
+                "Music".into(),
+                Some(Place::Volume {
+                    device: "device".into(),
+                    root: "/mnt/media".into(),
+                    path: "Music".into(),
+                })
+            ),
+            (
+                "Mixes".into(),
+                Some(Place::Volume {
+                    device: "device".into(),
+                    root: "/mnt/media".into(),
+                    path: "Music/Mixes".into(),
+                })
+            ),
+        ]
+    );
+}
+
 /// The path to a place, each step with where it goes (`None`: nowhere).
 fn use_crumbs(space: &str, place: &Place) -> Vec<(String, Option<Place>)> {
     let files = use_doc(files_doc(space));
@@ -363,6 +417,7 @@ fn use_crumbs(space: &str, place: &Place) -> Vec<(String, Option<Place>)> {
             }
             crumbs
         }
+        Place::Volume { device, root, path } => volume_crumbs(&reg.loro(), device, root, path),
         Place::Project(id) => {
             let name = drive_files::projects::projects(&reg.loro())
                 .into_iter()

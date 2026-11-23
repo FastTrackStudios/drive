@@ -75,6 +75,39 @@ fn join(path: &str, name: &str) -> String {
     }
 }
 
+pub(crate) fn volume_crumbs(
+    device: &str,
+    root: &str,
+    path: &str,
+    device_name: &str,
+    root_name: &str,
+) -> Vec<(String, Option<Place>)> {
+    let mut crumbs = vec![
+        (device_name.to_string(), None),
+        (
+            root_name.to_string(),
+            Some(Place::Volume {
+                device: device.to_string(),
+                root: root.to_string(),
+                path: String::new(),
+            }),
+        ),
+    ];
+    let mut acc = String::new();
+    for part in path.split('/').filter(|p| !p.is_empty()) {
+        acc = join(&acc, part);
+        crumbs.push((
+            part.to_string(),
+            Some(Place::Volume {
+                device: device.to_string(),
+                root: root.to_string(),
+                path: acc.clone(),
+            }),
+        ));
+    }
+    crumbs
+}
+
 fn last(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -223,29 +256,7 @@ pub fn VolumeFolder(space: String, device: String, root: String, path: String) -
         })
         .collect();
 
-    let mut crumbs = vec![
-        (dname.clone(), None),
-        (
-            root_name.clone(),
-            Some(Place::Volume {
-                device: device.clone(),
-                root: root.clone(),
-                path: String::new(),
-            }),
-        ),
-    ];
-    let mut acc = String::new();
-    for part in path.split('/').filter(|p| !p.is_empty()) {
-        acc = join(&acc, part);
-        crumbs.push((
-            part.to_string(),
-            Some(Place::Volume {
-                device: device.clone(),
-                root: root.clone(),
-                path: acc.clone(),
-            }),
-        ));
-    }
+    let crumbs = volume_crumbs(&device, &root, &path, &dname, &root_name);
     let folder_name = if path.is_empty() {
         root_name.clone()
     } else {
