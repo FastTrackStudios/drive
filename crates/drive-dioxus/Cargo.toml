@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tracing = "0.1"
 drive-client.workspace = true
 drive-proto.workspace = true
 drive-spine.workspace = true
@@ -25,4 +26,9 @@ web-sys = { version = "0.3", features = ["Window", "Location", "Storage", "Respo
 # Natively (a desktop or phone build): HTTP to the node, randomness.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# A call's span sent along as its W3C traceparent, so the node's spans join
+# the app's trace.
+opentelemetry = "0.30"
+opentelemetry_sdk = "0.30"
+tracing-opentelemetry = "0.31"
 getrandom = "0.3"

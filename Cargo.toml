@@ -21,6 +21,69 @@ serde_json = "1"
 postcard = { version = "1", features = ["use-std"] }
 dioxus = { version = "=0.8.0-alpha.3", features = ["router"] }
 
+# The native apps' renderer, fast even in a dev build: Blitz's style,
+# layout and paint, Vello on wgpu and the text stack at full optimisation
+# (the app's own code stays quick to rebuild). The set Studio uses.
+[profile.dev.package.blitz-dom]
+opt-level = 3
+[profile.dev.package.blitz-paint]
+opt-level = 3
+[profile.dev.package.blitz-shell]
+opt-level = 3
+[profile.dev.package.blitz-traits]
+opt-level = 3
+[profile.dev.package.blitz-html]
+opt-level = 3
+[profile.dev.package.anyrender]
+opt-level = 3
+[profile.dev.package.anyrender_vello]
+opt-level = 3
+[profile.dev.package.anyrender_vello_hybrid]
+opt-level = 3
+[profile.dev.package.vello]
+opt-level = 3
+[profile.dev.package.vello_encoding]
+opt-level = 3
+[profile.dev.package.vello_hybrid]
+opt-level = 3
+[profile.dev.package.wgpu]
+opt-level = 3
+[profile.dev.package.wgpu-core]
+opt-level = 3
+[profile.dev.package.wgpu-hal]
+opt-level = 3
+[profile.dev.package.naga]
+opt-level = 3
+[profile.dev.package.stylo]
+opt-level = 3
+[profile.dev.package.selectors]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.dev.package.parley]
+opt-level = 3
+[profile.dev.package.skrifa]
+opt-level = 3
+[profile.dev.package.read-fonts]
+opt-level = 3
+[profile.dev.package.swash]
+opt-level = 3
+[profile.dev.package.fontique]
+opt-level = 3
+[profile.dev.package.peniko]
+opt-level = 3
+[profile.dev.package.kurbo]
+opt-level = 3
+[profile.dev.package.dioxus-core]
+opt-level = 3
+[profile.dev.package.dioxus-native-dom]
+opt-level = 3
+
+# The native apps' one dev build (dx build --profile desktop-dev), as Studio
+# names it: dev, with the renderer at full optimisation (above).
+[profile.desktop-dev]
+inherits = "dev"
+
 [profile.wasm-dev]
 inherits = "dev"
 opt-level = 1

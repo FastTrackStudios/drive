@@ -96,3 +96,19 @@ mod tests {
         assert_eq!(date_parts_utc(0.0), (0, 1, 1970));
     }
 }
+
+/// A path with its ids folded (`/fetch/{}/{}`), so a route's spans group.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn route_of(path: &str) -> String {
+    let path = path.split("://").nth(1).map_or(path, |rest| rest.find('/').map_or("/", |i| &rest[i..]));
+    path.split('/')
+        .map(|p| {
+            if p.len() > 12 || p.chars().any(|c| c.is_ascii_digit()) && p.len() > 6 {
+                "{}"
+            } else {
+                p
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}

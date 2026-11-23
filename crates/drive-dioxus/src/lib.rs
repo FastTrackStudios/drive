@@ -140,7 +140,30 @@ enum Boot {
 /// Where the provider starts: finish a sign-in coming back from the
 /// issuer, refresh the token, ask the node who this is and which orgs they
 /// are in, and pick the org.
+#[tracing::instrument(name = "drive.app.boot", skip_all, fields(boot.outcome = tracing::field::Empty, boot.org = tracing::field::Empty, boot.orgs = tracing::field::Empty))]
 async fn boot() -> Boot {
+    let b = boot_inner().await;
+    let span = tracing::Span::current();
+    match &b {
+        Boot::Ready { org, .. } => {
+            span.record("boot.outcome", "ready");
+            span.record("boot.org", org.as_str());
+        }
+        Boot::SignIn(_) => {
+            span.record("boot.outcome", "sign-in");
+        }
+        Boot::Failed(why) => {
+            span.record("boot.outcome", "failed");
+            tracing::warn!(boot.error = %why, "Drive could not start");
+        }
+        Boot::Loading => {
+            span.record("boot.outcome", "loading");
+        }
+    }
+    b
+}
+
+async fn boot_inner() -> Boot {
     if auth::is_callback() {
         return match auth::finish().await {
             Ok(()) => Boot::Loading, // going back to where the sign-in began
@@ -163,6 +186,7 @@ async fn boot() -> Boot {
             None => Boot::Failed("the node refused this browser".into()),
         };
     }
+    tracing::Span::current().record("boot.orgs", v["orgs"].as_array().map_or(0, Vec::len));
     let orgs: Vec<String> = v["orgs"]
         .as_array()
         .map(|a| {

@@ -167,11 +167,30 @@ pub async fn http_bytes(
     } else {
         url.to_string()
     };
+    let path = full.split('?').next().unwrap_or(&full).to_string();
+    let span = tracing::info_span!(
+        "drive.http",
+        otel.name = %format!("{method} {}", crate::env::route_of(&path)),
+        otel.kind = "client",
+        http.request.method = %method,
+        url.full = %path,
+        http.response.status_code = tracing::field::Empty,
+    );
     let method = reqwest::Method::from_bytes(method.as_bytes()).ok()?;
-    let headers: Vec<(String, String)> = headers
+    let mut headers: Vec<(String, String)> = headers
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
+    // This call's span, as the node's parent.
+    {
+        use opentelemetry::propagation::TextMapPropagator as _;
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        let mut carrier = std::collections::HashMap::new();
+        opentelemetry_sdk::propagation::TraceContextPropagator::new()
+            .inject_context(&span.context(), &mut carrier);
+        headers.extend(carrier);
+    }
+    let recorded = span.clone();
     drive_client::on_runtime(async move {
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         let client = CLIENT.get_or_init(reqwest::Client::new);
@@ -184,6 +203,7 @@ pub async fn http_bytes(
         }
         let resp = req.send().await.ok()?;
         let status = resp.status().as_u16();
+        recorded.record("http.response.status_code", status);
         let bytes = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
         Some((status, bytes))
     })

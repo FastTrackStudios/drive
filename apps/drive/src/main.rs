@@ -26,6 +26,11 @@ const STYLE: Asset = asset!("/assets/drive.css");
 
 fn main() {
     // Warnings and up: Loro reports its encoding at INFO, which floods the console.
+    // Natively: logs to stderr and traces to an OTLP collector when one is
+    // named (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT); in a browser, the console.
+    #[cfg(feature = "native")]
+    let _telemetry = app_shell_native::telemetry::init("drive-app", "warn,drive=info,drive_dioxus=info");
+    #[cfg(not(feature = "native"))]
     dioxus::logger::init(dioxus::logger::tracing::Level::WARN).expect("the logger starts once");
     // Drawn by Blitz on a desktop or a phone: the window has no system
     // frame, the shell's title bar is its frame (app-shell-native). Its
@@ -45,6 +50,9 @@ fn main() {
                 title: "Drive".to_owned(),
                 size: (1440.0, 900.0),
                 system_decorations: false,
+                // `shot <path.png>` on the app's control socket
+                // ($XDG_RUNTIME_DIR/app-shell/drive.sock).
+                control: Some("drive".to_owned()),
             },
         );
     }
