@@ -242,8 +242,8 @@ fn within(path: &str, folder: &str) -> bool {
 pub struct Matcher<'r> {
     pub rule: &'r Rule,
     regexes: Vec<(String, Regex)>,
-    /// The rule's actions, one tag per tag action.
-    actions: Vec<Action>,
+    /// Each expanded action paired with its index in the original rule.
+    actions: Vec<(usize, Action)>,
 }
 
 impl<'r> Matcher<'r> {
@@ -281,7 +281,16 @@ impl<'r> Matcher<'r> {
         Ok(Matcher {
             rule,
             regexes,
-            actions: one_tag_per_action(&rule.actions),
+            actions: rule
+                .actions
+                .iter()
+                .enumerate()
+                .flat_map(|(index, action)| {
+                    split_tag_action(action)
+                        .into_iter()
+                        .map(move |action| (index, action))
+                })
+                .collect(),
         })
     }
 
@@ -416,9 +425,9 @@ impl<'r> Matcher<'r> {
         let mut cur = f.item().clone();
         let on = w.on(f);
         let mut steps = Vec::new();
-        for (i, a) in self.actions.iter().enumerate() {
+        for (index, action) in &self.actions {
             let tokens = tokens(&cur, f, w);
-            let step = plan_one(i, a, &cur, f, w, &on, &tokens);
+            let step = plan_one(*index, action, &cur, f, w, &on, &tokens);
             if step.blocked.is_none()
                 && !step.noop
                 && let Effect::Move { to } = &step.effect
@@ -780,6 +789,11 @@ fn plan_one(
             }
         }
         Action::Rename { name } => {
+            if name.trim().is_empty() {
+                let mut s = step(i, Effect::Nothing, "rename it".into());
+                s.blocked = Some("the rename needs a name".into());
+                return s;
+            }
             let new_name = template::file_name(name, t);
             let target = match cur {
                 Item::Location {
@@ -852,7 +866,11 @@ fn move_step(i: usize, target: Spot, says: String, cur: &Item, w: &World) -> Ste
     match (cur, &target) {
         (Item::Drive { .. }, Spot::Drive { .. }) => {}
         (
-            Item::Location { device, .. },
+            Item::Location {
+                device,
+                location: from_location,
+                ..
+            },
             Spot::Location {
                 device: to_dev,
                 location,
@@ -864,6 +882,8 @@ fn move_step(i: usize, target: Spot, says: String, cur: &Item, w: &World) -> Ste
                     Some("a move to another computer is not built yet: copy instead".into());
             } else if w.location(location).is_some_and(|l| l.in_storage) {
                 s.blocked = Some("moves into a storage's location are not built yet".into());
+            } else if w.location(from_location).is_some_and(|l| l.in_storage) {
+                s.blocked = Some("moves out of a storage's location are not built yet".into());
             } else if !moves_allowed(w) {
                 s.blocked = Some(MOVES_OFF.into());
             }
@@ -905,22 +925,23 @@ pub fn feeds_itself(rule: &Rule) -> bool {
 /// Expand an action list so tag actions with several tags are one step
 /// per tag (what [`Matcher::plan`] expects).
 pub fn one_tag_per_action(actions: &[Action]) -> Vec<Action> {
-    actions
-        .iter()
-        .flat_map(|a| match a {
-            Action::AddTags { tags } if tags.len() > 1 => tags
-                .iter()
-                .map(|t| Action::AddTags {
-                    tags: vec![t.clone()],
-                })
-                .collect(),
-            Action::RemoveTags { tags } if tags.len() > 1 => tags
-                .iter()
-                .map(|t| Action::RemoveTags {
-                    tags: vec![t.clone()],
-                })
-                .collect(),
-            other => vec![other.clone()],
-        })
-        .collect()
+    actions.iter().flat_map(split_tag_action).collect()
+}
+
+fn split_tag_action(action: &Action) -> Vec<Action> {
+    match action {
+        Action::AddTags { tags } if tags.len() > 1 => tags
+            .iter()
+            .map(|t| Action::AddTags {
+                tags: vec![t.clone()],
+            })
+            .collect(),
+        Action::RemoveTags { tags } if tags.len() > 1 => tags
+            .iter()
+            .map(|t| Action::RemoveTags {
+                tags: vec![t.clone()],
+            })
+            .collect(),
+        other => vec![other.clone()],
+    }
 }
