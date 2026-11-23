@@ -398,16 +398,31 @@ fn Calendar() -> Element {
     }
 }
 
+fn document_apps<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut apps: Vec<_> = ids
+        .into_iter()
+        .map(|id| id.split(':').next().unwrap_or(""))
+        .collect();
+    apps.sort_unstable();
+    apps.dedup();
+    apps
+}
+
+#[cfg(test)]
+#[test]
+fn document_app_groups_are_unique_for_interleaved_documents() {
+    assert_eq!(
+        document_apps(["studio:set:one", "meals:recipe:two", "studio:set:three"]),
+        ["meals", "studio"]
+    );
+}
+
 /// Everything the node keeps, by app, with who is in it right now.
 #[component]
 fn Everything() -> Element {
     let docs = use_docs("");
     let list = docs();
-    let mut apps: Vec<&str> = list
-        .iter()
-        .map(|d| d.id.split(':').next().unwrap_or(""))
-        .collect();
-    apps.dedup();
+    let apps = document_apps(list.iter().map(|doc| doc.id.as_str()));
     rsx! {
         section { class: "pane",
             div { class: "panehead",
