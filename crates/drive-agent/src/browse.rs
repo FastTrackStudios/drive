@@ -35,6 +35,18 @@ const SYSTEM_NAMES: &[&str] = &[
 /// Never listed or read, wherever they are reached from.
 const NEVER: &[&str] = &["/proc", "/sys", "/dev"];
 
+/// Drive's own mount points on this device: never browsed (a listing of
+/// one would ask the mount, which may be asking this).
+static NEVER_BROWSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Never browse these (Drive's own mount points).
+pub fn never_browse(paths: &[PathBuf]) {
+    NEVER_BROWSED
+        .lock()
+        .expect("never")
+        .extend(paths.iter().cloned());
+}
+
 /// What this device lets be browsed now: its volumes (as the registry
 /// gets them), `/`, and the home folder; one per mount point.
 pub fn roots(volumes: &[Volume], home: Option<&Path>) -> Vec<Root> {
@@ -121,6 +133,12 @@ impl Rules {
             .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
         {
             return Err("a path outside the volume".into());
+        }
+        // Judged by name first: resolving a path inside a denied mount
+        // would ask that mount.
+        let named = Path::new(root).join(relp);
+        if self.deny.iter().any(|d| named.starts_with(d)) {
+            return Err("not shown".into());
         }
         let base = std::fs::canonicalize(root).map_err(|e| format!("{root}: {e}"))?;
         let full = std::fs::canonicalize(base.join(relp)).map_err(|e| match e.kind() {
@@ -256,7 +274,11 @@ impl Agent {
     }
 
     pub(crate) fn browse_rules(&self) -> Rules {
-        Rules::new(&self.browse_roots(), &self.dir)
+        let mut rules = Rules::new(&self.browse_roots(), &self.dir);
+        rules
+            .deny
+            .extend(NEVER_BROWSED.lock().expect("never").iter().cloned());
+        rules
     }
 
     /// Answer the node's [`Browse`] request.
