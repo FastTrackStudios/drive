@@ -105,15 +105,9 @@ pub async fn upload_files(
 /// One file to the node and into the tree; whether it went.
 async fn send(files: &Doc, reg: &Doc, cur: Option<TreeID>, name: &str, bytes: &[u8]) -> bool {
     let hash = drive_files::hash::of_bytes(bytes);
-    let mut put = gloo_net::http::Request::put(&format!("/blobs/{hash}"));
-    if let Some(b) = drive_dioxus::auth::bearer() {
-        put = put.header("authorization", &b);
-    }
-    let Ok(req) = put.body(js_sys::Uint8Array::from(bytes)) else {
-        return false;
-    };
-    match req.send().await {
-        Ok(r) if r.ok() => {
+    let sent = crate::host::request("PUT", &format!("/blobs/{hash}"), None, Some(bytes.to_vec())).await;
+    match sent {
+        Some((status, _)) if (200..300).contains(&status) => {
             files.edit(|d| {
                 let id = match tree::lookup(d, cur, name) {
                     Some(x) if !x.dir => Some(x.id),
@@ -261,7 +255,7 @@ pub fn new_action(
                     Callback::new(|()| {
                         // Synchronously, in the press, so the browser opens
                         // its picker.
-                        let _ = js_sys::eval("document.getElementById('drive-upload').click()");
+                        crate::host::eval("document.getElementById('drive-upload').click()");
                     }),
                 )
                 .icon(icons::EXTERNAL),

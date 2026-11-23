@@ -125,20 +125,12 @@ impl Store {
     }
 }
 
-pub fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok()?
-}
-
 pub fn storage_get(key: &str) -> Option<String> {
-    storage()?.get_item(key).ok()?
+    drive_dioxus::env::get(key)
 }
 
 pub fn storage_set(key: &str, value: &str) {
-    if let Some(s) = storage()
-        && s.set_item(key, value).is_err()
-    {
-        dioxus::logger::tracing::warn!(storage.key = key, "the browser refused to keep the layout");
-    }
+    drive_dioxus::env::set(key, value);
 }
 
 /// One tab's navigation.
@@ -373,7 +365,7 @@ pub const TAB_KIND: &str = "drive.place";
 
 /// A new tab's pane, at `at`.
 pub fn new_pane(at: At, title: &str) -> Pane {
-    let id = format!("tab-{}", js_sys::Date::now() as u64);
+    let id = format!("tab-{}", crate::host::now_ms() as u64);
     let mut pane = Pane::new(id, TAB_KIND, title);
     pane.state = TabState {
         at,

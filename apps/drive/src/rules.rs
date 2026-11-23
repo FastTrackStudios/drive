@@ -24,7 +24,7 @@ use crate::nav::use_nav;
 pub const STYLE: Asset = asset!("/assets/rules.css");
 
 fn now() -> i64 {
-    js_sys::Date::now() as i64
+    crate::host::now_ms() as i64
 }
 
 fn me() -> String {

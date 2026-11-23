@@ -21,7 +21,7 @@ use crate::browser::{
 pub const STYLE: Asset = asset!("/assets/tags.css");
 
 fn now() -> i64 {
-    js_sys::Date::now() as i64
+    crate::host::now_ms() as i64
 }
 
 /// Who an edit is by: the signed-in person, or this browser's name.

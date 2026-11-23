@@ -348,17 +348,11 @@ fn ShareLinks(reg: Doc, space: String, project: String) -> Element {
     let ctx = drive_dioxus::use_drive();
     let r = reg.loro();
     let links = proj::shares(&r, &project);
-    let origin = js_sys::eval("location.origin")
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
+    let origin = crate::host::origin();
     let make = {
         let (reg, project) = (reg.clone(), project.clone());
         move |kinds: Vec<String>| {
-            let token = js_sys::eval("crypto.randomUUID()")
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
+            let token = crate::host::uuid();
             if token.len() < 16 {
                 return;
             }
@@ -388,7 +382,7 @@ fn ShareLinks(reg: Doc, space: String, project: String) -> Element {
                         button {
                             class: "primary ghost",
                             onclick: move |_| {
-                                let _ = js_sys::eval(&format!("navigator.clipboard.writeText({})", serde_json::Value::String(u.clone())));
+                                crate::host::copy_text(&u);
                             },
                             "Copy"
                         }

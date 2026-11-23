@@ -1,6 +1,6 @@
 [package]
 name = "drive-app"
-description = "The Drive app: the inbox, the calendar, notes and everything every app keeps"
+description = "The Drive app: the inbox, the calendar, notes and everything every app keeps — one crate for the browser, desktop and phone builds"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,15 +13,21 @@ drive-rules.workspace = true
 drive-view = { workspace = true, features = ["ui", "pdf"] }
 drive-sidecars.workspace = true
 drive-files = { path = "../../crates/drive-files", default-features = false }
-gloo-net = { version = "0.8", default-features = false, features = ["http"] }
 serde_json.workspace = true
 loro.workspace = true
-js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Storage"] }
 serde.workspace = true
 # The window: sidebar, top bar, tabs once a second one opens (main, 2026-11-21).
-app-shell = { git = "https://github.com/FastTrackStudios/app-shell", tag = "v0.2.0" }
+app-shell = { git = "https://github.com/FastTrackStudios/app-shell", tag = "v0.3.1" }
+# Natively: the Blitz window without a system frame, the shell's title bar
+# drawing the window's buttons (and dragging it).
+app-shell-native = { git = "https://github.com/FastTrackStudios/app-shell", tag = "v0.3.1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 
 [features]
 default = []
 web = ["dioxus/web"]
+# The same app drawn by Blitz on a desktop or a phone:
+# `dx build --platform linux --renderer native --features native --no-default-features`.
+native = ["dioxus/native", "dep:app-shell-native", "dep:tokio"]

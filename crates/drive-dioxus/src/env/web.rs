@@ -128,6 +128,46 @@ pub fn eval(js: &str) {
     let _ = js_sys::eval(js);
 }
 
+/// One HTTP request with a body of bytes: its status and the answer's
+/// bytes. A root path is the node's, reached under the app's mount.
+pub async fn http_bytes(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<Vec<u8>>,
+) -> Option<(u16, Vec<u8>)> {
+    let init = web_sys::RequestInit::new();
+    init.set_method(method);
+    let h = web_sys::Headers::new().ok()?;
+    for (k, v) in headers {
+        h.set(k, v).ok()?;
+    }
+    init.set_headers(&h);
+    if let Some(b) = body {
+        init.set_body(&js_sys::Uint8Array::from(b.as_slice()).into());
+    }
+    let w = web_sys::window()?;
+    let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(
+        w.fetch_with_str_and_init(&crate::mount::api(url), &init),
+    )
+    .await
+    .ok()?
+    .dyn_into()
+    .ok()?;
+    let status = resp.status();
+    let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().ok()?)
+        .await
+        .ok()?;
+    Some((status, js_sys::Uint8Array::new(&buf).to_vec()))
+}
+
+/// Text to the system clipboard.
+pub fn copy_text(text: &str) {
+    if let Ok(t) = serde_json::to_string(text) {
+        let _ = js_sys::eval(&format!("navigator.clipboard.writeText({t})"));
+    }
+}
+
 /// One HTTP request: its status and body. A root path is the node's,
 /// reached under the app's mount.
 pub async fn http(

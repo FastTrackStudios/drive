@@ -7,6 +7,7 @@ mod browse;
 mod browser;
 mod catalog;
 mod files;
+mod host;
 mod mobile;
 mod nav;
 mod notes;
@@ -26,7 +27,35 @@ const STYLE: Asset = asset!("/assets/drive.css");
 fn main() {
     // Warnings and up: Loro reports its encoding at INFO, which floods the console.
     dioxus::logger::init(dioxus::logger::tracing::Level::WARN).expect("the logger starts once");
+    // Drawn by Blitz on a desktop or a phone: the window has no system
+    // frame, the shell's title bar is its frame (app-shell-native). Its
+    // timers and HTTP are Tokio's and Blitz's event loop runs none, so a
+    // runtime is started here and kept for the app's life.
+    #[cfg(feature = "native")]
+    {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a Tokio runtime");
+        let _entered = runtime.enter();
+        app_shell_native::launch(
+            App,
+            no_popout,
+            app_shell_native::Config {
+                title: "Drive".to_owned(),
+                size: (1440.0, 900.0),
+                system_decorations: false,
+            },
+        );
+    }
+    #[cfg(not(feature = "native"))]
     dioxus::launch(App);
+}
+
+/// Drive opens no pop-out windows yet.
+#[cfg(feature = "native")]
+fn no_popout(_: app_shell::WindowId) -> Element {
+    rsx! {}
 }
 
 #[component]
@@ -428,20 +457,21 @@ fn kb(bytes: u64) -> String {
 }
 
 fn today() -> String {
-    let d = js_sys::Date::new_0();
-    format!(
-        "{:04}-{:02}-{:02}",
-        d.get_full_year(),
-        d.get_month() + 1,
-        d.get_date()
-    )
+    let (month, day, year) = host::date_parts(host::now_ms());
+    format!("{year:04}-{:02}-{day:02}", month + 1)
 }
 
 fn day_label(iso: &str) -> String {
-    let d = js_sys::Date::new(&format!("{iso}T12:00:00").into());
-    if d.get_time().is_nan() {
+    let mut parts = iso.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (Some(Some(year)), Some(Some(month)), Some(Some(day))) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return iso.to_string();
+    };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return iso.to_string();
     }
+    let (month, day) = (month as u32, day as u32);
     const DAYS: [&str; 7] = [
         "Sunday",
         "Monday",
@@ -456,9 +486,9 @@ fn day_label(iso: &str) -> String {
     ];
     let label = format!(
         "{}, {} {}",
-        DAYS[d.get_day() as usize],
-        MONTHS[d.get_month() as usize],
-        d.get_date()
+        DAYS[host::weekday(year, month, day)],
+        MONTHS[(month - 1) as usize],
+        day
     );
     if iso == today() {
         format!("Today · {label}")

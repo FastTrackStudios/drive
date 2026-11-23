@@ -194,14 +194,13 @@ fn Previews() -> Element {
     let clear = move |_| {
         busy.set(true);
         spawn(async move {
-            let mut req = gloo_net::http::Request::post("/sidecars/purge")
-                .header("content-type", "application/json");
-            if let Some(b) = drive_dioxus::auth::bearer() {
-                req = req.header("authorization", &b);
-            }
-            if let Ok(r) = req.body(r#"{"all":true}"#) {
-                let _ = r.send().await;
-            }
+            let _ = crate::host::request(
+                "POST",
+                "/sidecars/purge",
+                Some("application/json"),
+                Some(br#"{"all":true}"#.to_vec()),
+            )
+            .await;
             busy.set(false);
             rev += 1;
         });

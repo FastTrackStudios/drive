@@ -165,19 +165,15 @@ pub fn tree_item(
 // ── helpers ─────────────────────────────────────────────────────────────
 
 pub async fn get(url: String) -> Option<Value> {
-    let mut req = gloo_net::http::Request::get(&url);
-    if let Some(b) = drive_dioxus::auth::bearer() {
-        req = req.header("authorization", &b);
-    }
-    let r = req.send().await.ok()?;
-    if !r.ok() {
+    let (status, bytes) = crate::host::request("GET", &url, None, None).await?;
+    if !(200..300).contains(&status) {
         return None;
     }
-    serde_json::from_str(&r.text().await.ok()?).ok()
+    serde_json::from_slice(&bytes).ok()
 }
 
 pub fn enc(s: &str) -> String {
-    js_sys::encode_uri_component(s).into()
+    crate::host::enc(s)
 }
 
 pub fn human(n: u64) -> String {
@@ -194,16 +190,11 @@ pub fn date(ms: i64) -> String {
     if ms <= 0 {
         return String::new();
     }
-    let d = js_sys::Date::new(&(ms as f64).into());
+    let (month, day, year) = crate::host::date_parts(ms as f64);
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    format!(
-        "{} {}, {}",
-        MONTHS[d.get_month() as usize],
-        d.get_date(),
-        d.get_full_year()
-    )
+    format!("{} {day}, {year}", MONTHS[month as usize % 12])
 }
 
 pub fn app_label(app: &str) -> String {
@@ -1068,7 +1059,7 @@ pub fn use_quick_look(navs: crate::nav::Navs) {
     // The page's keys act only while something is picked.
     use_effect(move || {
         let picked = (navs.active().selected)().is_some();
-        let _ = js_sys::eval(if picked {
+        crate::host::eval(if picked {
             "document.body.dataset.picked = '1'"
         } else {
             "delete document.body.dataset.picked"
@@ -1138,39 +1129,29 @@ pub fn viewable(item: &Item) -> bool {
 /// Keep bytes on the node: their hash, or why not.
 async fn put_blob(bytes: &[u8]) -> Result<String, String> {
     let hash = drive_files::hash::of_bytes(bytes);
-    let mut put = gloo_net::http::Request::put(&format!("/blobs/{hash}"));
-    if let Some(b) = drive_dioxus::auth::bearer() {
-        put = put.header("authorization", &b);
-    }
-    let req = put
-        .body(js_sys::Uint8Array::from(bytes))
-        .map_err(|e| e.to_string())?;
-    match req.send().await {
-        Ok(r) if r.ok() => Ok(hash),
-        Ok(r) => Err(format!("the node refused it ({})", r.status())),
-        Err(e) => Err(e.to_string()),
+    match crate::host::request("PUT", &format!("/blobs/{hash}"), None, Some(bytes.to_vec())).await {
+        Some((status, _)) if (200..300).contains(&status) => Ok(hash),
+        Some((status, _)) => Err(format!("the node refused it ({status})")),
+        None => Err("the node did not answer".into()),
     }
 }
 
 /// Ask the node to edit a PDF's pages: the edited file's hash and size.
 async fn edit_pdf(hash: &str, edits: &[drive_view::PageEdit]) -> Result<(String, u64), String> {
     let body = serde_json::to_string(edits).map_err(|e| e.to_string())?;
-    let mut req = gloo_net::http::Request::post(&format!("/pdf/edit/{hash}"))
-        .header("content-type", "application/json");
-    if let Some(b) = drive_dioxus::auth::bearer() {
-        req = req.header("authorization", &b);
+    let (status, bytes) = crate::host::request(
+        "POST",
+        &format!("/pdf/edit/{hash}"),
+        Some("application/json"),
+        Some(body.into_bytes()),
+    )
+    .await
+    .ok_or("the node did not answer")?;
+    if !(200..300).contains(&status) {
+        let why = crate::host::text(&bytes);
+        return Err(if why.is_empty() { status.to_string() } else { why });
     }
-    let r = req
-        .body(body)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !r.ok() {
-        return Err(r.text().await.unwrap_or_else(|_| r.status().to_string()));
-    }
-    let v: Value = serde_json::from_str(&r.text().await.map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     Ok((s(&v, "hash"), v["size"].as_u64().unwrap_or(0)))
 }
 
@@ -1326,10 +1307,7 @@ pub fn Preview(space: String) -> Element {
 /// A link to a file kept on the node, to copy and send.
 #[component]
 fn ShareLink(hash: String, name: String) -> Element {
-    let origin = js_sys::eval("location.origin")
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
+    let origin = crate::host::origin();
     let url = format!("{origin}/blobs/{hash}?name={}", enc(&name));
     let mut copied = use_signal(|| false);
     let u = url.clone();
@@ -1339,7 +1317,7 @@ fn ShareLink(hash: String, name: String) -> Element {
             button {
                 class: "primary ghost",
                 onclick: move |_| {
-                    let _ = js_sys::eval(&format!("navigator.clipboard.writeText({})", serde_json::Value::String(u.clone())));
+                    crate::host::copy_text(&u);
                     copied.set(true);
                 },
                 if copied() { "Copied" } else { "Copy link" }

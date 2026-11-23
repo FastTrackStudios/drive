@@ -27,7 +27,7 @@ pub fn Notes() -> Element {
                 button {
                     class: "primary",
                     onclick: move |_| {
-                        let id = format!("{NOTE_PREFIX}{}", (js_sys::Math::random() * 1e9) as u64);
+                        let id = format!("{NOTE_PREFIX}{}", (crate::host::random() * 1e9) as u64);
                         let doc = ctx.drive.open(&id);
                         let _ = doc.get_text("title").insert(0, "Untitled");
                         ctx.drive.commit(&id);

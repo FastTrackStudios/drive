@@ -29,13 +29,8 @@ fn base(space: &str, device: &str) -> String {
 
 /// A GET that also returns the JSON of an error answer (`state`, `why`).
 async fn get_any(url: String) -> Option<(u16, Value)> {
-    let mut req = gloo_net::http::Request::get(&url);
-    if let Some(b) = drive_dioxus::auth::bearer() {
-        req = req.header("authorization", &b);
-    }
-    let r = req.send().await.ok()?;
-    let status = r.status();
-    let v = serde_json::from_str(&r.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let (status, bytes) = crate::host::request("GET", &url, None, None).await?;
+    let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Some((status, v))
 }
 
@@ -401,24 +396,21 @@ async fn index_folder(
     name: &str,
 ) -> Result<String, String> {
     let body = serde_json::json!({ "root": root, "path": path, "name": name }).to_string();
-    let mut req = gloo_net::http::Request::post(&format!("{}/index", base(space, device)))
-        .header("content-type", "application/json");
-    if let Some(b) = drive_dioxus::auth::bearer() {
-        req = req.header("authorization", &b);
-    }
-    let r = req
-        .body(body)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let v: Value = serde_json::from_str(&r.text().await.unwrap_or_default()).unwrap_or(Value::Null);
-    if r.ok() {
+    let (status, bytes) = crate::host::request(
+        "POST",
+        &format!("{}/index", base(space, device)),
+        Some("application/json"),
+        Some(body.into_bytes()),
+    )
+    .await
+    .ok_or("the node did not answer")?;
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if (200..300).contains(&status) {
         Ok(s(&v, "location"))
     } else {
         Err(match s(&v, "why") {
             w if !w.is_empty() => w,
-            _ => format!("The node refused ({})", r.status()),
+            _ => format!("The node refused ({status})"),
         })
     }
 }

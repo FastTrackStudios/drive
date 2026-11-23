@@ -149,14 +149,19 @@ fn open_in_browser(url: &str) {
     let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
-/// One HTTP request: its status and body. A root path is the node's
-/// (`DRIVE_NODE`'s HTTP address), reached under the app's mount.
-pub async fn http(
+/// No system clipboard here yet (the app's renderer has its own; see
+/// app-shell). TODO(native clipboard).
+pub fn copy_text(_text: &str) {}
+
+/// One HTTP request with a body of bytes: its status and the answer's
+/// bytes. A root path is the node's (`DRIVE_NODE`'s HTTP address), reached
+/// under the app's mount.
+pub async fn http_bytes(
     method: &str,
     url: &str,
     headers: &[(&str, &str)],
-    body: Option<&str>,
-) -> Option<(u16, String)> {
+    body: Option<Vec<u8>>,
+) -> Option<(u16, Vec<u8>)> {
     let full = if url.starts_with('/') {
         format!("{}{}", origin(), crate::mount::api(url))
     } else {
@@ -167,7 +172,6 @@ pub async fn http(
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
-    let body = body.map(str::to_string);
     drive_client::on_runtime(async move {
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         let client = CLIENT.get_or_init(reqwest::Client::new);
@@ -180,9 +184,22 @@ pub async fn http(
         }
         let resp = req.send().await.ok()?;
         let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        Some((status, text))
+        let bytes = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+        Some((status, bytes))
     })
     .await
     .flatten()
+}
+
+/// One HTTP request: its status and body. A root path is the node's
+/// (`DRIVE_NODE`'s HTTP address), reached under the app's mount.
+pub async fn http(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> Option<(u16, String)> {
+    let (status, bytes) =
+        http_bytes(method, url, headers, body.map(|b| b.as_bytes().to_vec())).await?;
+    Some((status, String::from_utf8_lossy(&bytes).into_owned()))
 }

@@ -122,10 +122,7 @@ fn Devices(space: String) -> Element {
 }
 
 fn host() -> String {
-    js_sys::eval("location.host")
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default()
+    crate::host::host()
 }
 
 #[component]
