@@ -70,9 +70,9 @@ fn under(path: &str, folder: &str) -> bool {
 pub fn plan(i: &Inputs) -> Plan {
     let mut out = Plan::default();
     let mut want: Vec<(&str, u64)> = Vec::new();
-    let mut seen = HashSet::new();
+    let mut wanted = HashSet::new();
     for (path, e) in i.files {
-        if e.dir || e.hash.is_empty() || !seen.insert(e.hash.as_str()) {
+        if e.dir || e.hash.is_empty() {
             continue;
         }
         let keep = match i.role {
@@ -81,7 +81,7 @@ pub fn plan(i: &Inputs) -> Plan {
                 i.pinned.contains(&e.hash) || i.active.iter().any(|f| under(path, f))
             }
         };
-        if keep {
+        if keep && wanted.insert(e.hash.as_str()) {
             want.push((&e.hash, e.size));
         }
     }
@@ -100,7 +100,6 @@ pub fn plan(i: &Inputs) -> Plan {
         }
     }
     if i.role == Role::Workstation {
-        let wanted: HashSet<&str> = want.iter().map(|(h, _)| *h).collect();
         let mut evict: Vec<String> = i
             .cached
             .iter()
@@ -122,6 +121,41 @@ pub fn plan(i: &Inputs) -> Plan {
 mod tests {
     use super::*;
     use loro::LoroDoc;
+
+    #[test]
+    fn active_copy_keeps_shared_content_when_an_inactive_copy_sorts_first() {
+        let doc = LoroDoc::new();
+        let active = crate::tree::mkdir(&doc, None, "Working").unwrap();
+        let archived = crate::tree::create_file(&doc, None, "Archived.wav").unwrap();
+        let working = crate::tree::create_file(&doc, Some(active), "Current.wav").unwrap();
+        for file in [archived, working] {
+            crate::tree::set_content(&doc, file, 10, "shared").unwrap();
+        }
+        let files = crate::tree::files(&doc);
+        assert_eq!(files[0].0, "Archived.wav");
+        let cached = HashMap::new();
+        let inputs = Inputs {
+            role: Role::Workstation,
+            me: "workstation",
+            files: &files,
+            active: &["Working".into()],
+            pinned: &HashSet::new(),
+            cached: &cached,
+            holders: &|_| vec![("nas".into(), "stored".into())],
+            room: 10,
+            now: 100,
+            grace_ms: 0,
+        };
+        assert_eq!(plan(&inputs).fetch, ["shared"]);
+
+        let cached = HashMap::from([("shared".into(), 0)]);
+        let plan = plan(&Inputs {
+            cached: &cached,
+            ..inputs
+        });
+        assert!(plan.fetch.is_empty());
+        assert!(plan.evict.is_empty());
+    }
 
     #[test]
     fn servers_keep_everything_workstations_keep_their_work() {
