@@ -2,7 +2,10 @@
 //! Loro text; each person's caret shows to the others, live.
 
 use dioxus::prelude::*;
-use drive_dioxus::loro::{LoroDoc, cursor::Cursor, cursor::Side};
+use drive_dioxus::loro::{
+    LoroDoc, LoroText,
+    cursor::{Cursor, PosType, Side},
+};
 use drive_dioxus::text::set_text;
 use drive_dioxus::ui::Avatars;
 use drive_dioxus::{Presence, use_doc, use_docs, use_drive};
@@ -73,6 +76,25 @@ fn NoteTitle(id: String) -> Element {
     }
 }
 
+fn textarea_cursor(text: &LoroText, offset: usize) -> Option<Cursor> {
+    let position = text.convert_pos(offset, PosType::Utf16, PosType::Event)?;
+    text.get_cursor(position, Side::Middle)
+}
+
+fn textarea_offset(doc: &LoroDoc, cursor: &Cursor) -> Option<usize> {
+    let position = doc.get_cursor_pos(cursor).ok()?.current.pos;
+    doc.get_text("body")
+        .convert_pos(position, PosType::Event, PosType::Utf16)
+}
+
+fn caret_index(text: &LoroText, offset: usize) -> Option<usize> {
+    text.convert_pos(
+        offset.min(text.len_utf16()),
+        PosType::Utf16,
+        PosType::Unicode,
+    )
+}
+
 /// The caret of each other person, from their presence.
 fn caret_of(p: &Presence) -> Option<usize> {
     p.data
@@ -86,7 +108,8 @@ fn Editor(id: String) -> Element {
     let doc = use_doc(id.clone());
     let loro = doc.loro();
     let title = loro.get_text("title").to_string();
-    let body = loro.get_text("body").to_string();
+    let body_text = loro.get_text("body");
+    let body = body_text.to_string();
     let others = doc.others();
     // Where my caret is, as a Loro cursor: it stays put as others type.
     let mut mine = use_signal(|| None::<(Cursor, Cursor)>);
@@ -99,11 +122,11 @@ fn Editor(id: String) -> Element {
         let _ = restore_doc.rev();
         if let Some((a, b)) = mine.peek().clone() {
             let d = restore_doc.peek();
-            if let (Ok(a), Ok(b)) = (d.get_cursor_pos(&a), d.get_cursor_pos(&b)) {
+            if let (Some(a), Some(b)) = (textarea_offset(&d, &a), textarea_offset(&d, &b)) {
                 let id_js = serde_json::to_string(&restore_id).unwrap_or_else(|_| "\"\"".into());
                 let js = format!(
                     "const e=document.getElementById({id_js}); if (e && document.activeElement===e) e.setSelectionRange({},{});",
-                    a.current.pos, b.current.pos
+                    a, b
                 );
                 document::eval(&js);
             }
@@ -128,12 +151,12 @@ fn Editor(id: String) -> Element {
                     let a = arr.first().and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                     let b = arr.get(1).and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                     let text = doc.peek().get_text("body");
-                    if let (Some(ca), Some(cb)) = (
-                        text.get_cursor(a, Side::Middle),
-                        text.get_cursor(b, Side::Middle),
-                    ) {
+                    if let (Some(ca), Some(cb)) =
+                        (textarea_cursor(&text, a), textarea_cursor(&text, b))
+                    {
                         mine.set(Some((ca, cb)));
                     }
+                    // Presence uses the textarea's UTF-16 offset across clients.
                     doc.set_presence(&serde_json::json!({ "caret": b }));
                 }
             });
@@ -143,7 +166,7 @@ fn Editor(id: String) -> Element {
     // The text with a marker at each other person's caret.
     let mut marks: Vec<(usize, Presence)> = others
         .iter()
-        .filter_map(|p| caret_of(p).map(|c| (c, p.clone())))
+        .filter_map(|p| caret_index(&body_text, caret_of(p)?).map(|c| (c, p.clone())))
         .collect();
     marks.sort_by_key(|m| m.0);
     let chars: Vec<char> = body.chars().collect();
@@ -223,5 +246,32 @@ fn Editor(id: String) -> Element {
                 "{words} words · edits merge as you type · works offline"
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_caret_after_emoji_marks_the_next_character() {
+        let doc = LoroDoc::new();
+        let text = doc.get_text("body");
+        text.insert(0, "a😀bc").unwrap();
+        assert_eq!(caret_index(&text, 3), Some(2));
+    }
+
+    #[test]
+    fn textarea_cursor_after_emoji_stays_before_the_next_character() {
+        let doc = LoroDoc::new();
+        let text = doc.get_text("body");
+        text.insert(0, "a😀bc").unwrap();
+        let captured = textarea_cursor(&text, 3).unwrap();
+        let expected = text.get_cursor(2, Side::Middle).unwrap();
+        assert_eq!(
+            doc.get_cursor_pos(&captured).unwrap().current.pos,
+            doc.get_cursor_pos(&expected).unwrap().current.pos
+        );
+        assert_eq!(textarea_offset(&doc, &expected), Some(3));
     }
 }
