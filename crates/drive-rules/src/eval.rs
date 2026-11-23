@@ -347,8 +347,12 @@ impl<'r> Matcher<'r> {
                     crate::model::DateOf::Added => f.added?,
                 };
                 match range {
-                    Range::InLast { n, unit } => at >= w.now - i64::from(*n) * unit.ms(),
-                    Range::OlderThan { n, unit } => at < w.now - i64::from(*n) * unit.ms(),
+                    Range::InLast { n, unit } => {
+                        i128::from(w.now) - i128::from(at) <= i128::from(*n) * i128::from(unit.ms())
+                    }
+                    Range::OlderThan { n, unit } => {
+                        i128::from(w.now) - i128::from(at) > i128::from(*n) * i128::from(unit.ms())
+                    }
                     Range::Before { day } => at < template::day_ms(day)?,
                     Range::After { day } => at >= template::day_ms(day)?,
                 }

@@ -253,6 +253,16 @@ fn conditions_match_names_extensions_kinds_sizes_and_dates() {
         }),
         &pdf
     ));
+    assert!(check(
+        Condition::is(Test::Date {
+            of: DateOf::Modified,
+            range: Range::InLast {
+                n: u32::MAX,
+                unit: Unit::Years,
+            },
+        }),
+        &pdf,
+    ));
     // A date the file system does not record never matches, negated or not.
     assert!(!check(
         Condition::is(Test::Date {

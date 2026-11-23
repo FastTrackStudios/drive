@@ -87,7 +87,11 @@ impl Builder {
         let mut span = MIN_SPAN;
         if let Some(n) = frames {
             while n / span as u64 > FINEST_MAX as u64 {
-                span *= 2;
+                // The on-disk format stores spans as u32.
+                let Some(next) = span.checked_mul(2) else {
+                    break;
+                };
+                span = next;
             }
         }
         Builder {
@@ -128,9 +132,11 @@ impl Builder {
         self.done.extend(self.cur.iter().copied());
         self.cur.iter_mut().for_each(|b| *b = (0.0, 0.0));
         self.filled = 0;
-        if self.done.len() / self.channels > FINEST_MAX {
+        if self.done.len() / self.channels > FINEST_MAX
+            && let Some(next_span) = self.span.checked_mul(2)
+        {
             self.done = halve(&self.done, self.channels);
-            self.span *= 2;
+            self.span = next_span;
         }
     }
 
@@ -147,11 +153,14 @@ impl Builder {
         let mut levels = vec![(self.span, self.done)];
         while levels.last().is_some_and(|(_, d)| d.len() / ch > COARSEST) {
             let (span, d) = levels.last().expect("a level");
+            let Some(next_span) = span.checked_mul(STEP) else {
+                break;
+            };
             let mut next = d.clone();
             for _ in 0..STEP.trailing_zeros() {
                 next = halve(&next, ch);
             }
-            levels.push((span * STEP, next));
+            levels.push((next_span, next));
         }
         Peaks {
             channels: ch as u8,
@@ -234,7 +243,7 @@ impl Peaks {
         for (span, buckets) in heads {
             let len = buckets
                 .checked_mul(ch * 2)
-                .filter(|l| at + l <= b.len())
+                .filter(|&len| len <= b.len() - at)
                 .ok_or_else(bad)?;
             let data = b[at..at + len]
                 .as_chunks::<2>()
@@ -314,6 +323,24 @@ mod tests {
                 amp * ((f as f32) * 0.05).sin()
             })
             .collect()
+    }
+
+    #[test]
+    fn oversized_frame_hint_uses_largest_power_of_two_span() {
+        let mut builder = Builder::new(1, 48_000, Some(u64::MAX));
+        builder.push(&[0.5], 1);
+        let peaks = builder.finish();
+        assert_eq!(peaks.levels[0].span, 1 << 31);
+        assert_eq!(peaks.frames, 1);
+    }
+
+    #[test]
+    fn rejects_oversized_bucket_count() {
+        let mut builder = Builder::new(1, 48_000, None);
+        builder.push(&[0.5], 1);
+        let mut bytes = builder.finish().encode();
+        bytes[24..28].copy_from_slice(&(u32::MAX / 2).to_le_bytes());
+        assert!(Peaks::decode(&bytes).is_err());
     }
 
     #[test]
