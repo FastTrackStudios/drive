@@ -265,9 +265,10 @@ impl Store {
         let o = inner.map.remove(key)?;
         inner.total -= o.size;
         self.append(&mut inner, key, None);
-        drop(inner);
         let path = self.object_path(key);
+        // A commit for this key must wait until the old file is gone.
         self.remove_owned(&path);
+        drop(inner);
         Some(path)
     }
 
@@ -295,12 +296,11 @@ impl Store {
             inner.map.remove(&key);
             inner.total -= size;
             self.append(&mut inner, &key, None);
-            gone.push(self.object_path(&key));
+            let path = self.object_path(&key);
+            self.remove_owned(&path);
+            gone.push(path);
         }
         drop(inner);
-        for path in &gone {
-            self.remove_owned(path);
-        }
         if !gone.is_empty() {
             tracing::info!(
                 kache.evicted = gone.len(),
@@ -330,6 +330,8 @@ impl Store {
             );
             return;
         }
+        #[cfg(test)]
+        tests::check_unlink_lock(self, path);
         if let Err(e) = std::fs::remove_file(path) {
             tracing::warn!(error = %e, "a cache object could not be removed");
         }
@@ -410,6 +412,44 @@ pub fn summary(root: &Path) -> (usize, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static CHECK_UNLINK_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn check_unlink_lock(store: &Store, path: &Path) {
+        if path.starts_with(&store.objects) && CHECK_UNLINK_LOCK.get() {
+            assert!(
+                matches!(
+                    store.inner.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ),
+                "an object must be unlinked while commits are excluded"
+            );
+        }
+    }
+
+    #[test]
+    fn removal_unlinks_before_releasing_the_store_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), 1024).unwrap();
+        put(&store, "key", b"old");
+        CHECK_UNLINK_LOCK.set(true);
+        let path = store.remove("key").unwrap();
+        CHECK_UNLINK_LOCK.set(false);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn eviction_unlinks_before_releasing_the_store_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), 1024).unwrap();
+        put(&store, "key", b"old");
+        CHECK_UNLINK_LOCK.set(true);
+        store.set_budget(0);
+        CHECK_UNLINK_LOCK.set(false);
+        assert!(!store.object_path("key").exists());
+    }
 
     fn put(s: &Store, key: &str, bytes: &[u8]) -> Vec<PathBuf> {
         let (tmp, mut f) = s.temp().unwrap();
