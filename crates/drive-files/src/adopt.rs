@@ -199,6 +199,23 @@ pub fn place<'a>(adoptions: &'a [Adoption], path: &str) -> Place<'a> {
     }
 }
 
+/// Where a location's file shows in the Drive tree: the logical path of
+/// the first adoption whose folder holds it (`None`: none does).
+pub fn logical_of(adoptions: &[Adoption], location: &str, path: &str) -> Option<String> {
+    let path = path.trim_matches('/');
+    adoptions.iter().find_map(|a| {
+        if a.location != location || !(a.sub.is_empty() || under(path, &a.sub)) {
+            return None;
+        }
+        let rel = if a.sub.is_empty() {
+            path
+        } else {
+            path[a.sub.len()..].trim_start_matches('/')
+        };
+        Some(join(&a.at, rel))
+    })
+}
+
 /// The names adoptions add to a logical folder that is not inside one:
 /// (name, whether it is an adopted folder itself rather than a folder on
 /// the way to one). Sorted, each once.
@@ -311,5 +328,20 @@ mod tests {
         assert_eq!(names_in(&all, "Studio"), vec![("Songs".into(), true)]);
         assert!(names_in(&all, "Studio/Songs").is_empty());
         assert!(names_in(&all, "Elsewhere").is_empty());
+
+        assert_eq!(
+            logical_of(&all, "l1", "Song A/take.wav").as_deref(),
+            Some("Studio/Songs/Song A/take.wav")
+        );
+        assert_eq!(
+            logical_of(&all, "l2", "Old/x").as_deref(),
+            Some("Archive/Sessions/x")
+        );
+        assert_eq!(
+            logical_of(&all, "l2", "Old").as_deref(),
+            Some("Archive/Sessions")
+        );
+        assert_eq!(logical_of(&all, "l2", "Older/x"), None);
+        assert_eq!(logical_of(&all, "l3", "x"), None);
     }
 }

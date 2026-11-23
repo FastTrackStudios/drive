@@ -3,6 +3,7 @@
 //! have a document open, keeps blobs, serves apps' web builds, and serves
 //! the sites agents build (`/sites/<space>/<id>/`).
 
+pub mod adopted;
 pub mod auth;
 pub mod backup;
 pub mod browse;
@@ -420,6 +421,9 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 )
                 .route("/search", get(catalog::search))
                 .route("/list", get(catalog::list))
+                // The Drive tree with its adopted folders (docs/adopt.md).
+                .route("/tree", get(adopted::list))
+                .route("/tree/file", get(adopted::file))
                 .route("/copies", get(catalog::copies))
                 .route("/protection", get(catalog::protection))
                 .route("/at-risk", get(catalog::at_risk))

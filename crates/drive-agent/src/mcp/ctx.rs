@@ -326,6 +326,32 @@ impl Ctx {
         let name = name.trim();
         if let Some(path) = name.strip_prefix("drive:") {
             let path = path.trim_matches('/');
+            // Inside an adopted folder: the location's file (docs/adopt.md).
+            let all = self.a.adoptions();
+            if let drive_files::adopt::Place::Inside { adoption, rel } =
+                drive_files::adopt::place(&all, path)
+            {
+                let loc = self.location(&adoption.location)?;
+                let lp = drive_files::adopt::join(&adoption.sub, &rel);
+                let entry = if lp.is_empty() {
+                    IndexEntry {
+                        path: String::new(),
+                        dir: true,
+                        size: 0,
+                        mtime: 0,
+                        sampled: String::new(),
+                    }
+                } else {
+                    let idx = self.index_of(&loc).await?;
+                    drive_files::index::Tree::new(idx)
+                        .get(&lp)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!("no {path} in the Drive (as of {}'s last index)", loc.name)
+                        })?
+                };
+                return Ok(Thing::Located { loc, entry });
+            }
             let entry = tree::resolve(&self.a.files, path)
                 .ok_or_else(|| format!("no {path} in the Drive"))?
                 .ok_or("the Drive's top folder is not a thing")?;

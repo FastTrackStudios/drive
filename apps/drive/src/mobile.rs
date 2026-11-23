@@ -105,7 +105,8 @@ pub async fn upload_files(
 /// One file to the node and into the tree; whether it went.
 async fn send(files: &Doc, reg: &Doc, cur: Option<TreeID>, name: &str, bytes: &[u8]) -> bool {
     let hash = drive_files::hash::of_bytes(bytes);
-    let sent = crate::host::request("PUT", &format!("/blobs/{hash}"), None, Some(bytes.to_vec())).await;
+    let sent =
+        crate::host::request("PUT", &format!("/blobs/{hash}"), None, Some(bytes.to_vec())).await;
     match sent {
         Some((status, _)) if (200..300).contains(&status) => {
             files.edit(|d| {
@@ -212,7 +213,11 @@ pub fn destinations() -> Vec<Destination> {
 /// Which destination a place belongs to.
 pub fn destination_of(p: &Place) -> Option<String> {
     let d = match p {
-        Place::Drive(_) | Place::Location { .. } | Place::Kind(_) | Place::App(_) => "drive",
+        Place::Drive(_)
+        | Place::Adopted(_)
+        | Place::Location { .. }
+        | Place::Kind(_)
+        | Place::App(_) => "drive",
         Place::Overview | Place::AllOrgs | Place::Everything => "search",
         Place::Tags | Place::Tag(_) => "tags",
         Place::Project(_) => "projects",

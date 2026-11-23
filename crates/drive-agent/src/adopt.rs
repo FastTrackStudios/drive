@@ -212,6 +212,29 @@ impl Agent {
         Ok(a)
     }
 
+    /// Where an adopted folder's bytes are, to show beside it:
+    /// `Studio PC · Songs` (the device, or storage, and the location).
+    pub fn whereabouts(&self, a: &Adoption) -> String {
+        let Some(l) = space::locations(&self.space)
+            .into_iter()
+            .find(|l| l.id == a.location)
+        else {
+            return format!("a location that is gone ({})", a.location);
+        };
+        let holder = if l.storage.is_empty() {
+            space::devices(&self.space)
+                .into_iter()
+                .find(|d| d.id == l.device)
+                .map_or(l.device.clone(), |d| d.name)
+        } else {
+            space::storages(&self.space)
+                .into_iter()
+                .find(|s| s.id == l.storage)
+                .map_or(l.storage.clone(), |s| s.name)
+        };
+        format!("{holder} · {}", l.name)
+    }
+
     /// What a logical path is, as far as adoptions go (`None`: nothing
     /// adopted there; the Drive tree's own).
     pub fn spot(&self, logical: &str) -> Option<Spot> {

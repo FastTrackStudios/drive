@@ -252,7 +252,7 @@ fn TabTitle(pane: String, space: String) -> Element {
 pub fn title_of(p: &Place) -> &'static str {
     match p {
         Place::Overview => "Overview",
-        Place::Drive(_) => "Drive",
+        Place::Drive(_) | Place::Adopted(_) => "Drive",
         Place::Location { .. } | Place::Volume { .. } => "Computers",
         Place::Kind(_) => "Kind",
         Place::App(_) => "App",
@@ -294,6 +294,28 @@ fn use_crumbs(space: &str, place: &Place) -> Vec<(String, Option<Place>)> {
             let root = if space.is_empty() { "Drive" } else { space };
             crumbs.push((root.to_string(), Some(Place::Drive(None))));
             crumbs.reverse();
+            crumbs
+        }
+        Place::Adopted(path) => {
+            // Each step a tree folder where the tree has one, else the
+            // adopted (or on-the-way) folder by its path.
+            let f = files.loro();
+            let all = drive_files::adopt::adoptions(&reg.loro());
+            let root = if space.is_empty() { "Drive" } else { space };
+            let mut crumbs = vec![(root.to_string(), Some(Place::Drive(None)))];
+            let mut acc = String::new();
+            for p in path.split('/').filter(|p| !p.is_empty()) {
+                acc = drive_files::adopt::join(&acc, p);
+                let tree_dir = match drive_files::adopt::place(&all, &acc) {
+                    drive_files::adopt::Place::Inside { .. } => None,
+                    _ => tree::resolve(&f, &acc).flatten().filter(|e| e.dir),
+                };
+                let to = match tree_dir {
+                    Some(e) => Place::Drive(Some(tree::id_string(e.id))),
+                    None => Place::Adopted(acc.clone()),
+                };
+                crumbs.push((p.to_string(), Some(to)));
+            }
             crumbs
         }
         Place::Location { loc, path } => {
@@ -403,6 +425,7 @@ pub fn browsable(p: &Place) -> bool {
     matches!(
         p,
         Place::Drive(_)
+            | Place::Adopted(_)
             | Place::Location { .. }
             | Place::Volume { .. }
             | Place::Kind(_)

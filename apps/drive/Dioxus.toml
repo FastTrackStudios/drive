@@ -3,3 +3,8 @@ name = "drive-app"
 
 [web.app]
 title = "Drive"
+
+# The release WASM through wasm-opt for size: it is the app's whole
+# download (served compressed by the node).
+[web.wasm_opt]
+level = "z"

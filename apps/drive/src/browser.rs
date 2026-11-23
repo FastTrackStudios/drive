@@ -9,7 +9,7 @@
 
 use dioxus::prelude::*;
 use drive_dioxus::{Doc, use_doc, use_docs};
-use drive_files::{files_doc, space, space_doc, tree};
+use drive_files::{adopt, files_doc, space, space_doc, tree};
 use drive_spine as spine;
 use drive_spine::kinds::{Kind, Kinds};
 use serde_json::Value;
@@ -39,6 +39,9 @@ pub enum Src {
     },
     /// An app's document.
     Doc { id: String, peers: u32 },
+    /// A folder of the Drive tree by its path, where adoptions put one:
+    /// an adopted folder, one inside it, or one only on the way to them.
+    Logical { path: String },
     /// A file or folder on a computer's disk, browsed live.
     Browse {
         device: String,
@@ -75,6 +78,7 @@ impl Item {
             Src::Index { location, path, .. } => format!("i{location}/{path}"),
             Src::Doc { id, .. } => format!("d{id}"),
             Src::Browse { device, root, path } => format!("b{device}:{root}/{path}"),
+            Src::Logical { path } => format!("l{path}"),
         }
     }
 }
@@ -292,6 +296,9 @@ pub fn Content(space: String) -> Element {
         Place::Drive(folder) => rsx! {
             DriveFolder { space, folder }
         },
+        Place::Adopted(path) => rsx! {
+            AdoptedFolder { key: "{path}", space, path }
+        },
         Place::Location { loc, path } => rsx! {
             LocationFolder { space, loc, path }
         },
@@ -453,13 +460,13 @@ pub fn Items(items: Vec<Item>, show_at: bool, empty: String, loading: bool) -> E
                                 span { class: "csub",
                                     if i.dir { "{i.kind.name}" } else { "{human(i.size)}" }
                                 }
-                                if show_at {
+                                if show_at || matches!(i.src, Src::Logical { .. }) && !i.at.is_empty() {
                                     span { class: "cat", "{i.at}" }
                                 }
                             } else {
                                 span { class: "lname",
                                     span { class: "nm", "{i.name}" }
-                                    if show_at {
+                                    if show_at || matches!(i.src, Src::Logical { .. }) && !i.at.is_empty() {
                                         span { class: "cat", "{i.at}" }
                                     }
                                 }
@@ -491,6 +498,7 @@ fn folder_place(i: &Item) -> Option<Place> {
             loc: location.clone(),
             path: path.clone(),
         }),
+        Src::Logical { path } if i.dir => Some(Place::Adopted(path.clone())),
         Src::Browse { device, root, path } if i.dir => Some(Place::Volume {
             device: device.clone(),
             root: root.clone(),
@@ -501,7 +509,12 @@ fn folder_place(i: &Item) -> Option<Place> {
 }
 
 fn copies_label(i: &Item) -> Option<(String, &'static str)> {
-    if i.dir || matches!(i.src, Src::Doc { .. } | Src::Browse { .. }) {
+    if i.dir
+        || matches!(
+            i.src,
+            Src::Doc { .. } | Src::Browse { .. } | Src::Logical { .. }
+        )
+    {
         return None;
     }
     if let Some(k) = &i.kept {
@@ -576,6 +589,25 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
             )
         })
         .collect();
+    // The folders adoptions put here (docs/adopt.md): an adopted folder
+    // hides a tree entry of the same name, as in the mount.
+    let added = adopt::names_in(&adopt::adoptions(&r), &base);
+    let mut items: Vec<Item> = items
+        .into_iter()
+        .filter(|i| !added.iter().any(|(n, point)| *point && *n == i.name))
+        .collect();
+    for (name, point) in added {
+        if items.iter().any(|i| i.dir && i.name == name) {
+            continue;
+        }
+        let path = adopt::join(&base, &name);
+        let at = if point {
+            adopted_where(&r, &path).map_or(String::new(), |w| format!("on {w}"))
+        } else {
+            String::new()
+        };
+        items.push(logical_folder(name, path, at, &kinds));
+    }
 
     // Through the shared uploads: their progress is the phone's accessory
     // too (crate::mobile).
@@ -631,6 +663,142 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
             show_at: false,
             empty: "Empty. Upload here, or drop files into the Drive folder on a computer.",
             loading: !files.synced(),
+        }
+    }
+}
+
+/// Where an adopted folder's files are: `Studio PC · Songs` (its
+/// device, or storage, and its location).
+fn adopted_where(r: &loro::LoroDoc, at: &str) -> Option<String> {
+    let a = adopt::adoptions(r).into_iter().find(|a| a.at == at)?;
+    let l = space::locations(r)
+        .into_iter()
+        .find(|l| l.id == a.location)?;
+    let holder = if l.storage.is_empty() {
+        space::devices(r)
+            .into_iter()
+            .find(|d| d.id == l.device)
+            .map_or(l.device.clone(), |d| d.name)
+    } else {
+        space::storages(r)
+            .into_iter()
+            .find(|s| s.id == l.storage)
+            .map_or(l.storage.clone(), |s| s.name)
+    };
+    Some(format!("{holder} · {}", l.name))
+}
+
+/// A folder of the Drive tree by its path (adopted, or on the way).
+fn logical_folder(name: String, path: String, at: String, kinds: &Kinds) -> Item {
+    Item {
+        kind: kinds.of_file(&name, true).clone(),
+        size: 0,
+        mtime: 0,
+        at,
+        online: true,
+        copies: 0,
+        kept: None,
+        available: None,
+        src: Src::Logical { path },
+        name,
+        dir: true,
+    }
+}
+
+/// A folder of the Drive tree that adoptions put there (docs/adopt.md),
+/// listed by the node: an adopted folder's files come from its location's
+/// index and are read through that location, so they open, preview and
+/// download as a computer's files do.
+#[component]
+fn AdoptedFolder(space: String, path: String) -> Element {
+    let reg = use_doc(space_doc(&space));
+    let spine_doc = use_doc(spine::SPINE);
+    let kinds = Kinds::load(&spine_doc.loro());
+    let (sp, pt) = (space.clone(), path.clone());
+    // Refetched when the space document moves (an index came in, an
+    // adoption changed).
+    let version = format!("{:?}", reg.loro().oplog_vv());
+    let listing = use_resource(use_reactive!(|(sp, pt, version)| async move {
+        let _ = version;
+        get(format!("/tree?space={}&path={}", enc(&sp), enc(&pt))).await
+    }));
+    let v = listing().flatten();
+    let items: Vec<Item> = v
+        .as_ref()
+        .and_then(|v| v["entries"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .map(|e| {
+            let name = s(e, "name");
+            let logical = s(e, "logical");
+            let dir = e["dir"].as_bool() == Some(true);
+            match (s(e, "source").as_str(), e["location"].is_string()) {
+                // A location's file or folder (inside an adopted folder).
+                ("adopted", true) => {
+                    let mut i = hit_item(e, &kinds);
+                    if dir {
+                        i.src = Src::Logical { path: logical };
+                    }
+                    i
+                }
+                ("tree", _) => Item {
+                    kind: kinds.of_file(&name, dir).clone(),
+                    size: e["size"].as_u64().unwrap_or(0),
+                    mtime: e["mtime"].as_i64().unwrap_or(0),
+                    at: format!("Drive · /{path}"),
+                    online: true,
+                    copies: 1,
+                    kept: None,
+                    available: None,
+                    src: Src::Tree {
+                        id: s(e, "id"),
+                        hash: s(e, "hash"),
+                    },
+                    name,
+                    dir,
+                },
+                // An adopted folder, or one on the way to adoptions.
+                _ => {
+                    let w = &e["where"];
+                    let at = if w.is_object() {
+                        format!("on {} · {}", s(w, "device_name"), s(w, "location_name"))
+                    } else {
+                        String::new()
+                    };
+                    logical_folder(name, logical, at, &kinds)
+                }
+            }
+        })
+        .collect();
+    // Where the adopted folder's files are, for its badge.
+    let here = v
+        .as_ref()
+        .map(|v| v["where"].clone())
+        .filter(Value::is_object)
+        .map(|w| {
+            (
+                format!("on {} · {}", s(&w, "device_name"), s(&w, "location_name")),
+                s(&w, "real"),
+                w["online"] == true,
+            )
+        });
+    let failed = listing().is_some() && v.is_none();
+    rsx! {
+        if let Some((label, real, up)) = here {
+            div { class: "viewhead",
+                div { class: "actions",
+                    span { class: "badge", title: "{real}", "{label}" }
+                    span { class: if up { "badge on" } else { "badge" },
+                        if up { "online" } else { "offline · browsing its index" }
+                    }
+                }
+            }
+        }
+        Items {
+            items,
+            show_at: false,
+            empty: if failed { "This folder is not there (or its index has not come in yet)." } else { "Empty." },
+            loading: listing().is_none(),
         }
     }
 }
@@ -933,7 +1101,7 @@ pub fn file_url(item: &Item, space: &str) -> Option<String> {
                 .online
                 .then(|| format!("/fetch/{}/{}?path={}", enc(space), enc(location), enc(path))),
         },
-        Src::Doc { .. } => None,
+        Src::Doc { .. } | Src::Logical { .. } => None,
         Src::Browse { device, root, path } => item
             .online
             .then(|| crate::browse::file_url(space, device, root, path, &item.name)),
@@ -1149,7 +1317,11 @@ async fn edit_pdf(hash: &str, edits: &[drive_view::PageEdit]) -> Result<(String,
     .ok_or("the node did not answer")?;
     if !(200..300).contains(&status) {
         let why = crate::host::text(&bytes);
-        return Err(if why.is_empty() { status.to_string() } else { why });
+        return Err(if why.is_empty() {
+            status.to_string()
+        } else {
+            why
+        });
     }
     let v: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     Ok((s(&v, "hash"), v["size"].as_u64().unwrap_or(0)))
@@ -1471,7 +1643,7 @@ fn ItemComments(item: Item, download: Option<String>) -> Element {
             String::new(),
         ),
         // A browsed file has no lasting place to pin comments to.
-        Src::Browse { .. } => return rsx! {},
+        Src::Browse { .. } | Src::Logical { .. } => return rsx! {},
     };
     let family = if item.kind.parent.is_empty() {
         item.kind.id.clone()

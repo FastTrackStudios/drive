@@ -81,6 +81,32 @@ inode range, from `1 << 61` up to `1 << 62`, where `Devices/` starts.
   - `user.drive.where`: where the bytes are. That is the real path, or
     `<device>:<path>` for another device.
 
+## In the app, `drive ls` and the MCP tools
+
+They show the Drive tree as the mount does.
+
+- **The node** lists a logical folder at `GET /tree?space=&path=`. Inside
+  an adopted folder the entries come from its location's index (one
+  indexed query, as `/list`). Each carries `location`, `path` (inside the
+  location), its device and whether that device is on. Elsewhere the
+  tree's own entries come back (`source: tree`), with the adopted folders
+  (`source: adopted`, with `where`: device, location, real path) and the
+  folders that are there only on the way to them (`source: above`). The
+  adoptions are read once per version of the space document, with the
+  space's other names. `GET /tree/file?space=&path=` reads a file by its
+  logical path: a tree file from its blob, an adopted one from the
+  node's copy when it is kept available, else through its location
+  (`/fetch`).
+- **The app** adds the adopted folders to a Drive folder from the space
+  document, each saying where it is (`on Studio PC · Songs`). Opening one
+  lists it through `/tree`. Its files are the location's files, so they
+  preview, download and take comments as a computer's files do.
+- **`drive ls PATH`** lists the adopted folders, and inside one its files
+  (`logical_list`).
+- **The MCP tools:** `browse` takes `drive` (a Drive folder). `drive:PATH`
+  inside an adopted folder names the location's file. Search results from
+  an adopted location also carry their `drive:` path.
+
 Code: `crates/drive-files/src/adopt.rs` (the model: paths, conflicts,
 where a logical path falls), `crates/drive-agent/src/adopt.rs` (adopt,
 unadopt, the logical view without a mount), and
@@ -96,9 +122,6 @@ rescanned every ten minutes.
 
 - **Writing to another device's adopted folder**, through the node or
   iroh. It is read-only now.
-- **The app, the MCP tools and `drive ls`** show the Drive tree only: they
-  see `Studio`, not the adopted `Songs` in it. They should resolve
-  adoptions as the mount does (`Agent::logical_list`).
 - **Remote listings from cached trees.** Another device's adopted folder
   is listed by scanning its whole index on each call; big locations want
   the daemon's per-location trees.

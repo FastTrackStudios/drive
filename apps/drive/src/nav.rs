@@ -19,6 +19,10 @@ pub enum Place {
     Overview,
     /// The space's synced tree, at a folder (`None`: its root).
     Drive(Option<String>),
+    /// A folder of the Drive tree by its path, where adoptions put one
+    /// (docs/adopt.md): an adopted folder, a folder inside it, or a folder
+    /// only on the way to adoptions.
+    Adopted(String),
     /// A location's index, at a path inside it.
     Location {
         loc: String,

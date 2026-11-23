@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use drive_files::index::{IndexEntry, Tree};
-use drive_files::{projects, space, tree};
+use drive_files::{adopt, projects, space, tree};
 use drive_rules::{doc, eval, journal};
 use drive_spine::kinds::Kinds;
 use drive_spine::tags::query::{self, Search, Subject};
@@ -79,6 +79,9 @@ pub async fn browse(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     if path.split('/').any(|p| p == "..") {
         return Err("refused: a path may not climb out with ..".into());
     }
+    if let Some(d) = opt_str(args, "drive") {
+        return browse_drive(ctx, d, offset, limit).await;
+    }
     if let Some(l) = opt_str(args, "location") {
         let loc = ctx.location(l)?;
         let t = Tree::new(ctx.index_of(&loc).await?);
@@ -104,7 +107,8 @@ pub async fn browse(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         v["from"] = json!("the location's index");
         return Ok(v);
     }
-    let device = opt_str(args, "device").ok_or("browse needs a location, or a device")?;
+    let device =
+        opt_str(args, "device").ok_or("browse needs a drive folder, a location, or a device")?;
     let id = ctx.device_id(device)?;
     let base = format!("/browse/{}/{id}", ctx.space);
     let Some(root) = opt_str(args, "root") else {
@@ -139,6 +143,93 @@ pub async fn browse(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         "as_of": v["as_of"],
         "items": v["entries"]
     }))
+}
+
+/// A folder of the Drive tree, adopted folders included (docs/adopt.md):
+/// inside one, the location's index at the adopted folder, each entry
+/// also named as `LOCATION:PATH`; elsewhere the tree's entries with the
+/// adopted folders (and the folders on the way to them) added.
+async fn browse_drive(ctx: &Ctx, raw: &str, offset: usize, limit: usize) -> Result<Value, String> {
+    let path = raw.trim_start_matches("drive:").trim_matches('/');
+    if path.split('/').any(|p| p == "..") {
+        return Err("refused: a path may not climb out with ..".into());
+    }
+    let all = ctx.a.adoptions();
+    if let adopt::Place::Inside { adoption, rel } = adopt::place(&all, path) {
+        let loc = ctx.location(&adoption.location)?;
+        let lp = adopt::join(&adoption.sub, &rel);
+        let t = Tree::new(ctx.index_of(&loc).await?);
+        if !lp.is_empty() && t.get(&lp).is_none_or(|e| !e.dir) {
+            return Err(format!(
+                "drive:{path} is not a folder (as of {}'s last index)",
+                loc.name
+            ));
+        }
+        let mut entries: Vec<&IndexEntry> = t.list(&lp);
+        entries.sort_by(|a, b| {
+            b.dir
+                .cmp(&a.dir)
+                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
+        });
+        let rows: Vec<Value> = entries
+            .into_iter()
+            .map(|e| {
+                json!({
+                    "name": e.name(), "dir": e.dir, "size": e.size, "mtime": e.mtime,
+                    "thing": format!("drive:{}", adopt::join(path, e.name())),
+                    "located": format!("{}:{}", loc.name, e.path),
+                })
+            })
+            .collect();
+        let mut v = page(rows, offset, limit);
+        v["drive"] = json!(path);
+        v["adopted_at"] = json!(adoption.at);
+        v["where"] = json!(ctx.a.whereabouts(adoption));
+        v["from"] = json!("the adopted folder's location index");
+        return Ok(v);
+    }
+    let added = adopt::names_in(&all, path);
+    let folder = match tree::resolve(&ctx.a.files, path) {
+        Some(None) => Some(None),
+        Some(Some(e)) if e.dir => Some(Some(e.id)),
+        _ if !added.is_empty() => None,
+        _ => return Err(format!("drive:{path} is not a folder of the Drive")),
+    };
+    let mut rows: Vec<Value> = folder
+        .map(|f| tree::children(&ctx.a.files, f))
+        .unwrap_or_default()
+        .into_iter()
+        // An adopted folder hides a tree entry of the same name.
+        .filter(|e| !added.iter().any(|(n, point)| *point && *n == e.name))
+        .map(|e| {
+            json!({
+                "name": e.name, "dir": e.dir, "size": e.size, "mtime": e.mtime,
+                "thing": format!("drive:{}", adopt::join(path, &e.name)),
+            })
+        })
+        .collect();
+    for (name, point) in added {
+        if rows.iter().any(|r| r["name"] == name.as_str()) {
+            continue;
+        }
+        let at = adopt::join(path, &name);
+        let mut r = json!({ "name": name, "dir": true, "thing": format!("drive:{at}") });
+        if point && let Some(a) = all.iter().find(|a| a.at == at) {
+            r["adopted"] = json!(true);
+            r["where"] = json!(ctx.a.whereabouts(a));
+        }
+        rows.push(r);
+    }
+    rows.sort_by_key(|r| {
+        (
+            r["dir"] != true,
+            r["name"].as_str().unwrap_or_default().to_lowercase(),
+        )
+    });
+    let mut v = page(rows, offset, limit);
+    v["drive"] = json!(path);
+    v["from"] = json!("the Drive tree");
+    Ok(v)
 }
 
 pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
@@ -190,6 +281,7 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         asks.push(("exts", query::kind_extensions(&kinds, k).join(",")));
     }
     let mut seen = HashSet::new();
+    let adopted = ctx.a.adoptions();
     let want = (offset + limit).clamp(100, 2000).to_string();
     for (key, val) in asks {
         let v = ctx
@@ -224,7 +316,10 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
                 on: &on,
             }) {
                 let lname = h["location_name"].as_str().unwrap_or("?");
+                // Where it shows in the Drive tree too, when adopted.
+                let drive = adopt::logical_of(&adopted, loc, path).map(|p| format!("drive:{p}"));
                 found.push(json!({
+                    "drive": drive,
                     "thing": format!("{lname}:{path}"), "in": "computer",
                     "device": h["device_name"], "location": lname, "online": h["online"],
                     "dir": dir, "kind": k.id, "size": h["size"], "mtime": h["mtime"],

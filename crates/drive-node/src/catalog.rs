@@ -52,13 +52,13 @@ struct Reports {
     reports: Arc<Vec<drive_files::protect::Report>>,
 }
 
-type Q = Query<HashMap<String, String>>;
+pub(crate) type Q = Query<HashMap<String, String>>;
 
-fn q<'a>(q: &'a HashMap<String, String>, k: &str) -> &'a str {
+pub(crate) fn q<'a>(q: &'a HashMap<String, String>, k: &str) -> &'a str {
     q.get(k).map_or("", String::as_str)
 }
 
-fn fail(e: impl std::fmt::Display) -> StatusCode {
+pub(crate) fn fail(e: impl std::fmt::Display) -> StatusCode {
     tracing::warn!(error = %e, "a catalog query failed");
     StatusCode::INTERNAL_SERVER_ERROR
 }
@@ -101,9 +101,9 @@ pub async fn put_index(
 
 /// A hit, with where it is and whether that device is on.
 #[derive(Serialize)]
-struct Hit {
+pub(crate) struct Hit {
     #[serde(flatten)]
-    found: Found,
+    pub(crate) found: Found,
     location_name: String,
     device: String,
     device_name: String,
@@ -119,15 +119,17 @@ struct Hit {
 /// What the space document says of its locations, read once per version
 /// of the document: every request names its hits from it.
 pub struct DocNames {
-    locations: HashMap<String, space::Location>,
-    devices: HashMap<String, String>,
+    pub(crate) locations: HashMap<String, space::Location>,
+    pub(crate) devices: HashMap<String, String>,
     storages: HashMap<String, String>,
-    available: HashMap<String, HashMap<String, drive_files::projects::Available>>,
+    pub(crate) available: HashMap<String, HashMap<String, drive_files::projects::Available>>,
+    /// The folders adopted into the Drive tree (docs/adopt.md).
+    pub(crate) adoptions: Vec<drive_files::adopt::Adoption>,
 }
 
-struct Names {
-    doc: Arc<DocNames>,
-    online: Vec<String>,
+pub(crate) struct Names {
+    pub(crate) doc: Arc<DocNames>,
+    pub(crate) online: Vec<String>,
 }
 
 fn doc_names(d: &loro::LoroDoc) -> DocNames {
@@ -150,6 +152,7 @@ fn doc_names(d: &loro::LoroDoc) -> DocNames {
             .map(|x| (x.id, x.name))
             .collect(),
         available,
+        adoptions: drive_files::adopt::adoptions(d),
     }
 }
 
@@ -157,7 +160,7 @@ fn doc_names(d: &loro::LoroDoc) -> DocNames {
 /// changed since the last read (under the rooms' lock, which every sync
 /// shares, only the version is compared).
 #[tracing::instrument(name = "drive.names", skip_all, fields(names.cached = tracing::field::Empty))]
-async fn names(c: &Catalog, space_id: &str) -> Names {
+pub(crate) async fn names(c: &Catalog, space_id: &str) -> Names {
     let cached = c.names.lock().expect("names").get(space_id).cloned();
     let (version, fresh) = c
         .rooms
@@ -185,6 +188,7 @@ async fn names(c: &Catalog, space_id: &str) -> Names {
             devices: HashMap::new(),
             storages: HashMap::new(),
             available: HashMap::new(),
+            adoptions: Vec::new(),
         }),
     };
     Names {
@@ -194,7 +198,7 @@ async fn names(c: &Catalog, space_id: &str) -> Names {
 }
 
 #[tracing::instrument(name = "drive.hits", skip_all, fields(hits.count = found.len()))]
-async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
+pub(crate) async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
     let n = names(c, space_id).await;
     let mut out = Vec::with_capacity(found.len());
     for f in found {

@@ -107,3 +107,12 @@ hayro-jbig2 = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62d
 lopdf = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa" }
 vello_common = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa" }
 vello_cpu = { git = "https://github.com/storytold/pdfcraft", rev = "b503b2e62dfeec5598f344e4e287d9c9cbdb34fa" }
+
+# The web apps' release build (dx builds web releases with this profile):
+# the WASM is the whole download, so it is built for size, as one unit
+# (and then through wasm-opt, apps/drive/Dioxus.toml).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1

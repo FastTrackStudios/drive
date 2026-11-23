@@ -517,13 +517,53 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         }
         "ls" => {
             let a = start(dir).await?;
-            let folder = match args.get(1) {
-                Some(p) => tree::resolve(&a.files, p)
-                    .ok_or(format!("no folder {p}"))?
-                    .map(|e| e.id),
-                None => None,
+            let p = args.get(1).map_or("", String::as_str).trim_matches('/');
+            // Adopted folders show where the mount shows them (docs/adopt.md).
+            let all = a.adoptions();
+            if let drive_files::adopt::Place::Inside { adoption, .. } =
+                drive_files::adopt::place(&all, p)
+            {
+                out(format!(
+                    "# adopted at /{}: on {}",
+                    adoption.at,
+                    a.whereabouts(adoption)
+                ));
+                for (name, dir) in a.logical_list(p)? {
+                    out(format!(
+                        "  {:<11} {:>9}  {name}{}",
+                        "adopted",
+                        "",
+                        if dir { "/" } else { "" }
+                    ));
+                }
+                return Ok(());
+            }
+            let added = drive_files::adopt::names_in(&all, p);
+            let folder = match tree::resolve(&a.files, p) {
+                Some(e) => e.map(|e| e.id),
+                None if !added.is_empty() => None,
+                None => return Err(format!("no folder {p}")),
             };
-            for e in tree::children(&a.files, folder) {
+            let in_tree = p.is_empty() || folder.is_some();
+            let mut rows = if in_tree {
+                tree::children(&a.files, folder)
+            } else {
+                Vec::new()
+            };
+            // An adopted folder hides a tree entry of the same name.
+            rows.retain(|e| !added.iter().any(|(n, point)| *point && *n == e.name));
+            for (name, point) in &added {
+                if rows.iter().any(|e| e.dir && e.name == *name) {
+                    continue;
+                }
+                let at = drive_files::adopt::join(p, name);
+                let note = match all.iter().find(|x| *point && x.at == at) {
+                    Some(x) => format!("  (on {})", a.whereabouts(x)),
+                    None => String::new(),
+                };
+                out(format!("  {:<11} {:>9}  {name}/{note}", "adopted", ""));
+            }
+            for e in rows {
                 let st = a.state(&e);
                 let size = if e.dir { "".into() } else { human(e.size) };
                 out(format!(

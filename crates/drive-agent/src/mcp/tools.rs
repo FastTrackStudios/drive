@@ -84,10 +84,11 @@ pub fn defs() -> Vec<Def> {
         Def {
             name: "browse",
             title: "Browse a folder",
-            description: "List a folder, a page at a time. Give `location` (+ `path`) to list a location from its index (works while its computer is off), or `device` to browse its disks live: no `root` lists the device's volumes; `root` (a volume's mount point from that list) + `path` lists a folder of it (read-only; the device must be on).",
+            description: "List a folder, a page at a time. Give `drive` (a folder of the Drive tree, \"\" for its top) to list the Drive as the mount shows it, adopted folders included (each says where its files are); `location` (+ `path`) to list a location from its index (works while its computer is off), or `device` to browse its disks live: no `root` lists the device's volumes; `root` (a volume's mount point from that list) + `path` lists a folder of it (read-only; the device must be on).",
             write: false,
             schema: props(
                 paged(json!({
+                    "drive": { "type": "string", "description": "A folder of the Drive tree (like Studio/Songs; \"\" for the top)." },
                     "location": { "type": "string", "description": "A location (name or id)." },
                     "device": { "type": "string", "description": "A device (name or id), to browse its disks live." },
                     "root": { "type": "string", "description": "With device: a volume's mount point, as `browse` with only `device` lists them." },
