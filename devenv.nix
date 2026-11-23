@@ -2,7 +2,8 @@
 # kache as the wrapper) is all the workspace needs; dx 0.8 for the web apps
 # comes from the prototype's tools (see README). ffmpeg makes video
 # thumbnails (the sidecars' video producer); without it videos get none.
+# fontconfig and freetype: the native app's text (Blitz), as in Studio.
 { pkgs, ... }:
 {
-  packages = [ pkgs.pkg-config pkgs.fuse3 pkgs.openssl pkgs.ffmpeg-headless ];
+  packages = [ pkgs.pkg-config pkgs.fuse3 pkgs.openssl pkgs.ffmpeg-headless pkgs.fontconfig pkgs.freetype ];
 }
