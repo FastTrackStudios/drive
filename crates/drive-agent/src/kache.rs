@@ -36,7 +36,7 @@ impl Settings {
 
     pub fn budget(&self) -> u64 {
         self.budget_gib
-            .map_or(drive_kache::DEFAULT_BUDGET, |g| g << 30)
+            .map_or(drive_kache::DEFAULT_BUDGET, |g| g.saturating_mul(1 << 30))
     }
 }
 
@@ -191,6 +191,15 @@ pub fn remote_block(port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_build_cache_budgets_do_not_wrap() {
+        let budget = Settings {
+            budget_gib: Some(1 << 34),
+            ..Default::default()
+        };
+        assert_eq!(budget.budget(), u64::MAX);
+    }
 
     #[test]
     fn peers_are_the_group_less_this_device() {
