@@ -33,7 +33,7 @@ pub struct Issuer {
     pub client_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Tokens {
     issuer: String,
     client_id: String,
@@ -199,7 +199,9 @@ pub async fn finish() -> Result<(), String> {
         enc(&pending.client_id),
         enc(&pending.verifier)
     );
-    let t = token_request(&pending.issuer, &pending.client_id, &body, None).await?;
+    let t = token_request(&pending.issuer, &pending.client_id, &body, None)
+        .await
+        .map_err(|error| error.message)?;
     save(&t);
     env::remove(PENDING);
     let back = if pending.return_to.contains("/auth/callback") {
@@ -211,30 +213,87 @@ pub async fn finish() -> Result<(), String> {
     Ok(())
 }
 
-/// The access token, refreshed first when it is about to run out (within
-/// `margin_ms`). `None`: not signed in, or the refresh was refused (signed
-/// out by the issuer): the caller asks for a sign-in.
+/// The usable access token, refreshed if it is within `margin_ms` of expiry.
 pub async fn fresh_token(margin_ms: f64) -> Option<String> {
-    let t = load()?;
-    if t.expires_at - now() > margin_ms {
-        return Some(t.access_token);
+    match refresh(margin_ms).await {
+        Refresh::Ready(token) => Some(token),
+        Refresh::SignedOut | Refresh::Retry => None,
     }
-    let Some(refresh) = t.refresh_token.clone() else {
-        return (t.expires_at > now()).then_some(t.access_token);
+}
+
+pub(crate) enum Refresh {
+    Ready(String),
+    SignedOut,
+    Retry,
+}
+
+pub(crate) async fn refresh(margin_ms: f64) -> Refresh {
+    let Some(t) = load() else {
+        return Refresh::SignedOut;
+    };
+    if t.expires_at - now() > margin_ms {
+        return Refresh::Ready(t.access_token);
+    }
+    let Some(refresh) = &t.refresh_token else {
+        return if t.expires_at > now() {
+            Refresh::Ready(t.access_token)
+        } else {
+            Refresh::SignedOut
+        };
     };
     let body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}",
-        enc(&refresh),
+        enc(refresh),
         enc(&t.client_id)
     );
-    match token_request(&t.issuer, &t.client_id, &body, Some(&refresh)).await {
+    let result = token_request(&t.issuer, &t.client_id, &body, Some(refresh)).await;
+    let current = load();
+    // Another refresh or a sign-out may have changed storage during the request.
+    match current {
+        None => return Refresh::SignedOut,
+        Some(current) if current != t => {
+            return if current.expires_at > now() {
+                Refresh::Ready(current.access_token)
+            } else {
+                Refresh::Retry
+            };
+        }
+        Some(_) => {}
+    }
+
+    match result {
         Ok(new) => {
             save(&new);
-            Some(new.access_token)
+            Refresh::Ready(new.access_token)
         }
-        Err(_) => {
+        Err(error) if error.rejected_grant => {
             sign_out();
-            None
+            Refresh::SignedOut
+        }
+        Err(_) if t.expires_at > now() => Refresh::Ready(t.access_token),
+        Err(_) => Refresh::Retry,
+    }
+}
+
+struct TokenRequestError {
+    message: String,
+    rejected_grant: bool,
+}
+
+impl TokenRequestError {
+    fn unavailable(message: &str) -> Self {
+        Self {
+            message: message.into(),
+            rejected_grant: false,
+        }
+    }
+
+    fn response(status: u16, body: &serde_json::Value) -> Self {
+        let error = body["error"].as_str();
+        let description = body["error_description"].as_str().or(error).unwrap_or("");
+        Self {
+            message: format!("the issuer refused ({status}): {description}"),
+            rejected_grant: matches!(status, 400 | 401) && error == Some("invalid_grant"),
         }
     }
 }
@@ -244,7 +303,7 @@ async fn token_request(
     client_id: &str,
     body: &str,
     old_refresh: Option<&str>,
-) -> Result<Tokens, String> {
+) -> Result<Tokens, TokenRequestError> {
     let (status, v) = fetch(
         "POST",
         &format!("{}/oauth2/token", issuer.trim_end_matches('/')),
@@ -252,19 +311,13 @@ async fn token_request(
         Some(body),
     )
     .await
-    .ok_or("the issuer is unreachable")?;
+    .ok_or_else(|| TokenRequestError::unavailable("the issuer is unreachable"))?;
     if status != 200 {
-        return Err(format!(
-            "the issuer refused ({status}): {}",
-            v["error_description"]
-                .as_str()
-                .or(v["error"].as_str())
-                .unwrap_or("")
-        ));
+        return Err(TokenRequestError::response(status, &v));
     }
     let access = v["access_token"]
         .as_str()
-        .ok_or("the issuer sent no access token")?
+        .ok_or_else(|| TokenRequestError::unavailable("the issuer sent no access token"))?
         .to_string();
     let expires_in = v["expires_in"].as_f64().unwrap_or(3600.0);
     Ok(Tokens {
@@ -317,6 +370,18 @@ fn base64_url(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_explicit_invalid_grant_rejects_the_refresh() {
+        let invalid_grant = serde_json::json!({ "error": "invalid_grant" });
+        assert!(TokenRequestError::response(400, &invalid_grant).rejected_grant);
+        assert!(TokenRequestError::response(401, &invalid_grant).rejected_grant);
+        assert!(!TokenRequestError::response(503, &invalid_grant).rejected_grant);
+        let invalid_client = serde_json::json!({ "error": "invalid_client" });
+        assert!(!TokenRequestError::response(401, &invalid_client).rejected_grant);
+        assert!(!TokenRequestError::response(429, &serde_json::Value::Null).rejected_grant);
+        assert!(!TokenRequestError::unavailable("offline").rejected_grant);
+    }
 
     #[test]
     fn base64url_without_padding() {

@@ -170,7 +170,16 @@ async fn boot_inner() -> Boot {
             Err(e) => Boot::Failed(e),
         };
     }
-    let token = auth::fresh_token(60_000.0).await;
+    let token = match auth::refresh(60_000.0).await {
+        auth::Refresh::Ready(token) => Some(token),
+        auth::Refresh::SignedOut => None,
+        auth::Refresh::Retry if !cfg!(target_arch = "wasm32") => return offline(None),
+        auth::Refresh::Retry => {
+            return Boot::Failed(
+                "The sign-in server could not refresh your session. Try again shortly.".into(),
+            );
+        }
+    };
     let bearer = token.as_ref().map(|t| format!("Bearer {t}"));
     let headers: Vec<(&str, &str)> = bearer
         .iter()
@@ -416,9 +425,10 @@ fn Connected(
             }
             loop {
                 drive_client::sleep(60_000).await;
-                match auth::fresh_token(5.0 * 60_000.0).await {
-                    Some(t) => ctx.drive.set_token(Some(t)),
-                    None => env::reload(),
+                match auth::refresh(5.0 * 60_000.0).await {
+                    auth::Refresh::Ready(t) => ctx.drive.set_token(Some(t)),
+                    auth::Refresh::SignedOut => env::reload(),
+                    auth::Refresh::Retry => {}
                 }
             }
         }
