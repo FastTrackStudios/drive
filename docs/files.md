@@ -128,6 +128,12 @@ Voyager while it is off.
   place (`drive location add Samples ~/Samples`), or a folder in a
   storage it runs (`--storage "Garage Deep"`: an S3 bucket, a WebDAV share,
   walked through OpenDAL, sampled hashes read as byte ranges).
+  `drive location rm NAME_OR_ID` (or `remove`) stops tracking one: out of
+  the registry, its index off the node (`DELETE /index/{space}/{id}`) and
+  this device's copy of it, its watch stopped; the folder and its files
+  are never touched. Refused while a folder is adopted from it (`drive
+  unadopt` first), and for another device's location without `--force`
+  (the registry is shared).
 - **Volumes**: each device's disks (sysinfo), with size and free space;
   an unplugged drive keeps its last report and its locations' indexes.
 - **The index**: every file and folder, its size, time and sampled BLAKE3

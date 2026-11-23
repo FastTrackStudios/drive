@@ -168,7 +168,7 @@ impl Agent {
             .collect()
     }
 
-    fn index_cache(&self, location: &str) -> PathBuf {
+    pub(crate) fn index_cache(&self, location: &str) -> PathBuf {
         self.dir.join("indexes").join(format!("{location}.idx"))
     }
 
@@ -237,6 +237,11 @@ impl Agent {
                 "found nothing where {had} entries were before: kept the last index (is the folder readable by this process?)"
             ));
         }
+        // Removed (`drive location rm`) while it was walked: nothing is
+        // published for it.
+        if !self.has_location(&loc.id) {
+            return Err(format!("{} is no longer a location", loc.name));
+        }
         let bytes = index::encode(&idx);
         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
         std::fs::write(self.index_cache(&loc.id), &bytes).map_err(|e| e.to_string())?;
@@ -255,6 +260,13 @@ impl Agent {
             return Err(format!("the node refused the index ({})", resp.status()));
         }
         let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        // Removed while the index was on its way: the node drops it again,
+        // so no rows stay behind for a location nobody has.
+        if !self.has_location(&loc.id) {
+            self.forget_index(&loc.id);
+            let _ = self.drop_node_index(&loc.id).await;
+            return Err(format!("{} is no longer a location", loc.name));
+        }
         let hash = v["hash"].as_str().unwrap_or_default();
         space::set_index(
             &self.space,

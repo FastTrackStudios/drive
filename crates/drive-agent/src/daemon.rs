@@ -156,6 +156,12 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let (changed_tx, mut changed) = mpsc::unbounded_channel::<String>();
     let mut watchers = Watchers::default();
     watchers.add_new(&a, &changed_tx);
+    // The registry's locations as last seen: one gone (`drive location
+    // rm`, here or on another device) is unwatched and forgotten at once.
+    let mut known: HashSet<String> = space::locations(&a.space)
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
 
     // File rules (crate::rules): after a location is indexed, on their
     // schedules and when asked; the first pass catches what changed while
@@ -237,9 +243,28 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     a.announce();
                 }
                 Ok(Event::Changed(doc)) if doc == a.space_id => {
+                    // A location removed (`drive location rm`): its watch,
+                    // pending reindex and index copy go, and the views
+                    // drop it now rather than on their next refresh.
+                    let now: HashSet<String> = space::locations(&a.space).into_iter().map(|l| l.id).collect();
+                    let gone: Vec<String> = known.difference(&now).cloned().collect();
+                    let changed_set = now != known;
+                    known = now;
+                    if !gone.is_empty() {
+                        watchers.drop_gone(&a);
+                        for id in &gone {
+                            pending.remove(id);
+                            a.forget_index(id);
+                        }
+                        tracing::info!(locations.gone = gone.len(), "locations removed from the registry are no longer watched");
+                    }
                     // A location made here by another process (`drive
                     // adopt`, `drive location add`): watched from now on.
                     watchers.add_new(&a, &changed_tx);
+                    if changed_set {
+                        refresh_devices(&a, &view);
+                        last_view = tokio::time::Instant::now() - Duration::from_secs(30);
+                    }
                     // A site added or removed (the Drive app, another device).
                     let now: Vec<String> = drive_files::sites::listed(&a.space).into_keys().collect();
                     if now != listed {
@@ -399,6 +424,19 @@ struct Watchers {
 }
 
 impl Watchers {
+    /// Stop watching locations this device no longer has (removed from
+    /// the registry) or has paused.
+    fn drop_gone(&mut self, a: &Agent) {
+        let keep: HashSet<String> = a
+            .my_locations()
+            .into_iter()
+            .filter(|l| !drive_files::space::is_paused(&a.space, &l.id))
+            .map(|l| l.id)
+            .collect();
+        self.by_location.retain(|id, _| keep.contains(id));
+        self.refused.retain(|id| keep.contains(id));
+    }
+
     /// Watch every local location of this device not watched yet. Only
     /// small locations on local disks are watched live (see
     /// `places::watch_refusal`); the others are rescanned every ten minutes.

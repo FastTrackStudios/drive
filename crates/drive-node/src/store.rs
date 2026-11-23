@@ -479,6 +479,7 @@ impl Store {
         }
     }
 
+    #[tracing::instrument(name = "drive.store.drop_index", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn drop_index(&self, space: &str, location: &str) -> turso::Result<()> {
         let conn = self.writer().await;
         for table in ["entries", "entry_stats"] {

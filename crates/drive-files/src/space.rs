@@ -420,7 +420,8 @@ pub fn add_location(doc: &LoroDoc, l: &Location) -> loro::LoroResult<()> {
     Ok(())
 }
 
-/// Record a location's new index.
+/// Record a location's new index. A location no longer in the registry
+/// (removed while it was indexed) is left out, not brought back empty.
 pub fn set_index(
     doc: &LoroDoc,
     location: &str,
@@ -428,7 +429,9 @@ pub fn set_index(
     files: i64,
     bytes: i64,
 ) -> loro::LoroResult<()> {
-    let m = doc.get_map("locations").ensure_mergeable_map(location)?;
+    let Some(m) = child(&doc.get_map("locations"), location) else {
+        return Ok(());
+    };
     m.insert("index", hash)?;
     m.insert("files", files)?;
     m.insert("bytes", bytes)?;

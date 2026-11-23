@@ -23,6 +23,10 @@
 //! Every computer's files (indexed in place, searchable while it is off):
 //! drive [--dir DIR] location add NAME PATH        # a folder on this device
 //! drive [--dir DIR] location pause|resume NAME    # keep its last index, stop walking it
+//! drive [--dir DIR] location rm NAME_OR_ID [--force]   # stop tracking it (alias remove);
+//!                                   # its folder and files stay; refused while a
+//!                                   # folder is adopted from it, and for another
+//!                                   # device's location without --force
 //! drive [--dir DIR] location add NAME PATH --storage STORAGE   # in a storage it runs
 //! drive [--dir DIR] locations | volumes | index [NAME]
 //! drive [--dir DIR] search WORDS…                 # every device's files
@@ -102,6 +106,7 @@ mod devices;
 #[cfg(feature = "mount")]
 mod fs;
 mod kache;
+mod location_rm;
 mod mcp;
 #[cfg(feature = "mount")]
 mod one;
@@ -699,6 +704,46 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             } else {
                 format!("{} resumes: it is walked again on the next pass.", l.name)
             });
+        }
+        "location" if matches!(args.get(1).map(String::as_str), Some("rm" | "remove")) => {
+            let usage = "location rm NAME_OR_ID [--force]";
+            let who = args[2..]
+                .iter()
+                .find(|x| !x.starts_with("--"))
+                .ok_or(usage)?
+                .clone();
+            let force = args.iter().any(|x| x == "--force");
+            let a = start(dir).await?;
+            match a.remove_location(&who, force).await {
+                Ok(r) => {
+                    settle(&a).await;
+                    let place = if r.location.storage.is_empty() {
+                        r.location.path.clone()
+                    } else {
+                        format!("{} in its storage", r.location.path)
+                    };
+                    out(format!(
+                        "{} is no longer a location: Drive stopped tracking {place}. Its folder and files are as they were.",
+                        r.location.name
+                    ));
+                    if let Err(e) = r.node_dropped {
+                        out(format!(
+                            "The node still has its index ({e}): `drive location rm {} --force` drops it.",
+                            r.location.id
+                        ));
+                    }
+                    for m in r.mirrors {
+                        out(format!("{} mirrored it and stays a location.", m.name));
+                    }
+                }
+                // Out of the registry already (the node was unreachable
+                // when it was removed): its index on the node, by id.
+                Err(e) if force && e.starts_with("no location") => {
+                    a.drop_node_index(&who).await?;
+                    out(format!("The node's index of {who} is dropped."));
+                }
+                Err(e) => return Err(e),
+            }
         }
         "location" if args.get(1).map(String::as_str) == Some("add") => {
             let name = args.get(2).ok_or("location add NAME PATH")?.clone();
