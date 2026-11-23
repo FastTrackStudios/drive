@@ -497,16 +497,26 @@ fn Results(space: String, wanted: Wanted) -> Element {
         } else {
             let h = s.hints();
             if h.tagged {
-                let mut hashes: Vec<String> = lib
-                    .targets()
-                    .filter_map(|(t, _)| match t {
-                        Target::Content(h) => Some(h),
+                let targets = match &wanted {
+                    Wanted::Tag(id) => lib.tagged(id),
+                    Wanted::Text(_) => lib.targets().map(|(target, _)| target).collect(),
+                };
+                let mut hashes: Vec<_> = targets
+                    .into_iter()
+                    .filter_map(|target| match target {
+                        Target::Content(hash)
+                            if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) =>
+                        {
+                            Some(hash)
+                        }
                         _ => None,
                     })
                     .collect();
-                hashes.sort();
-                if !hashes.is_empty() {
-                    asks.push(format!("sampled={}&limit=1000", hashes.join(",")));
+                hashes.sort_unstable();
+                hashes.dedup();
+                // Keep each request within typical request-line limits.
+                for batch in hashes.chunks(48) {
+                    asks.push(format!("sampled={}&limit=1000", batch.join(",")));
                 }
             }
             for w in h.words {
@@ -550,6 +560,9 @@ fn Results(space: String, wanted: Wanted) -> Element {
             })
         };
         for (p, e) in tree::files(&f) {
+            if tree::in_trash(&f, e.id) {
+                continue;
+            }
             let it = tree_item(&e, &p, &r, &up, &kinds);
             if hit(&it, &p) {
                 items.push(it);
