@@ -67,10 +67,10 @@ pub async fn run_loop(rooms: Arc<Rooms>, data: PathBuf) {
     let mut tick = tokio::time::interval(Duration::from_secs(15));
     loop {
         tick.tick().await;
-        let orgs: Vec<String> = match rooms.store.list().await {
+        let orgs: Vec<String> = match rooms.store.ids().await {
             Ok(l) => l
                 .into_iter()
-                .filter_map(|(id, _)| {
+                .filter_map(|id| {
                     id.strip_suffix(&format!("/{}", doc::RULES))
                         .map(str::to_string)
                 })

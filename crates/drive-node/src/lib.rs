@@ -147,11 +147,11 @@ async fn members(
 async fn every_org(rooms: &Rooms) -> Vec<String> {
     rooms
         .store
-        .list()
+        .ids()
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(id, _)| drive_proto::org_of(&id).map(str::to_string))
+        .filter_map(|id| drive_proto::org_of(&id).map(str::to_string))
         .filter(|o| !o.is_empty())
         .collect()
 }
@@ -333,7 +333,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 let _ = rooms.transfer.set(Arc::new(t));
                 let r = rooms.clone();
                 tokio::spawn(async move {
-                    for (id, _) in r.store.list().await.unwrap_or_default() {
+                    for id in r.store.ids().await.unwrap_or_default() {
                         if let Some(space) = id.strip_suffix("/drive:space") {
                             transfer::publish(&r, space).await;
                         }
@@ -365,6 +365,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
         rooms: rooms.clone(),
         blobs: blobs.clone(),
         names: Default::default(),
+        reports: Default::default(),
     };
     let sidecar_store = Arc::new(
         sidecars::Sidecars::open(data, blobs.clone(), data.join("blobs"))
@@ -388,6 +389,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .await
                 .expect("the browse cache opens"),
         ),
+        quiet: browse::Quiet::default(),
     };
     let sidecar_routes = sidecars::Routes {
         sc: sidecar_store,

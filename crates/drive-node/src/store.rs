@@ -2,15 +2,106 @@
 //! index (one row per file, so all of them can be searched at once, even
 //! for devices that are off).
 
+use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::Path;
+use std::time::Instant;
 
 use drive_files::index::LocationIndex;
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard, Semaphore, SemaphorePermit};
+use tracing::field::Empty;
 use turso::Value;
 
+/// How many connections serve reads. Writes have one of their own, so a
+/// big index coming in never holds up a read, and a slow read holds up
+/// only itself (until every read connection is busy).
+const READERS: usize = 4;
+
 pub struct Store {
-    conn: Mutex<turso::Connection>,
+    /// Every write, and the transactions, on one connection.
+    write: Mutex<turso::Connection>,
+    reads: ReadPool,
+    /// Bumped each time a space's index rows change (put, drop, rename):
+    /// what is worked out from them is good while it stays the same.
+    generations: std::sync::Mutex<HashMap<String, u64>>,
+}
+
+/// Read connections, handed out one request at a time.
+struct ReadPool {
+    idle: std::sync::Mutex<Vec<turso::Connection>>,
+    permits: Semaphore,
+}
+
+/// A connection held for one store call. On drop it records how long the
+/// call held it (`store.query_ms`, beside the `store.wait_ms` it waited for
+/// it) on the call's span, and a read connection goes back to the pool.
+struct Held<'a> {
+    conn: Option<turso::Connection>,
+    hold: Hold<'a>,
+    since: Instant,
+}
+
+enum Hold<'a> {
+    Write(MutexGuard<'a, turso::Connection>),
+    Read(&'a ReadPool, #[allow(dead_code)] SemaphorePermit<'a>),
+}
+
+impl Deref for Held<'_> {
+    type Target = turso::Connection;
+    fn deref(&self) -> &turso::Connection {
+        match &self.hold {
+            Hold::Write(g) => g,
+            Hold::Read(..) => self.conn.as_ref().expect("held until dropped"),
+        }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        tracing::Span::current().record("store.query_ms", ms(self.since));
+        if let (Hold::Read(pool, _), Some(conn)) = (&self.hold, self.conn.take()) {
+            pool.idle.lock().expect("read pool").push(conn);
+        }
+    }
+}
+
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
+
+/// How many files and bytes of each extension and in each location of a
+/// space (`/stats`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Stats {
+    pub files: u64,
+    pub bytes: u64,
+    pub exts: HashMap<String, (u64, u64)>,
+    pub locations: HashMap<String, (u64, u64)>,
+}
+
+impl Stats {
+    fn add(&mut self, location: &str, ext: &str, files: u64, bytes: u64) {
+        let e = self.exts.entry(ext.to_string()).or_default();
+        e.0 += files;
+        e.1 += bytes;
+        let l = self.locations.entry(location.to_string()).or_default();
+        l.0 += files;
+        l.1 += bytes;
+        self.files += files;
+        self.bytes += bytes;
+    }
+
+    /// Counted file by file, from every row (what `/stats` did before the
+    /// totals were kept): the reference the kept totals are tested against.
+    pub fn of_rows(rows: &[drive_files::protect::FileRow]) -> Stats {
+        let mut s = Stats::default();
+        for r in rows {
+            let name = r.path.rsplit('/').next().unwrap_or_default();
+            s.add(&r.location, &ext_of(name), 1, r.size);
+        }
+        s
+    }
 }
 
 /// A file or folder found in some location's index.
@@ -39,6 +130,14 @@ fn int(v: Value) -> i64 {
     }
 }
 
+/// Wait for a lock another connection holds (a checkpoint, the writer)
+/// instead of failing at once.
+async fn busy_wait(conn: &turso::Connection) {
+    if let Err(e) = conn.execute("PRAGMA busy_timeout = 5000", ()).await {
+        tracing::warn!(error = %e, "the store's busy timeout was not set");
+    }
+}
+
 /// A file name's extension, lowercase, without the dot (`""` for none).
 fn ext_of(name: &str) -> String {
     name.rsplit_once('.')
@@ -52,6 +151,7 @@ impl Store {
             .build()
             .await?;
         let conn = db.connect()?;
+        busy_wait(&conn).await;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS docs (id TEXT PRIMARY KEY, snapshot BLOB NOT NULL)",
             (),
@@ -103,14 +203,107 @@ impl Store {
             (),
         )
         .await?;
+        // Each location's files and bytes by extension, kept as its index
+        // comes in, so `/stats` reads a few rows instead of every file.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS entry_stats (space TEXT NOT NULL, location TEXT NOT NULL, \
+             ext TEXT NOT NULL, files INTEGER NOT NULL, bytes INTEGER NOT NULL, \
+             PRIMARY KEY (space, location, ext))",
+            (),
+        )
+        .await?;
+        // A database from before the totals: counted once from its rows.
+        let has = |sql: &'static str| {
+            let conn = &conn;
+            async move {
+                let mut rows = conn.query(sql, ()).await?;
+                Ok::<_, turso::Error>(rows.next().await?.is_some())
+            }
+        };
+        if !has("SELECT 1 FROM entry_stats LIMIT 1").await?
+            && has("SELECT 1 FROM entries WHERE dir = 0 LIMIT 1").await?
+        {
+            conn.execute(
+                "INSERT INTO entry_stats (space, location, ext, files, bytes) \
+                 SELECT space, location, ext, count(*), sum(size) FROM entries WHERE dir = 0 \
+                 GROUP BY space, location, ext",
+                (),
+            )
+            .await?;
+        }
+        let mut idle = Vec::with_capacity(READERS);
+        for _ in 0..READERS {
+            let c = db.connect()?;
+            busy_wait(&c).await;
+            idle.push(c);
+        }
         Ok(Store {
-            conn: Mutex::new(conn),
+            write: Mutex::new(conn),
+            reads: ReadPool {
+                idle: std::sync::Mutex::new(idle),
+                permits: Semaphore::new(READERS),
+            },
+            generations: Default::default(),
         })
     }
 
+    /// The write connection (waited for: `store.wait_ms`).
+    async fn writer(&self) -> Held<'_> {
+        let asked = Instant::now();
+        let g = self.write.lock().await;
+        let span = tracing::Span::current();
+        span.record("store.wait_ms", ms(asked));
+        span.record("store.conn", "write");
+        Held {
+            conn: None,
+            hold: Hold::Write(g),
+            since: Instant::now(),
+        }
+    }
+
+    /// A read connection (waited for: `store.wait_ms`).
+    async fn reader(&self) -> Held<'_> {
+        let asked = Instant::now();
+        let permit = self
+            .reads
+            .permits
+            .acquire()
+            .await
+            .expect("the read pool is never closed");
+        let conn = self.reads.idle.lock().expect("read pool").pop();
+        let span = tracing::Span::current();
+        span.record("store.wait_ms", ms(asked));
+        span.record("store.conn", "read");
+        Held {
+            conn: Some(conn.expect("a permit means an idle connection")),
+            hold: Hold::Read(&self.reads, permit),
+            since: Instant::now(),
+        }
+    }
+
+    /// Where a space's index rows are: changes each time they do.
+    pub fn generation(&self, space: &str) -> u64 {
+        self.generations
+            .lock()
+            .expect("generations")
+            .get(space)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn changed(&self, space: &str) {
+        *self
+            .generations
+            .lock()
+            .expect("generations")
+            .entry(space.to_string())
+            .or_default() += 1;
+    }
+
     /// A document's last saved snapshot.
+    #[tracing::instrument(name = "drive.store.load", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn load(&self, id: &str) -> turso::Result<Option<Vec<u8>>> {
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query(
                 "SELECT snapshot FROM docs WHERE id = ?1",
@@ -127,8 +320,9 @@ impl Store {
     }
 
     /// Replace a document's snapshot.
+    #[tracing::instrument(name = "drive.store.save", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn save(&self, id: &str, snapshot: Vec<u8>) -> turso::Result<()> {
-        let conn = self.conn.lock().await;
+        let conn = self.writer().await;
         conn.execute(
             "INSERT OR REPLACE INTO docs (id, snapshot) VALUES (?1, ?2)",
             vec![Value::Text(id.into()), Value::Blob(snapshot)],
@@ -139,7 +333,7 @@ impl Store {
 
     /// Give a document a new id (nothing happens if `to` already exists).
     pub async fn rename(&self, from: &str, to: &str) -> turso::Result<()> {
-        let conn = self.conn.lock().await;
+        let conn = self.writer().await;
         conn.execute(
             "UPDATE docs SET id = ?2 WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM docs WHERE id = ?2)",
             vec![Value::Text(from.into()), Value::Text(to.into())],
@@ -150,17 +344,21 @@ impl Store {
 
     /// Move a space's index rows to a new space name.
     pub async fn rename_space(&self, from: &str, to: &str) -> turso::Result<()> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "UPDATE entries SET space = ?2 WHERE space = ?1",
-            vec![Value::Text(from.into()), Value::Text(to.into())],
-        )
-        .await?;
+        let conn = self.writer().await;
+        for table in ["entries", "entry_stats"] {
+            conn.execute(
+                &format!("UPDATE {table} SET space = ?2 WHERE space = ?1"),
+                vec![Value::Text(from.into()), Value::Text(to.into())],
+            )
+            .await?;
+        }
+        self.changed(from);
+        self.changed(to);
         Ok(())
     }
 
     pub async fn delete(&self, id: &str) -> turso::Result<()> {
-        let conn = self.conn.lock().await;
+        let conn = self.writer().await;
         conn.execute(
             "DELETE FROM docs WHERE id = ?1",
             vec![Value::Text(id.into())],
@@ -170,8 +368,9 @@ impl Store {
     }
 
     /// Every stored document id with its snapshot size.
+    #[tracing::instrument(name = "drive.store.docs", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn list(&self) -> turso::Result<Vec<(String, u64)>> {
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query("SELECT id, length(snapshot) FROM docs", ())
             .await?;
@@ -185,9 +384,22 @@ impl Store {
         Ok(out)
     }
 
+    /// Every stored document id (without reading the snapshots).
+    #[tracing::instrument(name = "drive.store.ids", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
+    pub async fn ids(&self) -> turso::Result<Vec<String>> {
+        let conn = self.reader().await;
+        let mut rows = conn.query("SELECT id FROM docs", ()).await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(text(row.get_value(0)?));
+        }
+        Ok(out)
+    }
+
     /// Replace a location's rows with a new index.
+    #[tracing::instrument(name = "drive.store.put_index", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn put_index(&self, space: &str, index: &LocationIndex) -> turso::Result<usize> {
-        let conn = self.conn.lock().await;
+        let conn = self.writer().await;
         // A request cut off mid-way (its client gone, an agent restarted
         // during a big upload) drops this future after BEGIN and leaves the
         // transaction open on the shared connection; every later BEGIN would
@@ -202,6 +414,12 @@ impl Store {
                 vec![Value::Text(space.into()), Value::Text(index.location.clone())],
             )
             .await?;
+            conn.execute(
+                "DELETE FROM entry_stats WHERE space = ?1 AND location = ?2",
+                vec![Value::Text(space.into()), Value::Text(index.location.clone())],
+            )
+            .await?;
+            let mut totals: HashMap<String, (u64, u64)> = HashMap::new();
             let mut stmt = conn
                 .prepare(
                     "INSERT INTO entries (space, location, parent, path, name, lname, dir, size, mtime, sampled, ext) \
@@ -209,6 +427,12 @@ impl Store {
                 )
                 .await?;
             for e in &index.entries {
+                let ext = if e.dir { String::new() } else { ext_of(e.name()) };
+                if !e.dir {
+                    let t = totals.entry(ext.clone()).or_default();
+                    t.0 += 1;
+                    t.1 += e.size;
+                }
                 stmt.execute(vec![
                     Value::Text(space.into()),
                     Value::Text(index.location.clone()),
@@ -220,7 +444,22 @@ impl Store {
                     Value::Integer(e.size as i64),
                     Value::Integer(e.mtime),
                     Value::Text(e.sampled.clone()),
-                    Value::Text(if e.dir { String::new() } else { ext_of(e.name()) }),
+                    Value::Text(ext),
+                ])
+                .await?;
+            }
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO entry_stats (space, location, ext, files, bytes) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .await?;
+            for (ext, (files, bytes)) in totals {
+                stmt.execute(vec![
+                    Value::Text(space.into()),
+                    Value::Text(index.location.clone()),
+                    Value::Text(ext),
+                    Value::Integer(files as i64),
+                    Value::Integer(bytes as i64),
                 ])
                 .await?;
             }
@@ -230,6 +469,7 @@ impl Store {
         match result {
             Ok(n) => {
                 conn.execute("COMMIT", ()).await?;
+                self.changed(space);
                 Ok(n)
             }
             Err(e) => {
@@ -240,13 +480,39 @@ impl Store {
     }
 
     pub async fn drop_index(&self, space: &str, location: &str) -> turso::Result<()> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "DELETE FROM entries WHERE space = ?1 AND location = ?2",
-            vec![Value::Text(space.into()), Value::Text(location.into())],
-        )
-        .await?;
+        let conn = self.writer().await;
+        for table in ["entries", "entry_stats"] {
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE space = ?1 AND location = ?2"),
+                vec![Value::Text(space.into()), Value::Text(location.into())],
+            )
+            .await?;
+        }
+        self.changed(space);
         Ok(())
+    }
+
+    /// A space's files and bytes, by extension and by location: read from
+    /// the totals kept as indexes come in, not from the files.
+    #[tracing::instrument(name = "drive.store.stats", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
+    pub async fn stats(&self, space: &str) -> turso::Result<Stats> {
+        let conn = self.reader().await;
+        let mut rows = conn
+            .query(
+                "SELECT location, ext, files, bytes FROM entry_stats WHERE space = ?1",
+                vec![Value::Text(space.into())],
+            )
+            .await?;
+        let mut s = Stats::default();
+        while let Some(row) = rows.next().await? {
+            s.add(
+                &text(row.get_value(0)?),
+                &text(row.get_value(1)?),
+                int(row.get_value(2)?).max(0) as u64,
+                int(row.get_value(3)?).max(0) as u64,
+            );
+        }
+        Ok(s)
     }
 
     fn found(row: &turso::Row) -> turso::Result<Found> {
@@ -276,7 +542,7 @@ impl Store {
     /// As [`Store::search`], and (when `sampled` is not empty) only files
     /// with one of those contents (sampled hashes): every copy of the
     /// files a tag is on.
-    #[tracing::instrument(name = "drive.store.search", skip_all)]
+    #[tracing::instrument(name = "drive.store.search", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn search_with(
         &self,
         space: &str,
@@ -311,7 +577,7 @@ impl Store {
         }
         // Files of some kinds, nothing else asked: one index range per kind.
         if words.is_empty() && sampled.is_empty() {
-            let conn = self.conn.lock().await;
+            let conn = self.reader().await;
             let mut out = Vec::new();
             for e in &exts {
                 let mut rows = conn
@@ -366,7 +632,7 @@ impl Store {
             " ORDER BY dir DESC, mtime DESC LIMIT ?{}",
             params.len()
         ));
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn.query(&sql, params).await?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().await? {
@@ -376,13 +642,14 @@ impl Store {
     }
 
     /// One entry of a location's index.
+    #[tracing::instrument(name = "drive.store.entry", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn entry(
         &self,
         space: &str,
         location: &str,
         path: &str,
     ) -> turso::Result<Option<Found>> {
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
@@ -401,14 +668,14 @@ impl Store {
     }
 
     /// A folder's entries in a location's index (`""`: its root).
-    #[tracing::instrument(name = "drive.store.list", skip_all)]
+    #[tracing::instrument(name = "drive.store.list", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn list_dir(
         &self,
         space: &str,
         location: &str,
         dir: &str,
     ) -> turso::Result<Vec<Found>> {
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
@@ -428,6 +695,7 @@ impl Store {
     }
 
     /// Every file of a location under a folder (`""`: all of it), by path.
+    #[tracing::instrument(name = "drive.store.under", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn under(
         &self,
         space: &str,
@@ -435,7 +703,7 @@ impl Store {
         prefix: &str,
     ) -> turso::Result<Vec<Found>> {
         let prefix = prefix.trim_matches('/');
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
@@ -456,8 +724,9 @@ impl Store {
     }
 
     /// Every indexed file in a space, for copies and protection.
+    #[tracing::instrument(name = "drive.store.files", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty, store.rows = Empty))]
     pub async fn files(&self, space: &str) -> turso::Result<Vec<drive_files::protect::FileRow>> {
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query(
                 "SELECT location, path, size, sampled FROM entries WHERE space = ?1 AND dir = 0",
@@ -472,14 +741,19 @@ impl Store {
                 size: int(row.get_value(2)?).max(0) as u64,
                 sampled: text(row.get_value(3)?),
             });
+            // A whole space is a long read: let the worker's other tasks run.
+            if out.len() % 4096 == 0 {
+                tokio::task::yield_now().await;
+            }
         }
+        tracing::Span::current().record("store.rows", out.len());
         Ok(out)
     }
 
     /// Every location holding this content.
-    #[tracing::instrument(name = "drive.store.copies", skip_all)]
+    #[tracing::instrument(name = "drive.store.copies", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn copies(&self, space: &str, sampled: &str, size: i64) -> turso::Result<Vec<Found>> {
-        let conn = self.conn.lock().await;
+        let conn = self.reader().await;
         let mut rows = conn
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
@@ -503,6 +777,7 @@ impl Store {
 mod tests {
     use super::*;
     use drive_files::index::IndexEntry;
+    use std::sync::Arc;
 
     fn file(path: &str, sampled: &str) -> IndexEntry {
         IndexEntry {
@@ -528,7 +803,7 @@ mod tests {
         };
         store.put_index("home", &index("l1")).await.unwrap();
         // A cut-off request left this open.
-        store.conn.lock().await.execute("BEGIN", ()).await.unwrap();
+        store.write.lock().await.execute("BEGIN", ()).await.unwrap();
         assert_eq!(store.put_index("home", &index("l2")).await.unwrap(), 1);
         let found = store.search_with("home", "a", &[], &[], 10).await.unwrap();
         assert_eq!(found.len(), 2);
@@ -578,7 +853,7 @@ mod tests {
         );
         // A database from before the column: filled in when it opens.
         store
-            .conn
+            .write
             .lock()
             .await
             .execute("UPDATE entries SET ext = ''", ())
@@ -592,6 +867,161 @@ mod tests {
             .unwrap();
         assert_eq!(names(found), vec!["Charts/Know Me.kf"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn index(location: &str, entries: Vec<IndexEntry>) -> LocationIndex {
+        LocationIndex {
+            location: location.into(),
+            root: String::new(),
+            built: 1,
+            entries,
+        }
+    }
+
+    fn sized(path: &str, size: u64) -> IndexEntry {
+        IndexEntry {
+            size,
+            ..file(path, "")
+        }
+    }
+
+    /// The kept totals against counting every file, as `/stats` did.
+    async fn assert_stats_match(store: &Store, space: &str) {
+        let slow = Stats::of_rows(&store.files(space).await.unwrap());
+        assert_eq!(store.stats(space).await.unwrap(), slow, "space {space}");
+    }
+
+    #[tokio::test]
+    async fn kept_totals_match_counting_every_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("node.db")).await.unwrap();
+        let folder = IndexEntry {
+            dir: true,
+            ..sized("Song", 0)
+        };
+        store
+            .put_index(
+                "home",
+                &index(
+                    "l1",
+                    vec![
+                        folder.clone(),
+                        sized("Song/a.WAV", 100),
+                        sized("Song/b.wav", 50),
+                        sized("Song/chart.kf", 7),
+                        sized("Makefile", 3),
+                        sized("Song/.hidden", 1),
+                    ],
+                ),
+            )
+            .await
+            .unwrap();
+        store
+            .put_index(
+                "home",
+                &index("l2", vec![sized("a.wav", 100), sized("x.pdf", 9)]),
+            )
+            .await
+            .unwrap();
+        store
+            .put_index("work", &index("l3", vec![sized("w.wav", 1)]))
+            .await
+            .unwrap();
+        assert_stats_match(&store, "home").await;
+        assert_stats_match(&store, "work").await;
+        let home = store.stats("home").await.unwrap();
+        assert_eq!((home.files, home.bytes), (7, 270));
+        assert_eq!(home.exts["wav"], (3, 250));
+        assert_eq!(home.exts[""], (1, 3));
+        assert_eq!(home.locations["l2"], (2, 109));
+
+        // A location's new index replaces its totals; a dropped one goes.
+        store
+            .put_index("home", &index("l1", vec![sized("only.flac", 5)]))
+            .await
+            .unwrap();
+        assert_stats_match(&store, "home").await;
+        store.drop_index("home", "l2").await.unwrap();
+        assert_stats_match(&store, "home").await;
+        assert_eq!(store.stats("home").await.unwrap().files, 1);
+
+        // A renamed space takes its totals along.
+        store.rename_space("work", "studio").await.unwrap();
+        assert_stats_match(&store, "studio").await;
+        assert_eq!(store.stats("work").await.unwrap(), Stats::default());
+        assert_eq!(store.stats("studio").await.unwrap().files, 1);
+    }
+
+    #[tokio::test]
+    async fn a_database_from_before_the_totals_counts_them_when_it_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.db");
+        let store = Store::open(&path).await.unwrap();
+        for (space, loc) in [("home", "l1"), ("home", "l2"), ("work", "l3")] {
+            store
+                .put_index(
+                    space,
+                    &index(
+                        loc,
+                        vec![sized("a.wav", 10), sized("b.kf", 2), sized("c", 1)],
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        // As an older node left it: rows, no totals.
+        store
+            .write
+            .lock()
+            .await
+            .execute("DROP TABLE entry_stats", ())
+            .await
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).await.unwrap();
+        assert_stats_match(&store, "home").await;
+        assert_stats_match(&store, "work").await;
+        assert_eq!(store.stats("home").await.unwrap().files, 6);
+    }
+
+    #[tokio::test]
+    async fn index_writes_move_the_generation_and_reads_see_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("node.db")).await.unwrap();
+        let g0 = store.generation("home");
+        store
+            .put_index("home", &index("l1", vec![sized("a.wav", 1)]))
+            .await
+            .unwrap();
+        let g1 = store.generation("home");
+        assert_ne!(g0, g1);
+        assert_eq!(store.generation("work"), 0);
+        // Written on the write connection, read on a read one.
+        assert_eq!(store.files("home").await.unwrap().len(), 1);
+        store.drop_index("home", "l1").await.unwrap();
+        assert_ne!(store.generation("home"), g1);
+        assert!(store.files("home").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_long_read_does_not_hold_up_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&dir.path().join("node.db")).await.unwrap());
+        store.save("org/drive:space", vec![1, 2, 3]).await.unwrap();
+        // Every read connection but one is held, and the writer too.
+        let mut held = Vec::new();
+        for _ in 0..READERS - 1 {
+            held.push(store.reader().await);
+        }
+        let writer = store.writer().await;
+        let quick = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            store.ids().await.unwrap()
+        })
+        .await
+        .expect("a read with a connection free does not wait");
+        assert_eq!(quick, ["org/drive:space"]);
+        drop(writer);
+        drop(held);
     }
 
     #[tokio::test]

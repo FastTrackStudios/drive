@@ -80,8 +80,14 @@ pub fn Overview(space: String) -> Element {
         div { class: "pane wide",
             div { class: "hero",
                 div { class: "stat",
-                    b { "{human(bytes)}" }
-                    span { "in {files} files" }
+                    if st.is_some() {
+                        b { "{human(bytes)}" }
+                        span { "in {files} files" }
+                    } else {
+                        // Counting is the node's: the rest of the page is
+                        // drawn meanwhile.
+                        span { class: "loading", "Counting…" }
+                    }
                 }
                 div { class: "stat",
                     b { "{live} of {devices.len()}" }
@@ -174,7 +180,10 @@ fn Previews() -> Element {
         get("/sidecars/stats".to_string()).await
     });
     let Some(st) = st().flatten() else {
-        return rsx! {};
+        // Still asked, or the node has none to say: a line, not a gap.
+        return rsx! {
+            div { class: "previews loading", "Previews: asking the node…" }
+        };
     };
     let count = st["count"].as_u64().unwrap_or(0);
     let bytes = st["bytes"].as_u64().unwrap_or(0);

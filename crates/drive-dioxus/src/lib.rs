@@ -224,10 +224,23 @@ async fn boot_inner() -> Boot {
 /// once the org is known; signs in first when the node asks for it.
 #[component]
 pub fn DriveProvider(children: Element) -> Element {
-    let mut state = use_signal(|| Boot::Loading);
+    // The last boot when it still holds, so the apps draw at once; the
+    // node's answer follows and replaces it only when it differs.
+    let mut state = use_signal(|| remembered().unwrap_or(Boot::Loading));
     use_future(move || async move {
         let b = boot().await;
-        state.set(b);
+        match &b {
+            Boot::Ready { .. } => remember(&b),
+            Boot::SignIn(_) => env::remove(BOOT_KEY),
+            _ => {}
+        }
+        // A node that does not answer now leaves a remembered boot running:
+        // the apps show it offline, and catch up when it comes back.
+        let keep = matches!(b, Boot::Failed(_) | Boot::Loading)
+            && matches!(*state.peek(), Boot::Ready { .. });
+        if !keep && *state.peek() != b {
+            state.set(b);
+        }
     });
     match state() {
         Boot::Ready {
@@ -244,7 +257,47 @@ pub fn DriveProvider(children: Element) -> Element {
         Boot::Failed(why) => rsx! {
             BootMessage { why }
         },
-        Boot::Loading => rsx! {},
+        Boot::Loading => rsx! {
+            div { style: CARD,
+                span { style: "color:#a1a1aa;font-size:14px;", "Opening Drive…" }
+            }
+        },
+    }
+}
+
+const BOOT_KEY: &str = "drive:boot";
+
+/// The last boot that reached the node, when it can stand again without
+/// asking: the same org is wanted and, on a node with an issuer, the
+/// token boot would send is known without a refresh (boot then gives the
+/// same one, so its answer changes nothing).
+fn remembered() -> Option<Boot> {
+    let v: serde_json::Value = serde_json::from_str(&env::get(BOOT_KEY)?).ok()?;
+    let org = v["org"].as_str().filter(|o| !o.is_empty())?.to_string();
+    if known_org().is_some_and(|o| o != org) {
+        return None;
+    }
+    let issuer = v["issuer"].as_bool()?;
+    let token = if issuer {
+        auth::settled_token(60_000.0)?
+    } else {
+        None
+    };
+    Some(Boot::Ready {
+        org,
+        token,
+        who: v["who"].as_str().unwrap_or_default().to_string(),
+        issuer,
+    })
+}
+
+fn remember(b: &Boot) {
+    if let Boot::Ready {
+        org, who, issuer, ..
+    } = b
+    {
+        let v = serde_json::json!({ "org": org, "who": who, "issuer": issuer });
+        env::set(BOOT_KEY, &v.to_string());
     }
 }
 
