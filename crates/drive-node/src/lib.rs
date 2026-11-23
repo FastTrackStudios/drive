@@ -388,6 +388,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                 .await
                 .expect("the browse cache opens"),
         ),
+        quiet: browse::Quiet::default(),
     };
     let sidecar_routes = sidecars::Routes {
         sc: sidecar_store,

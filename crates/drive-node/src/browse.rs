@@ -39,8 +39,13 @@ use crate::rooms::{FetchError, Rooms};
 use crate::sidecars::{self, Sidecars};
 
 /// How long the node waits for a device: to list or stat, to read a
-/// chunk, to make sidecars.
-const QUICK: Duration = Duration::from_secs(20);
+/// chunk, to make sidecars. A listing or a stat is milliseconds on an
+/// agent that is answering; 8 s still covers a slow disk waking up, and a
+/// device that has not answered by then is quiet ([`Quiet`]).
+const QUICK: Duration = Duration::from_secs(8);
+/// How long a device that did not answer is left alone: browsing it
+/// answers at once from what was seen last until then.
+const QUIET_FOR: Duration = Duration::from_secs(60);
 const CHUNK: Duration = Duration::from_secs(60);
 const MAKE: Duration = Duration::from_secs(180);
 /// Folder pages kept for offline browsing, at most.
@@ -158,6 +163,70 @@ pub struct Routes {
     pub rooms: Arc<Rooms>,
     pub sc: Arc<Sidecars>,
     pub seen: Arc<Seen>,
+    /// Devices that did not answer a moment ago.
+    pub quiet: Quiet,
+}
+
+/// The devices whose agent is connected but did not answer (an agent busy
+/// or stuck), and until when they are left alone: a page that lists every
+/// computer then draws from what was seen last at once, instead of every
+/// request waiting out the timeout again.
+#[derive(Clone, Default)]
+pub struct Quiet(Arc<std::sync::Mutex<HashMap<(String, String), std::time::Instant>>>);
+
+impl Quiet {
+    /// Whether `device` was quiet a moment ago.
+    #[must_use]
+    pub fn is_quiet(&self, space: &str, device: &str) -> bool {
+        let mut q = self.0.lock().expect("quiet");
+        let key = (space.to_owned(), device.to_owned());
+        match q.get(&key) {
+            Some(until) if *until > std::time::Instant::now() => true,
+            Some(_) => {
+                q.remove(&key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn mark(&self, space: &str, device: &str, for_: Duration) {
+        self.0.lock().expect("quiet").insert(
+            (space.to_owned(), device.to_owned()),
+            std::time::Instant::now() + for_,
+        );
+    }
+
+    fn clear(&self, space: &str, device: &str) {
+        self.0
+            .lock()
+            .expect("quiet")
+            .remove(&(space.to_owned(), device.to_owned()));
+    }
+}
+
+/// Ask a device, unless it was quiet a moment ago: then at once as if it
+/// had timed out (the callers answer from what was seen last). A timeout
+/// marks it quiet; any answer clears that.
+async fn ask_device(
+    s: &Routes,
+    space: &str,
+    device: &str,
+    what: Browse,
+) -> Result<Browsed, FetchError> {
+    if s.quiet.is_quiet(space, device) {
+        return Err(FetchError::Timeout);
+    }
+    let answer = s.rooms.browse(space, device, what, QUICK).await;
+    match &answer {
+        Err(FetchError::Timeout) => {
+            tracing::warn!(browse.device = %device, browse.wait_s = QUICK.as_secs(), "a device did not answer: left alone for a minute");
+            s.quiet.mark(space, device, QUIET_FOR);
+        }
+        Err(FetchError::Offline(_)) => {}
+        _ => s.quiet.clear(space, device),
+    }
+    answer
 }
 
 type Q = Query<HashMap<String, String>>;
@@ -318,7 +387,7 @@ pub async fn roots(
         return answer(StatusCode::NOT_FOUND, "missing", "no such device");
     };
     let at = [space.as_str(), device.as_str(), "", "", "roots"];
-    match s.rooms.browse(&space, &device, Browse::Roots, QUICK).await {
+    match ask_device(&s, &space, &device, Browse::Roots).await {
         Ok(Browsed::Roots(r)) => {
             let roots = serde_json::to_value(&r).unwrap_or_default();
             s.seen.put_page(at, &roots.to_string()).await;
@@ -330,7 +399,11 @@ pub async fn roots(
             "failed",
             "an answer of the wrong kind",
         ),
-        Err(FetchError::Offline(_)) | Err(FetchError::Timeout) => {
+        Err(e @ (FetchError::Offline(_) | FetchError::Timeout)) => {
+            let why = match e {
+                FetchError::Timeout => format!("{name} is not answering"),
+                _ => format!("{name} is offline"),
+            };
             // What was seen last, else the volumes the registry has.
             let (roots, as_of) = match s.seen.page(at).await {
                 Some((j, t)) => (serde_json::from_str(&j).unwrap_or_default(), t),
@@ -357,7 +430,7 @@ pub async fn roots(
             };
             Json(
                 serde_json::json!({ "online": false, "device_name": name, "roots": roots,
-                "as_of": as_of, "why": format!("{name} is offline") }),
+                "as_of": as_of, "why": why }),
             )
             .into_response()
         }
@@ -387,7 +460,7 @@ pub async fn list(
         limit,
         hidden,
     };
-    match s.rooms.browse(&space, &device, ask, QUICK).await {
+    match ask_device(&s, &space, &device, ask).await {
         Ok(Browsed::Listing(l)) => {
             let mut v = serde_json::to_value(&l).unwrap_or_default();
             s.seen.put_page(at, &v.to_string()).await;
@@ -406,7 +479,11 @@ pub async fn list(
                 v["online"] = false.into();
                 v["path"] = path.into();
                 v["as_of"] = t.into();
-                v["why"] = format!("{name} is offline").into();
+                v["why"] = match e {
+                    FetchError::Timeout => format!("{name} is not answering"),
+                    _ => format!("{name} is offline"),
+                }
+                .into();
                 Json(v).into_response()
             }
             None => failed(e, &name, &space, &device),
@@ -458,7 +535,7 @@ pub async fn file(
         start: 0,
         len: 0,
     };
-    let size = match s.rooms.browse(&space, &device, stat, QUICK).await {
+    let size = match ask_device(&s, &space, &device, stat).await {
         Ok(Browsed::Chunk(c)) => c.size,
         Ok(_) => {
             return answer(
@@ -600,7 +677,7 @@ pub async fn sidecar(
                 root: root.into(),
                 path: path.into(),
             };
-            match s.rooms.browse(&space, &device, ask, QUICK).await {
+            match ask_device(&s, &space, &device, ask).await {
                 Ok(Browsed::Key(k)) if drive_sidecars::valid_key(&k) => {
                     if size >= 0 && mtime >= 0 {
                         s.seen.put_key(at, size, mtime, &k).await;
@@ -690,7 +767,7 @@ pub async fn index(
         path: r.path.trim_matches('/').to_string(),
         name: name.to_string(),
     };
-    match s.rooms.browse(&space, &device, ask, QUICK).await {
+    match ask_device(&s, &space, &device, ask).await {
         Ok(Browsed::Key(id)) => {
             tracing::info!(browse.space = %space, browse.device = %device, location.id = %id, "a browsed folder became a location");
             Json(serde_json::json!({ "location": id })).into_response()
@@ -770,5 +847,28 @@ mod tests {
             status(&app, Some("tm"), "/browse/elsewhere/dev1/roots").await,
             StatusCode::FORBIDDEN
         );
+    }
+}
+
+#[cfg(test)]
+mod quiet_tests {
+    use super::*;
+
+    #[test]
+    fn a_quiet_device_is_left_alone_until_its_time_is_up() {
+        let q = Quiet::default();
+        assert!(!q.is_quiet("org", "mac"));
+        q.mark("org", "mac", Duration::from_secs(60));
+        assert!(q.is_quiet("org", "mac"));
+        // Another device, or the same one in another org, is not.
+        assert!(!q.is_quiet("org", "pc"));
+        assert!(!q.is_quiet("other", "mac"));
+        // An answer clears it.
+        q.clear("org", "mac");
+        assert!(!q.is_quiet("org", "mac"));
+        // A time that is up lets the device be asked again.
+        q.mark("org", "mac", Duration::ZERO);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!q.is_quiet("org", "mac"));
     }
 }
