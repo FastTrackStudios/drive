@@ -1,5 +1,6 @@
 /target
 /data
+/.dev
 .devenv/
 .devenv.flake.nix
 .direnv/

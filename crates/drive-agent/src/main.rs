@@ -134,12 +134,36 @@ fn out(line: impl AsRef<str>) {
     let _ = writeln!(std::io::stdout(), "{}", line.as_ref());
 }
 
-fn default_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
+fn resolve_dir(
+    cli: Option<PathBuf>,
+    env_dir: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    if let Some(d) = cli {
+        return d;
+    }
+    if let Some(d) = env_dir.filter(|v| !v.is_empty()) {
+        return PathBuf::from(d);
+    }
+    let base = xdg
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .or_else(|| {
+            home.filter(|v| !v.is_empty())
+                .map(|h| PathBuf::from(h).join(".local/share"))
+        })
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("drive-agent")
+}
+
+fn default_dir() -> PathBuf {
+    resolve_dir(
+        None,
+        std::env::var_os("DRIVE_AGENT_DIR"),
+        std::env::var_os("XDG_DATA_HOME"),
+        std::env::var_os("HOME"),
+    )
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -1876,5 +1900,36 @@ fn human(n: u64) -> String {
         1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.0),
         1_048_576..1_073_741_824 => format!("{:.1} MB", n as f64 / 1_048_576.0),
         _ => format!("{:.1} GB", n as f64 / 1_073_741_824.0),
+    }
+}
+
+#[cfg(test)]
+mod dir_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn dir_precedence_matches_drive_local() {
+        let cli = Some(PathBuf::from("/cli"));
+        let env = Some(OsString::from("/env-agent"));
+        let xdg = Some(OsString::from("/xdg"));
+        let home = Some(OsString::from("/home/u"));
+
+        assert_eq!(
+            resolve_dir(cli, env.clone(), xdg.clone(), home.clone()),
+            PathBuf::from("/cli")
+        );
+        assert_eq!(
+            resolve_dir(None, env, xdg.clone(), home.clone()),
+            PathBuf::from("/env-agent")
+        );
+        assert_eq!(
+            resolve_dir(None, Some(OsString::new()), xdg, home.clone()),
+            PathBuf::from("/xdg/drive-agent")
+        );
+        assert_eq!(
+            resolve_dir(None, None, None, home),
+            PathBuf::from("/home/u/.local/share/drive-agent")
+        );
     }
 }
