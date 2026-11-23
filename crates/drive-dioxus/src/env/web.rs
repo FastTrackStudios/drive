@@ -17,7 +17,11 @@ pub fn now_ms() -> f64 {
 /// (month 0–11, day, year) in the page's time zone.
 pub fn date_parts(ms: f64) -> (u32, u32, i64) {
     let date = js_sys::Date::new(&ms.into());
-    (date.get_month(), date.get_date(), i64::from(date.get_full_year()))
+    (
+        date.get_month(),
+        date.get_date(),
+        i64::from(date.get_full_year()),
+    )
 }
 
 /// 32 random bytes, hex (`crypto.getRandomValues`: there on every page,
@@ -47,9 +51,7 @@ pub fn remove(key: &str) {
 }
 
 pub fn origin() -> String {
-    location()
-        .and_then(|l| l.origin().ok())
-        .unwrap_or_default()
+    location().and_then(|l| l.origin().ok()).unwrap_or_default()
 }
 
 pub fn href() -> String {

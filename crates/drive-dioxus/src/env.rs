@@ -20,7 +20,10 @@ pub fn encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         let keep = b.is_ascii_alphanumeric()
-            || matches!(b, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')');
+            || matches!(
+                b,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            );
         if keep {
             out.push(b as char);
         } else {
@@ -86,7 +89,10 @@ mod tests {
         assert_eq!(encode_component("a b/c?d=é"), "a%20b%2Fc%3Fd%3D%C3%A9");
         assert_eq!(decode_component("a%20b%2Fc%3Fd%3D%C3%A9"), "a b/c?d=é");
         assert_eq!(decode_component("100%"), "100%");
-        assert_eq!(query_param("?org=my%20org&x=1", "org").as_deref(), Some("my org"));
+        assert_eq!(
+            query_param("?org=my%20org&x=1", "org").as_deref(),
+            Some("my org")
+        );
     }
 
     #[test]
@@ -100,7 +106,10 @@ mod tests {
 /// A path with its ids folded (`/fetch/{}/{}`), so a route's spans group.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn route_of(path: &str) -> String {
-    let path = path.split("://").nth(1).map_or(path, |rest| rest.find('/').map_or("/", |i| &rest[i..]));
+    let path = path
+        .split("://")
+        .nth(1)
+        .map_or(path, |rest| rest.find('/').map_or("/", |i| &rest[i..]));
     path.split('/')
         .map(|p| {
             if p.len() > 12 || p.chars().any(|c| c.is_ascii_digit()) && p.len() > 6 {
