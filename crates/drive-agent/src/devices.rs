@@ -58,6 +58,9 @@ const OFF_QUICK: Duration = Duration::from_millis(1500);
 const CHUNK: u64 = 4 << 20;
 const CHUNK_WAIT: Duration = Duration::from_secs(30);
 const CHUNKS_KEPT: usize = 8;
+/// A device that did not answer in time is not asked again for this long:
+/// its disks answer "host is down" at once meanwhile.
+const SLOW_REST: Duration = Duration::from_secs(60);
 
 pub const LOCATIONS: &str = "Locations";
 pub const DISKS: &str = "Disks";
@@ -98,6 +101,8 @@ pub struct DevicesFs {
     disks: Mutex<HashMap<String, (Instant, Disks)>>,
     lists: Mutex<HashMap<(String, String, String), (Instant, Listed)>>,
     pieces: Mutex<Vec<Piece>>,
+    /// Devices that last timed out, and when.
+    slow: Mutex<HashMap<String, Instant>>,
     uid: u32,
     gid: u32,
 }
@@ -126,6 +131,7 @@ impl DevicesFs {
             disks: Mutex::new(HashMap::new()),
             lists: Mutex::new(HashMap::new()),
             pieces: Mutex::new(Vec::new()),
+            slow: Mutex::new(HashMap::new()),
             uid,
             gid,
         }
@@ -506,6 +512,15 @@ impl DevicesFs {
         range: Option<String>,
         wait: Duration,
     ) -> Result<(u16, Vec<u8>), Errno> {
+        if self
+            .slow
+            .lock()
+            .expect("slow")
+            .get(device)
+            .is_some_and(|t| t.elapsed() < SLOW_REST)
+        {
+            return Err(Errno::EHOSTDOWN);
+        }
         let (node, space) = {
             let c = self.agent.cfg.lock().expect("cfg");
             (c.node_http(), c.space.clone())
@@ -535,6 +550,11 @@ impl DevicesFs {
         });
         match r {
             Ok((status, body)) => {
+                if status == 504 {
+                    self.slow.lock().expect("slow").insert(device.to_string(), Instant::now());
+                } else {
+                    self.slow.lock().expect("slow").remove(device);
+                }
                 span.record("browse.status", status);
                 span.record("browse.bytes", body.len() as u64);
                 span.record("browse.outcome", if status < 400 { "ok" } else { "refused" });
@@ -542,6 +562,9 @@ impl DevicesFs {
             }
             Err(e) => {
                 let timed_out = e.is_timeout();
+                if timed_out {
+                    self.slow.lock().expect("slow").insert(device.to_string(), Instant::now());
+                }
                 span.record("browse.outcome", if timed_out { "timeout" } else { "failed" });
                 Err(if !self.online(device) {
                     Errno::EHOSTDOWN

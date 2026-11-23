@@ -56,6 +56,23 @@ pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
     crate::telemetry::mark_rss();
 }
 
+/// Who is here and where, at once and without the indexes: the devices,
+/// their locations and disks show while a long index pass runs.
+pub fn refresh_devices(a: &Agent, view: &RwLock<View>) {
+    let devices = space::devices(&a.space)
+        .into_iter()
+        .map(|d| (d.id, d.name))
+        .collect();
+    let volumes = space::volumes(&a.space);
+    view.write().expect("view").set_devices(
+        &a.device_id(),
+        devices,
+        space::locations(&a.space),
+        online_devices(a),
+        &volumes,
+    );
+}
+
 /// Run until the process stops.
 pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let (space_name, me) = {
@@ -119,6 +136,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // at a time, so a burst of large files cannot fill the machine.
     let fetching = Arc::new(tokio::sync::Semaphore::new(4));
     let (indexed_tx, mut indexed) = mpsc::unbounded_channel::<String>();
+    refresh_devices(&a, &view);
     {
         let (a, view, lock) = (a.clone(), view.clone(), indexing.clone());
         tokio::spawn(async move {
@@ -381,6 +399,11 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     last_view = now;
                     a.announce();
                     a.publish_endpoint();
+                    // Indexing may hold the trees for long: who is online
+                    // still changes.
+                    if indexing.try_lock().is_err() {
+                        refresh_devices(&a, &view);
+                    }
                     if !viewing.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         let (a, view, viewing, lock) = (a.clone(), view.clone(), viewing.clone(), indexing.clone());
                         tokio::spawn(async move {
