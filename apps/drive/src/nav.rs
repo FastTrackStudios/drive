@@ -6,6 +6,7 @@
 //! layout saved in the browser opens every tab where it was.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use app_shell::{Pane, PaneId, Workspace};
 use dioxus::prelude::*;
@@ -367,9 +368,20 @@ pub fn use_nav() -> Nav {
 /// The kind of tab Drive draws: a place.
 pub const TAB_KIND: &str = "drive.place";
 
+fn pane_id(now_ms: u64) -> String {
+    let random = crate::host::uuid();
+    if !random.is_empty() {
+        return format!("tab-{random}");
+    }
+
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    format!("tab-{now_ms}-{sequence}")
+}
+
 /// A new tab's pane, at `at`.
 pub fn new_pane(at: At, title: &str) -> Pane {
-    let id = format!("tab-{}", crate::host::now_ms() as u64);
+    let id = pane_id(crate::host::now_ms() as u64);
     let mut pane = Pane::new(id, TAB_KIND, title);
     pane.state = TabState {
         at,
@@ -382,6 +394,11 @@ pub fn new_pane(at: At, title: &str) -> Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panes_opened_in_the_same_millisecond_get_distinct_ids() {
+        assert_ne!(pane_id(42), pane_id(42));
+    }
 
     #[test]
     fn a_tab_state_reads_back_what_it_wrote() {
