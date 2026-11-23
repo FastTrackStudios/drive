@@ -140,7 +140,7 @@ enum Boot {
 /// Where the provider starts: finish a sign-in coming back from the
 /// issuer, refresh the token, ask the node who this is and which orgs they
 /// are in, and pick the org.
-#[tracing::instrument(name = "drive.app.boot", skip_all, fields(boot.outcome = tracing::field::Empty, boot.org = tracing::field::Empty, boot.orgs = tracing::field::Empty))]
+#[tracing::instrument(name = "drive.app.boot", skip_all, fields(boot.outcome = tracing::field::Empty, boot.offline = tracing::field::Empty, boot.org = tracing::field::Empty, boot.orgs = tracing::field::Empty))]
 async fn boot() -> Boot {
     let b = boot_inner().await;
     let span = tracing::Span::current();
@@ -177,7 +177,7 @@ async fn boot_inner() -> Boot {
         .map(|b| ("authorization", b.as_str()))
         .collect();
     let Some((_, v)) = auth::fetch("GET", "/orgs", &headers, None).await else {
-        return Boot::Failed("the node did not answer".into());
+        return offline(token);
     };
     let issuer: Option<auth::Issuer> = serde_json::from_value(v["auth"].clone()).ok();
     if v["signed_in"] == serde_json::Value::Bool(false) {
@@ -218,6 +218,28 @@ async fn boot_inner() -> Boot {
         },
         issuer: issuer.is_some(),
     }
+}
+
+/// No node answered. A native app opens anyway, on this device's copies
+/// of the org it used last (its first start: `home`), and the client
+/// connects when a node appears; edits made meanwhile are sent then. A
+/// page, served by the node, has nothing to fall back on.
+#[cfg(not(target_arch = "wasm32"))]
+fn offline(token: Option<String>) -> Boot {
+    tracing::Span::current().record("boot.offline", true);
+    let org = known_org().unwrap_or_else(|| "home".to_string());
+    env::set(ORG_KEY, &org);
+    Boot::Ready {
+        org,
+        token,
+        who: String::new(),
+        issuer: false,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn offline(_token: Option<String>) -> Boot {
+    Boot::Failed("the node did not answer".into())
 }
 
 /// Connects to the Drive node this page was served from, and provides it,

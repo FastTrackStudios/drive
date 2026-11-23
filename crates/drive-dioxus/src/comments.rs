@@ -34,12 +34,7 @@ pub fn ago(ms: i64) -> String {
             const M: [&str; 12] = [
                 "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
             ];
-            format!(
-                "{} {}, {}",
-                M[month as usize % 12],
-                day,
-                year
-            )
+            format!("{} {}, {}", M[month as usize % 12], day, year)
         }
     }
 }
