@@ -507,6 +507,11 @@ pub fn convert(
     settings: &Settings,
 ) -> Converted {
     let mut out = Converted::default();
+    // A source supplies relative paths with a nonempty name at each level.
+    let files: Vec<_> = files
+        .iter()
+        .filter(|file| file.path.split('/').all(|part| !part.is_empty()))
+        .collect();
 
     // Folders: original path → slugged path, unique among siblings.
     let mut dirs: BTreeMap<String, String> = BTreeMap::new();
@@ -547,7 +552,11 @@ pub fn convert(
     // Notes, their frontmatter read; folder notes found.
     let mut notes: Vec<Note> = Vec::new();
     let mut section_note: HashMap<String, usize> = HashMap::new();
-    let mut md: Vec<&SourceFile> = files.iter().filter(|f| is_markdown(&f.path)).collect();
+    let mut md: Vec<&SourceFile> = files
+        .iter()
+        .copied()
+        .filter(|f| is_markdown(&f.path))
+        .collect();
     md.sort_by(|a, b| a.path.cmp(&b.path));
     for f in &md {
         let (dir, file) = split_dir(&f.path);
@@ -656,7 +665,7 @@ pub fn convert(
         by_title: HashMap::new(),
     };
     let mut asset_names: HashMap<String, HashSet<String>> = HashMap::new();
-    for f in files.iter().filter(|f| !is_markdown(&f.path)) {
+    for f in files.iter().copied().filter(|f| !is_markdown(&f.path)) {
         let (dir, file) = split_dir(&f.path);
         let dslug = dirs[dir].clone();
         let ext = file
@@ -689,8 +698,9 @@ pub fn convert(
             url: n.url.clone(),
             source: n.path.clone(),
         };
-        let no_ext = n.path.strip_suffix(".md").unwrap_or(&n.path);
-        index.by_path.insert(no_ext.to_lowercase(), t.clone());
+        let path = n.path.to_lowercase();
+        let no_ext = path.strip_suffix(".md").unwrap_or(&path);
+        index.by_path.insert(no_ext.to_string(), t.clone());
         index
             .by_name
             .entry(stem(split_dir(&n.path).1).to_lowercase())
@@ -816,13 +826,16 @@ mod tests {
             ),
             ("Basics/Secret.md", "---\npublish: false\n---\nhidden\n"),
             ("Harmony/Harmony.md", "Chords and how they move.\n"),
-            ("Harmony/Chords.md", "Built from [[Scales|scales]]. ![[circle.png|300]]\n"),
+            ("Harmony/Chords.MD", "Built from [[Scales|scales]]. ![[circle.png|300]]\n"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
         let mut files: Vec<SourceFile> = texts.keys().map(|k| file(k)).collect();
         files.push(file("Basics/circle.png"));
+        files.push(file("/ignored/page.md"));
+        files.push(file("//ignored/image.png"));
+        files.push(file("Basics//ignored.png"));
         files.push(file(".obsidian/app.json.md"));
         files.retain(|f| !f.path.starts_with('.'));
         (files, texts)
