@@ -14,6 +14,8 @@
 //! - `policies`: protection rules (3-2-1 and the like) over locations;
 //! - `devices.<id>.build_group`: which devices share kache build caches
 //!   (docs/kache.md);
+//! - `adopted`: folders taken over in place, by the logical path they
+//!   show at in the Drive tree ([`crate::adopt`]);
 //! - `nodes`: the iroh endpoint ids of the nodes that keep the space (a
 //!   device's own endpoint is `iroh` in its `devices` entry).
 //!

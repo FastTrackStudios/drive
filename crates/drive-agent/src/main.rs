@@ -28,6 +28,11 @@
 //! drive [--dir DIR] search WORDS…                 # every device's files
 //! drive [--dir DIR] copies LOCATION PATH          # where else a file is
 //!
+//! Adopting a folder in place (docs/adopt.md; nothing is copied or moved):
+//! drive [--dir DIR] adopt FOLDER --as LOGICAL/PATH # FOLDER shows at MOUNT/LOGICAL/PATH
+//! drive [--dir DIR] adopt --list                  # every adopted folder
+//! drive [--dir DIR] unadopt LOGICAL/PATH          # the mapping only; the files stay
+//!
 //! Tags and fields (docs/tags.md; THING: a file here, drive:PATH, LOCATION:PATH,
 //! project:NAME, doc:ID):
 //! drive [--dir DIR] tag ls [THING] | add THING TAG… | rm THING TAG…
@@ -84,6 +89,9 @@
 //! What this command line prints is its output, on stdout; the mount's
 //! diagnostics go through `tracing` to stderr.
 
+mod adopt;
+#[cfg(feature = "mount")]
+mod adopt_fs;
 mod agent;
 mod apps;
 mod available;
@@ -586,7 +594,9 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                         guard.clone(),
                     )
                 });
-                one::OneFs::new(fs::DriveFs::new(a.clone(), rt.clone()), devices)
+                // Adopted folders show at their logical paths (adopt_fs).
+                let one = one::OneFs::new(fs::DriveFs::new(a.clone(), rt.clone()), devices);
+                adopt_fs::AdoptFs::new(one, a.clone(), rt.clone())
             })
             .await?;
             let others = match &alone {
@@ -761,6 +771,77 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 ));
             }
             settle(&a).await;
+        }
+        "adopt" if args.iter().any(|x| x == "--list") => {
+            let a = start(dir).await?;
+            let locations = space::locations(&a.space);
+            let devices = space::devices(&a.space);
+            for ad in a.adoptions() {
+                let (dev, place) = match locations.iter().find(|l| l.id == ad.location) {
+                    Some(l) => (
+                        devices
+                            .iter()
+                            .find(|d| d.id == l.device)
+                            .map_or("?".into(), |d| d.name.clone()),
+                        drive_files::adopt::join(&l.path, &ad.sub),
+                    ),
+                    None => ("?".into(), format!("(location {} is gone)", ad.location)),
+                };
+                out(format!("{:<28} {:<16} {place}", ad.at, dev));
+            }
+        }
+        "adopt" => {
+            let usage = "adopt FOLDER --as LOGICAL/PATH | adopt --list";
+            let at = flag(args, "--as").ok_or(usage)?;
+            let mut rest = args[1..].iter();
+            let mut folder = None;
+            while let Some(x) = rest.next() {
+                if x == "--as" {
+                    rest.next();
+                } else if folder.is_none() {
+                    folder = Some(x.clone());
+                }
+            }
+            let folder = folder.ok_or(usage)?;
+            let a = start(dir).await?;
+            let r = a.adopt(Path::new(&folder), &at).await?;
+            settle(&a).await;
+            let how = if r.new_location {
+                format!("a new location, {}", r.location.name)
+            } else {
+                let sub = if r.adoption.sub.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", r.adoption.sub)
+                };
+                format!("in the location {}{sub}", r.location.name)
+            };
+            out(format!(
+                "{folder} is adopted at {}: {how}. Nothing was copied or moved.",
+                r.adoption.at
+            ));
+            match r.indexed {
+                Some(Ok(st)) => out(format!(
+                    "indexed: {} files, {} folders, {}",
+                    st.files,
+                    st.dirs,
+                    human(st.bytes)
+                )),
+                Some(Err(e)) => out(format!(
+                    "not indexed yet ({e}); the agent indexes it on its next pass"
+                )),
+                None => {}
+            }
+        }
+        "unadopt" => {
+            let at = args.get(1).ok_or("unadopt LOGICAL/PATH")?.clone();
+            let a = start(dir).await?;
+            let ad = a.unadopt(&at)?;
+            settle(&a).await;
+            out(format!(
+                "{} is no longer adopted; its folder, files and location are as they were.",
+                ad.at
+            ));
         }
         "tag" => tagging::command(dir, args).await?,
         // An MCP server on stdio for AI agents (docs/agents.md): stdout is

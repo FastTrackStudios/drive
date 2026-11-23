@@ -102,6 +102,16 @@ impl OneFs {
         OneFs { drive, devices }
     }
 
+    /// The Drive tree's side.
+    pub(crate) fn drive(&self) -> &DriveFs {
+        &self.drive
+    }
+
+    /// The devices' folder's inode, when it is on.
+    pub(crate) fn devices_root(&self) -> Option<INodeNo> {
+        self.devices.as_ref().map(DevicesFs::root_ino)
+    }
+
     fn folder(&self) -> bool {
         self.devices.is_some()
     }

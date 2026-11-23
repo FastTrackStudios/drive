@@ -1,5 +1,7 @@
 //! Drive's files.
 //!
+//! - [`adopt`]: folders taken over in place, mapped into the Drive tree at
+//!   a logical path (`drive adopt`).
 //! - [`tree`]: one space's file tree, a Loro tree in the document
 //!   `drive:files:<space>`: folders and files with their names, sizes,
 //!   times and content hashes, never their bytes.
@@ -18,6 +20,7 @@
 //! - [`storage`]: a storage's full configuration, credentials included, as
 //!   kept on the one device that runs it (never synced).
 
+pub mod adopt;
 #[cfg(feature = "storage")]
 pub mod blob;
 pub mod hash;

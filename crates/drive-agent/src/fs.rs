@@ -129,6 +129,17 @@ impl DriveFs {
         Ok(rows)
     }
 
+    /// A folder's path in the tree (`""`: the top); `None` for a file or
+    /// an unknown inode.
+    pub(crate) fn folder_path(&self, ino: INodeNo) -> Option<String> {
+        match self.id_of(ino).ok()? {
+            None => Some(String::new()),
+            Some(id) => tree::entry(&self.agent.files, id)
+                .filter(|e| e.dir)
+                .map(|_| tree::path_of(&self.agent.files, id)),
+        }
+    }
+
     fn time(ms: i64) -> SystemTime {
         UNIX_EPOCH + Duration::from_millis(ms.max(0) as u64)
     }

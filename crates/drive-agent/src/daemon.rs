@@ -154,41 +154,8 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // stop. Only small locations on local disks are watched live (see
     // `places::watch_refusal`); the others are rescanned every ten minutes.
     let (changed_tx, mut changed) = mpsc::unbounded_channel::<String>();
-    let mut watchers = Vec::new();
-    for loc in a
-        .my_locations()
-        .into_iter()
-        .filter(|l| l.storage.is_empty())
-    {
-        let dirs = a
-            .cached_index(&loc.id)
-            .map(|i| i.entries.iter().filter(|e| e.dir).count());
-        if drive_files::space::is_paused(&a.space, &loc.id) {
-            continue;
-        }
-        if let Some(why) = crate::places::watch_refusal(std::path::Path::new(&loc.path), dirs) {
-            tracing::info!(location.name = %loc.name, watch.skipped = %why, "a location is rescanned every ten minutes instead of watched");
-            continue;
-        }
-        let tx = changed_tx.clone();
-        let id = loc.id.clone();
-        match notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
-            if r.is_ok_and(|e| !e.kind.is_access()) {
-                let _ = tx.send(id.clone());
-            }
-        }) {
-            Ok(mut w) => match w.watch(
-                std::path::Path::new(&loc.path),
-                notify::RecursiveMode::Recursive,
-            ) {
-                Ok(()) => watchers.push(w),
-                Err(e) => {
-                    tracing::warn!(location.name = %loc.name, error = %e, "a location cannot be watched; it is rescanned every ten minutes")
-                }
-            },
-            Err(e) => tracing::warn!(error = %e, "no file watcher"),
-        }
-    }
+    let mut watchers = Watchers::default();
+    watchers.add_new(&a, &changed_tx);
 
     // File rules (crate::rules): after a location is indexed, on their
     // schedules and when asked; the first pass catches what changed while
@@ -270,6 +237,9 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     a.announce();
                 }
                 Ok(Event::Changed(doc)) if doc == a.space_id => {
+                    // A location made here by another process (`drive
+                    // adopt`, `drive location add`): watched from now on.
+                    watchers.add_new(&a, &changed_tx);
                     // A site added or removed (the Drive app, another device).
                     let now: Vec<String> = drive_files::sites::listed(&a.space).into_keys().collect();
                     if now != listed {
@@ -417,4 +387,66 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
         }
     }
     drop(watchers);
+}
+
+/// The live watches on this device's locations, by location id, and the
+/// locations refused one for good (too big, a network disk). One refused
+/// only because it is not indexed yet is asked again on the next change.
+#[derive(Default)]
+struct Watchers {
+    by_location: HashMap<String, notify::RecommendedWatcher>,
+    refused: HashSet<String>,
+}
+
+impl Watchers {
+    /// Watch every local location of this device not watched yet. Only
+    /// small locations on local disks are watched live (see
+    /// `places::watch_refusal`); the others are rescanned every ten minutes.
+    fn add_new(&mut self, a: &Agent, tx: &mpsc::UnboundedSender<String>) {
+        let new: Vec<_> = a
+            .my_locations()
+            .into_iter()
+            .filter(|l| {
+                l.storage.is_empty()
+                    && !self.by_location.contains_key(&l.id)
+                    && !self.refused.contains(&l.id)
+            })
+            .collect();
+        for loc in new {
+            if drive_files::space::is_paused(&a.space, &loc.id) {
+                continue;
+            }
+            let dirs = a
+                .cached_index(&loc.id)
+                .map(|i| i.entries.iter().filter(|e| e.dir).count());
+            if let Some(why) = crate::places::watch_refusal(std::path::Path::new(&loc.path), dirs) {
+                if dirs.is_some() {
+                    self.refused.insert(loc.id.clone());
+                }
+                tracing::info!(location.name = %loc.name, watch.skipped = %why, "a location is rescanned every ten minutes instead of watched");
+                continue;
+            }
+            let (tx, id) = (tx.clone(), loc.id.clone());
+            match notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
+                if r.is_ok_and(|e| !e.kind.is_access()) {
+                    let _ = tx.send(id.clone());
+                }
+            }) {
+                Ok(mut w) => match w.watch(
+                    std::path::Path::new(&loc.path),
+                    notify::RecursiveMode::Recursive,
+                ) {
+                    Ok(()) => {
+                        tracing::info!(location.name = %loc.name, "a location is watched live");
+                        self.by_location.insert(loc.id.clone(), w);
+                    }
+                    Err(e) => {
+                        self.refused.insert(loc.id.clone());
+                        tracing::warn!(location.name = %loc.name, error = %e, "a location cannot be watched; it is rescanned every ten minutes")
+                    }
+                },
+                Err(e) => tracing::warn!(error = %e, "no file watcher"),
+            }
+        }
+    }
 }
