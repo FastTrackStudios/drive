@@ -142,28 +142,33 @@ async fn list(k: &Kache, q: &HashMap<String, String>) -> Response {
         .iter()
         .filter(|(key, _, _)| key.as_str() > after.as_str())
     {
+        // Advance past every key in the last prefix before cutting the page.
+        let common_prefix = if delimiter.is_empty() {
+            None
+        } else {
+            key[prefix.len()..]
+                .find(&delimiter)
+                .map(|i| &key[..prefix.len() + i + delimiter.len()])
+        };
+        if common_prefix.is_some_and(|p| prefixes.contains(p)) {
+            last.clone_from(key);
+            continue;
+        }
         if count == max {
             truncated = true;
             break;
         }
-        // A delimiter (kache never sends one) folds keys into prefixes.
-        if !delimiter.is_empty()
-            && let Some(i) = key[prefix.len()..].find(&delimiter)
-        {
-            let p = &key[..prefix.len() + i + delimiter.len()];
-            if prefixes.insert(p.to_string()) {
-                count += 1;
-            }
-            last = key.clone();
-            continue;
+        if let Some(p) = common_prefix {
+            prefixes.insert(p.to_string());
+        } else {
+            contents.push_str(&format!(
+                "<Contents><Key>{}</Key><LastModified>{now}</LastModified><ETag>{}</ETag><Size>{size}</Size><StorageClass>STANDARD</StorageClass></Contents>",
+                escape(key),
+                escape(&etag(hash))
+            ));
         }
-        contents.push_str(&format!(
-            "<Contents><Key>{}</Key><LastModified>{now}</LastModified><ETag>{}</ETag><Size>{size}</Size><StorageClass>STANDARD</StorageClass></Contents>",
-            escape(key),
-            escape(&etag(hash))
-        ));
         count += 1;
-        last = key.clone();
+        last.clone_from(key);
     }
     let common: String = prefixes
         .iter()
@@ -420,6 +425,64 @@ fn civil(z: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delimiter_pages_emit_each_prefix_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::open(dir.path(), 1024).unwrap();
+        let hash = blake3::hash(b"").to_hex();
+        for key in [
+            "cache/a/first",
+            "cache/a/last",
+            "cache/b/first",
+            "cache/b/last",
+        ] {
+            let (path, file) = store.temp().unwrap();
+            drop(file);
+            store
+                .commit(key, &path, 0, hash.as_str(), &Cond::Any)
+                .unwrap();
+        }
+        let kache = Kache::new(store, Arc::new(Vec::new), Default::default());
+        let mut query = HashMap::from([
+            ("delimiter".to_string(), "/".to_string()),
+            ("prefix".to_string(), "cache/".to_string()),
+            ("max-keys".to_string(), "1".to_string()),
+        ]);
+
+        let page = list(&kache, &query).await;
+        let bytes = axum::body::to_bytes(page.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            first.contains("<CommonPrefixes><Prefix>cache/a/</Prefix></CommonPrefixes>"),
+            "{first}"
+        );
+        let (_, remainder) = first.split_once("<NextContinuationToken>").unwrap();
+        let (token, _) = remainder.split_once("</NextContinuationToken>").unwrap();
+        query.insert("continuation-token".to_string(), token.to_string());
+
+        let page = list(&kache, &query).await;
+        let bytes = axum::body::to_bytes(page.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            !second.contains("<CommonPrefixes><Prefix>cache/a/</Prefix>"),
+            "{second}"
+        );
+        assert!(
+            second.contains("<CommonPrefixes><Prefix>cache/b/</Prefix></CommonPrefixes>"),
+            "{second}"
+        );
+        assert!(
+            second.contains("<IsTruncated>false</IsTruncated>"),
+            "{second}"
+        );
+    }
+
     #[test]
     fn dates() {
         assert_eq!(super::iso8601(0), "1970-01-01T00:00:00.000Z");
