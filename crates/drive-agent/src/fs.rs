@@ -223,17 +223,23 @@ impl DriveFs {
         let Some((path, f)) = &o.scratch else {
             return Ok(());
         };
+        self.upload_scratch(o.id, path, f)?;
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    /// The scratch copy's bytes, as the file's content (the copy stays).
+    fn upload_scratch(&self, id: TreeID, path: &std::path::Path, f: &File) -> Result<(), Errno> {
         let _ = f.sync_all();
         let (hash, size) = self
             .rt
-            .block_on(self.agent.upload(o.id, path))
+            .block_on(self.agent.upload(id, path))
             .map_err(|e| {
                 tracing::warn!(error = %e, "an upload failed");
                 Errno::EIO
             })?;
-        tree::set_content(&self.agent.files, o.id, size, &hash).map_err(|_| Errno::EIO)?;
+        tree::set_content(&self.agent.files, id, size, &hash).map_err(|_| Errno::EIO)?;
         self.agent.commit_files();
-        let _ = std::fs::remove_file(path);
         Ok(())
     }
 
@@ -306,31 +312,41 @@ impl Filesystem for DriveFs {
             let e = self.entry_of(ino)?;
             if let (Some(size), Some(e)) = (size, e.as_ref()) {
                 let mut open = self.open.lock().expect("open");
-                let handle = fh
-                    .and_then(|f| open.get_mut(&f.0))
-                    .filter(|o| o.scratch.is_some());
-                match handle {
-                    Some(o) => {
-                        if let Some((_, f)) = &o.scratch {
-                            f.set_len(size).map_err(|_| Errno::EIO)?;
+                // A truncate from open(O_TRUNC) comes without its handle
+                // (the kernel sends it after the open, as a plain truncate):
+                // then it truncates every handle writing this file.
+                let writers: Vec<u64> = match fh.map(|f| f.0) {
+                    Some(f) if open.get(&f).is_some_and(|o| o.scratch.is_some()) => vec![f],
+                    _ => open
+                        .iter()
+                        .filter(|(_, o)| o.id == e.id && o.scratch.is_some())
+                        .map(|(k, _)| *k)
+                        .collect(),
+                };
+                if !writers.is_empty() {
+                    for k in writers {
+                        if let Some(o) = open.get_mut(&k) {
+                            if let Some((_, f)) = &o.scratch {
+                                f.set_len(size).map_err(|_| Errno::EIO)?;
+                            }
+                            o.dirty = true;
                         }
-                        o.dirty = true;
                     }
-                    None if size == 0 => {
-                        drop(open);
-                        let (hash, _) = self
-                            .rt
-                            .block_on(async {
-                                let tmp = self.agent.dir.join("scratch-empty");
-                                let _ = std::fs::write(&tmp, b"");
-                                self.agent.upload(e.id, &tmp).await
-                            })
-                            .map_err(|_| Errno::EIO)?;
-                        tree::set_content(&self.agent.files, e.id, 0, &hash)
-                            .map_err(|_| Errno::EIO)?;
-                        self.agent.commit_files();
-                    }
-                    None => return Err(Errno::ENOTSUP),
+                } else if size == 0 {
+                    drop(open);
+                    let (hash, _) = self
+                        .rt
+                        .block_on(async {
+                            let tmp = self.agent.dir.join("scratch-empty");
+                            let _ = std::fs::write(&tmp, b"");
+                            self.agent.upload(e.id, &tmp).await
+                        })
+                        .map_err(|_| Errno::EIO)?;
+                    tree::set_content(&self.agent.files, e.id, 0, &hash)
+                        .map_err(|_| Errno::EIO)?;
+                    self.agent.commit_files();
+                } else {
+                    return Err(Errno::ENOTSUP);
                 }
             }
             let e = self.entry_of(ino)?;
@@ -556,11 +572,41 @@ impl Filesystem for DriveFs {
         &self,
         _req: &Request,
         _ino: INodeNo,
-        _fh: FileHandle,
+        fh: FileHandle,
         _lock: LockOwner,
         reply: ReplyEmpty,
     ) {
-        reply.ok();
+        // close() waits for this, not for release: what was written is the
+        // file's content before close returns, so the next open (on any of
+        // the mount's threads) reads it.
+        let job = {
+            let mut open = self.open.lock().expect("open");
+            match open.get_mut(&fh.0) {
+                Some(o) if o.dirty => match &o.scratch {
+                    Some((path, f)) => match f.try_clone() {
+                        Ok(f) => {
+                            o.dirty = false;
+                            Some((o.id, path.clone(), f))
+                        }
+                        Err(_) => None,
+                    },
+                    None => None,
+                },
+                _ => None,
+            }
+        };
+        let Some((id, path, f)) = job else {
+            return reply.ok();
+        };
+        match self.upload_scratch(id, &path, &f) {
+            Ok(()) => reply.ok(),
+            Err(e) => {
+                if let Some(o) = self.open.lock().expect("open").get_mut(&fh.0) {
+                    o.dirty = true;
+                }
+                reply.error(e)
+            }
+        }
     }
 
     fn release(
