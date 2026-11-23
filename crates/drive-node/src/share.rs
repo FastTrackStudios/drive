@@ -381,15 +381,25 @@ pub async fn page(
         format!("{} files", r.share.kinds.join(", "))
     };
     let mut body = format!(
-        "<header><h1>{}</h1><p>{} {} · {}</p><a class=all href=\"{base}/zip\">Download all</a></header>",
+        "<header><h1>{}</h1><p>{} {} · {}</p>{}</header>",
         esc(&r.project.name),
         r.files.len(),
         esc(&what),
-        human(total.max(0) as u64)
+        human(total.max(0) as u64),
+        if r.share.download {
+            format!("<a class=all href=\"{base}/zip\">Download all</a>")
+        } else {
+            String::new()
+        }
     );
     if reach < r.files.len() {
+        let detail = if r.share.download {
+            "the zip leaves them out (and says which)."
+        } else {
+            "they will play once it is back on."
+        };
         body.push_str(&format!(
-            "<p class=note>{} of them are on a computer that is off right now; the zip leaves them out (and says which).</p>",
+            "<p class=note>{} of them are on a computer that is off right now; {detail}</p>",
             r.files.len() - reach
         ));
     }
@@ -410,19 +420,36 @@ pub async fn page(
         for (p, f) in mine {
             let ok = ok_files.contains(&(p.id.clone(), f.path.clone()));
             let href = format!("{base}/file?part={}&path={}", enc(&p.id), enc(&f.path));
+            let play_href = if r.share.download {
+                href.clone()
+            } else {
+                format!("{href}&inline=1")
+            };
             let fast = r.kept(p, f).is_some();
-            // Review: a player for audio and video, and the file's comments
-            // with a form (a guest's name, a note, at the current time).
+            // Review: a player for audio and video (when reachable), and the
+            // file's comments (when enabled on the link, even if the host
+            // computer is currently off).
             let media = media_of(&f.name);
-            let review = if ok {
-                let player = match media {
+            let nodl = if r.share.download {
+                ""
+            } else {
+                " controlsList=\"nodownload\""
+            };
+            let player = if ok {
+                match media {
                     Some("audio") => {
-                        format!("<audio controls preload=none src=\"{href}\"></audio>")
+                        format!("<audio controls{nodl} preload=none src=\"{play_href}\"></audio>")
                     }
-                    Some(_) => format!("<video controls preload=none src=\"{href}\"></video>"),
+                    Some(_) => {
+                        format!("<video controls{nodl} preload=none src=\"{play_href}\"></video>")
+                    }
                     None => String::new(),
-                };
-                let at = if media.is_some() {
+                }
+            } else {
+                String::new()
+            };
+            let review = if r.share.comments {
+                let at = if ok && media.is_some() {
                     "<label class=atl><input type=checkbox name=at checked> at <span class=now>0:00</span></label>"
                 } else {
                     ""
@@ -435,17 +462,19 @@ pub async fn page(
                     esc(&p.id),
                     esc(&f.path)
                 )
+            } else if !player.is_empty() {
+                format!("<div class=review>{player}</div>")
             } else {
                 String::new()
             };
+            let label = if ok && r.share.download {
+                format!("<a href=\"{href}\">{}</a>", esc(p.relative(&f.path)))
+            } else {
+                esc(p.relative(&f.path))
+            };
             body.push_str(&format!(
-                "<li class=\"{}\"><div class=line>{}<span class=size>{}</span>{}</div>{review}</li>",
+                "<li class=\"{}\"><div class=line>{label}<span class=size>{}</span>{}</div>{review}</li>",
                 if ok { "" } else { "off" },
-                if ok {
-                    format!("<a href=\"{href}\">{}</a>", esc(p.relative(&f.path)))
-                } else {
-                    esc(p.relative(&f.path))
-                },
                 human(f.size.max(0) as u64),
                 if fast {
                     "<span class=tag>ready</span>"
@@ -458,7 +487,9 @@ pub async fn page(
         }
         body.push_str("</ul>");
     }
-    body.push_str(&format!("<script>{REVIEW_JS}</script>"));
+    if r.share.comments {
+        body.push_str(&format!("<script>{REVIEW_JS}</script>"));
+    }
     Html(shell(&r.project.name, &body)).into_response()
 }
 
@@ -482,6 +513,19 @@ fn file_target(part: &Part, f: &Found) -> Target {
     }
 }
 
+fn guest_name(raw: &str) -> &str {
+    let mut name = raw.trim();
+    loop {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with("(guest)") {
+            name = name[..name.len() - "(guest)".len()].trim_end();
+        } else {
+            break;
+        }
+    }
+    name
+}
+
 /// `/s/{space}/{token}/comments?part=&path=`: a shared file's comments.
 pub async fn comments(
     UrlPath((space_id, token)): UrlPath<(String, String)>,
@@ -492,13 +536,16 @@ pub async fn comments(
         Ok(r) => r,
         Err(s) => return s.into_response(),
     };
+    if !r.share.comments {
+        return (StatusCode::FORBIDDEN, "comments are off on this link").into_response();
+    }
     let Some((part, f)) = r.find(
         q.get("part").map_or("", String::as_str),
         q.get("path").map_or("", String::as_str),
     ) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let id = drive_proto::qualify(&space_id, &file_target(part, f).doc_id());
+    let id = drive_proto::qualify(r.space_of(part), &file_target(part, f).doc_id());
     let threads = c.rooms.read(&id, comments::threads).await;
     let json: Vec<serde_json::Value> = threads
         .into_iter()
@@ -535,7 +582,7 @@ pub async fn comment(
     State(c): State<Catalog>,
     axum::Json(g): axum::Json<GuestComment>,
 ) -> Response {
-    let (name, text) = (g.name.trim(), g.body.trim());
+    let (name, text) = (guest_name(&g.name), g.body.trim());
     if name.is_empty()
         || text.is_empty()
         || name.chars().count() > 80
@@ -551,10 +598,13 @@ pub async fn comment(
         Ok(r) => r,
         Err(s) => return s.into_response(),
     };
+    if !r.share.comments {
+        return (StatusCode::FORBIDDEN, "comments are off on this link").into_response();
+    }
     let Some((part, f)) = r.find(&g.part, &g.path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let id = drive_proto::qualify(&space_id, &file_target(part, f).doc_id());
+    let id = drive_proto::qualify(r.space_of(part), &file_target(part, f).doc_id());
     let by = format!("{name} (guest)");
     let author = format!("guest:{name}");
     let anchor = match g.at_ms {
@@ -603,7 +653,7 @@ const REVIEW_JS: &str = r#"
 const B=location.pathname.replace(/\/$/,'');
 const fmt=ms=>{const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-document.querySelectorAll('.review').forEach(r=>{
+document.querySelectorAll('.review[data-part]').forEach(r=>{
   const part=r.dataset.part,path=r.dataset.path,au=r.querySelector('audio,video'),list=r.querySelector('.cm'),f=r.querySelector('form');
   const q='part='+encodeURIComponent(part)+'&path='+encodeURIComponent(path);
   const load=async()=>{
@@ -627,6 +677,20 @@ document.querySelectorAll('.review').forEach(r=>{
 });
 "#;
 
+fn safe_redirect(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+fn safe_zip_piece(s: &str) -> String {
+    let cleaned = s.replace(['/', '\\', '\0'], "_");
+    let trimmed = cleaned.trim_matches('.');
+    if trimmed.is_empty() {
+        "_".into()
+    } else {
+        trimmed.into()
+    }
+}
+
 /// `/s/{space}/{token}/file?part=&path=`: one file of the share.
 pub async fn file(
     UrlPath((space_id, token)): UrlPath<(String, String)>,
@@ -646,14 +710,21 @@ pub async fn file(
         tracing::warn!(share.space = %space_id, "a file outside a share was asked for");
         return StatusCode::NOT_FOUND.into_response();
     };
-    if let Some(url) = r.kept(part, f).and_then(|a| r.public_url(part, a)) {
+    let inline = crate::wants_inline(&q) || !r.share.download;
+    if !r.share.download && !(crate::wants_inline(&q) && media_of(&f.name).is_some()) {
+        return (StatusCode::FORBIDDEN, "downloads are off on this link").into_response();
+    }
+    if r.share.download
+        && let Some(url) = r.kept(part, f).and_then(|a| r.public_url(part, a))
+        && safe_redirect(&url)
+    {
         return Redirect::temporary(&url).into_response();
     }
     match bring(&c, &r, part, f).await {
         Ok(Got::Blob(hash)) => {
             let mut query = HashMap::new();
             query.insert("name".to_string(), f.name.clone());
-            if crate::wants_inline(&q) {
+            if inline {
                 query.insert("inline".to_string(), "1".to_string());
             }
             match crate::get_blob_ranged(
@@ -673,7 +744,7 @@ pub async fn file(
                 let reply = crate::transfer::Reply {
                     name: f.name.clone(),
                     cache: Some(c.blobs.clone()),
-                    inline: crate::wants_inline(&q),
+                    inline,
                 };
                 crate::transfer::respond(t, &got, src, &headers, reply)
             }
@@ -715,12 +786,15 @@ pub async fn zip(
         Ok(r) => r,
         Err(s) => return s.into_response(),
     };
+    if !r.share.download {
+        return (StatusCode::FORBIDDEN, "downloads are off on this link").into_response();
+    }
     let name = format!(
         "{}.zip",
         r.project.name.replace(['/', '\\', '"', '\r', '\n'], "_")
     );
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(8);
-    let (file_tx, file_rx) = std::sync::mpsc::sync_channel::<(String, Entry)>(1);
+    let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<(String, Entry)>(1);
 
     // Writer: a blocking task, one entry per file that arrives.
     tokio::task::spawn_blocking(move || {
@@ -728,7 +802,7 @@ pub async fn zip(
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
             .large_file(true);
-        for (entry, bytes) in file_rx {
+        while let Some((entry, bytes)) = file_rx.blocking_recv() {
             if z.start_file(entry, opts).is_err() {
                 return;
             }
@@ -761,16 +835,23 @@ pub async fn zip(
     tokio::spawn(async move {
         let mut missing = Vec::new();
         for (part, f) in &r.files {
-            let entry = format!("{}/{}", part.label, part.relative(&f.path));
+            let rel: Vec<String> = part
+                .relative(&f.path)
+                .split('/')
+                .filter(|p| !p.is_empty() && *p != "." && *p != "..")
+                .map(safe_zip_piece)
+                .collect();
+            let entry = format!("{}/{}", safe_zip_piece(&part.label), rel.join("/"));
             let bytes = match bring(&c, &r, part, f).await {
                 Ok(Got::Blob(h)) => c.blobs.get(&h).await.ok().map(Entry::Bytes),
+                Ok(Got::Device(got, _)) if got.size == 0 => Some(Entry::Bytes(Vec::new())),
                 Ok(Got::Device(got, src)) => c.rooms.transfer.get().map(|t| {
                     let (tx, rx) = tokio::sync::mpsc::channel(16);
                     let stream = crate::transfer::tee(
                         t.clone(),
                         src.clone(),
                         c.blobs.clone(),
-                        t.fetcher.stream(src, 0, got.size.saturating_sub(1)),
+                        t.fetcher.stream(src, 0, got.size - 1),
                     );
                     tokio::spawn(async move {
                         let mut stream = std::pin::pin!(stream);
@@ -786,7 +867,7 @@ pub async fn zip(
             };
             match bytes {
                 Some(b) => {
-                    if file_tx.send((entry, b)).is_err() {
+                    if file_tx.send((entry, b)).await.is_err() {
                         return;
                     }
                 }
@@ -798,7 +879,9 @@ pub async fn zip(
                 "These files are on a computer that was off when this zip was made. Download again later for them.\n\n{}\n",
                 missing.join("\n")
             );
-            let _ = file_tx.send(("MISSING.txt".into(), Entry::Bytes(note.into_bytes())));
+            let _ = file_tx
+                .send(("MISSING.txt".into(), Entry::Bytes(note.into_bytes())))
+                .await;
         }
     });
 

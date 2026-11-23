@@ -332,10 +332,15 @@ pub struct Share {
     pub created: i64,
     /// Who made it (a device or person name), for the list of links.
     pub by: String,
+    /// Whether the link allows downloading files and the project zip.
+    pub download: bool,
+    /// Whether the link allows reading and posting comments.
+    pub comments: bool,
 }
 
 /// Make a share link for a project (the token comes from the caller, who
-/// has a good random source: the browser's `crypto.randomUUID()`).
+/// has a good random source: the browser's `crypto.randomUUID()`), allowing
+/// both downloads and comments.
 pub fn add_share(
     doc: &LoroDoc,
     token: &str,
@@ -343,17 +348,39 @@ pub fn add_share(
     kinds: &[String],
     by: &str,
 ) -> loro::LoroResult<()> {
+    add_share_with(doc, token, project, kinds, by, true, true)
+}
+
+/// Make a share link with explicit `download` and `comments` permissions.
+pub fn add_share_with(
+    doc: &LoroDoc,
+    token: &str,
+    project: &str,
+    kinds: &[String],
+    by: &str,
+    download: bool,
+    comments: bool,
+) -> loro::LoroResult<()> {
     let m = doc.get_map("shares").ensure_mergeable_map(token)?;
     m.insert("token", token)?;
     m.insert("project", project)?;
     m.insert("kinds", kinds.join(" "))?;
     m.insert("created", crate::now_ms())?;
     m.insert("by", by)?;
+    m.insert("download", download)?;
+    m.insert("comments", comments)?;
     Ok(())
 }
 
 pub fn remove_share(doc: &LoroDoc, token: &str) -> loro::LoroResult<()> {
     doc.get_map("shares").delete(token)
+}
+
+fn flag_or_true(m: &LoroMap, k: &str) -> bool {
+    match m.get(k) {
+        Some(ValueOrContainer::Value(LoroValue::Bool(b))) => b,
+        _ => true,
+    }
 }
 
 fn share_of(m: &LoroMap) -> Share {
@@ -366,6 +393,8 @@ fn share_of(m: &LoroMap) -> Share {
             .collect(),
         created: n(m, "created"),
         by: s(m, "by"),
+        download: flag_or_true(m, "download"),
+        comments: flag_or_true(m, "comments"),
     }
 }
 
@@ -603,6 +632,36 @@ mod tests {
         assert!(part.contains("Song A/Mixes/v3.wav"));
         assert!(!part.contains("Song A/Mixes2/v3.wav"));
         assert_eq!(part.relative("Song A/Mixes/sub/v3.wav"), "sub/v3.wav");
+    }
+
+    #[test]
+    fn share_link_permissions() {
+        let d = LoroDoc::new();
+        let p = add_project(&d, "Song B", "MusicRecording").unwrap();
+        let full = "11111111-1111-4111-8111-111111111111";
+        let comment_only = "22222222-2222-4222-8222-222222222222";
+        let view_only = "33333333-3333-4333-8333-333333333333";
+        add_share(&d, full, &p, &[], "t").unwrap();
+        add_share_with(&d, comment_only, &p, &[], "t", false, true).unwrap();
+        add_share_with(&d, view_only, &p, &[], "t", false, false).unwrap();
+
+        let s_full = share(&d, full).unwrap();
+        assert!(s_full.download && s_full.comments);
+        let s_comment = share(&d, comment_only).unwrap();
+        assert!(!s_comment.download && s_comment.comments);
+        let s_view = share(&d, view_only).unwrap();
+        assert!(!s_view.download && !s_view.comments);
+
+        // Existing share records without download/comments keys default to both enabled.
+        let legacy = "44444444-4444-4444-8444-444444444444";
+        let m = d
+            .get_map("shares")
+            .ensure_mergeable_map(legacy)
+            .unwrap();
+        m.insert("token", legacy).unwrap();
+        m.insert("project", p.as_str()).unwrap();
+        let s_legacy = share(&d, legacy).unwrap();
+        assert!(s_legacy.download && s_legacy.comments);
     }
 
     #[test]

@@ -330,3 +330,210 @@ async fn a_share_link_offers_a_lent_part_and_only_while_it_is_lent() {
     assert!(!html.contains("kick.wav"), "taken back: no longer offered");
     assert!(html.contains("a.pdf"));
 }
+
+#[tokio::test]
+async fn duplicate_or_mismatched_org_query_params_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let w = world(dir.path()).await;
+    let bad = [
+        ("tb", "/list?space=band&space=cody&location=private"),
+        ("tb", "/search?space=band&space=church&q=a"),
+        ("tb", "/list?org=band&space=cody&location=private"),
+        ("tb", "/search?org=band&q=a"),
+        ("tb", "/list?location=private"),
+        ("tb", "/sidecar/abc/waveform?org=band&location=private&path=diary.txt"),
+    ];
+    for (t, url) in bad {
+        assert_eq!(
+            status(&w.app, t, url).await,
+            StatusCode::BAD_REQUEST,
+            "{t} {url}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn share_link_permissions_and_guest_name_dedup() {
+    use drive_files::index::{IndexEntry, LocationIndex};
+    let dir = tempfile::tempdir().unwrap();
+    let w = world(dir.path()).await;
+    w.rooms
+        .store
+        .put_index(
+            "church",
+            &LocationIndex {
+                location: "church-pc".into(),
+                root: String::new(),
+                built: 1,
+                entries: vec![IndexEntry {
+                    path: "Charts/mix.wav".into(),
+                    dir: false,
+                    size: 42,
+                    mtime: 1,
+                    sampled: String::new(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    let comment_tok = "1b6f6a4e-5d1c-4c8e-9d7e-2a3b4c5d6e7f";
+    let view_tok = "2b6f6a4e-5d1c-4c8e-9d7e-2a3b4c5d6e7f";
+    let p = w.project.clone();
+    let charts_part = w
+        .rooms
+        .read("church/drive:space", |d| {
+            projects::projects(d)
+                .into_iter()
+                .find(|pr| pr.id == p)
+                .unwrap()
+                .parts
+                .into_iter()
+                .find(|x| x.location == "church-pc")
+                .unwrap()
+                .id
+        })
+        .await;
+    w.rooms
+        .edit("church/drive:space", "t", |d| {
+            projects::add_share_with(d, comment_tok, &p, &[], "t", false, true).unwrap();
+            projects::add_share_with(d, view_tok, &p, &[], "t", false, false).unwrap();
+        })
+        .await;
+
+    let blobs = drive_files::storage::StorageConfig::Fs {
+        root: dir.path().join("blobs").to_string_lossy().into_owned(),
+    }
+    .blobs()
+    .unwrap();
+    let catalog = crate::catalog::Catalog {
+        rooms: w.rooms.clone(),
+        blobs,
+        names: Default::default(),
+        reports: Default::default(),
+    };
+    let app = Router::new()
+        .route("/s/{space}/{token}", get(crate::share::page))
+        .route("/s/{space}/{token}/file", get(crate::share::file))
+        .route("/s/{space}/{token}/zip", get(crate::share::zip))
+        .route(
+            "/s/{space}/{token}/comments",
+            get(crate::share::comments).post(crate::share::comment),
+        )
+        .with_state(catalog);
+
+    // Comment-only link: no zip button, comment form shown even when computer is off.
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get(format!("/s/church/{comment_tok}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap(),
+    )
+    .into_owned();
+    assert!(!html.contains("/zip"), "no zip download on comment-only share");
+    assert!(html.contains("<form>"), "comment form rendered");
+
+    // Zip and non-inline file download are forbidden.
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get(format!("/s/church/{comment_tok}/zip"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get(format!(
+                "/s/church/{comment_tok}/file?part={charts_part}&path=Charts/mix.wav"
+            ))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+    // Posting a comment as "Alice (guest)" strips trailing "(guest)" so it is not duplicated.
+    let post_body = serde_json::json!({
+        "part": charts_part,
+        "path": "Charts/mix.wav",
+        "name": "Alice (guest)",
+        "body": "Love the chorus"
+    })
+    .to_string();
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::post(format!("/s/church/{comment_tok}/comments"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(post_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get(format!(
+                "/s/church/{comment_tok}/comments?part={charts_part}&path=Charts/mix.wav"
+            ))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let list: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(list["threads"][0]["by"], "Alice (guest)");
+
+    // View-only link (neither download nor comments): hides form and refuses comments API.
+    let res = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get(format!("/s/church/{view_tok}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap(),
+    )
+    .into_owned();
+    assert!(!html.contains("/zip"));
+    assert!(!html.contains("<form>"));
+
+    let res = app
+        .oneshot(
+            axum::http::Request::get(format!(
+                "/s/church/{view_tok}/comments?part={charts_part}&path=Charts/mix.wav"
+            ))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}

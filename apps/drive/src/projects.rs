@@ -26,8 +26,8 @@ pub fn ProjectView(space: String, id: String) -> Element {
     let reg = use_doc(space_doc(&space));
     // Parts in the Drive tree (an app's uploads) open at their folder.
     let tree_doc = use_doc(drive_files::files_doc(&space));
-    let spine_doc = use_doc(spine::SPINE);
-    let docs = use_docs("");
+    let spine_doc = use_doc(spine::spine_doc(&space));
+    let docs = use_docs(format!("{space}/"));
     let r = reg.loro();
     let Some(p) = proj::projects(&r).into_iter().find(|p| p.id == id) else {
         return rsx! {
@@ -226,7 +226,10 @@ pub fn ProjectView(space: String, id: String) -> Element {
                 "Parts stay on the computers that have them. A part marked available is copied to the node by its computer, so the client mixes can be shared while it is off; charts and documents are kept available wherever they are."
             }
             h2 { class: "sec", "Comments" }
-            drive_dioxus::comments::CommentsPanel { target: drive_spine::comments::Target::Project(pid.clone()) }
+            drive_dioxus::comments::CommentsPanel {
+                target: drive_spine::comments::Target::Project(pid.clone()),
+                space: space.clone(),
+            }
             h2 { class: "sec", "Shared with orgs" }
             SharedWith { reg: reg.clone(), owner: space.clone(), project: pid.clone(), with: p.shared_with.clone() }
             h2 { class: "sec", "Share" }
@@ -282,6 +285,7 @@ pub fn AddToProject(reg: Doc, location: String, path: String, label: String) -> 
         }
         select {
             class: "sortpick",
+            value: "",
             onchange: move |e: FormEvent| {
                 let pid = e.value();
                 if pid.is_empty() {
@@ -342,13 +346,15 @@ pub fn DocProjects(reg: Doc, doc_id: String) -> Element {
 }
 
 /// A project's share links: anyone holding one sees its files and can
-/// download them, each from the fastest place that has it.
+/// download and/or comment on them, according to the link's permissions.
 #[component]
 fn ShareLinks(reg: Doc, space: String, project: String) -> Element {
     let ctx = drive_dioxus::use_drive();
     let r = reg.loro();
     let links = proj::shares(&r, &project);
     let origin = crate::host::origin();
+    let mut allow_download = use_signal(|| true);
+    let mut allow_comments = use_signal(|| true);
     let make = {
         let (reg, project) = (reg.clone(), project.clone());
         move |kinds: Vec<String>| {
@@ -357,21 +363,46 @@ fn ShareLinks(reg: Doc, space: String, project: String) -> Element {
                 return;
             }
             let by = ctx.me.peek().name.clone();
+            let dl = allow_download();
+            let cm = allow_comments();
             reg.edit(|d| {
-                let _ = proj::add_share(d, &token, &project, &kinds, &by);
+                let _ = proj::add_share_with(d, &token, &project, &kinds, &by, dl, cm);
             });
         }
     };
     let (all, audio) = (make.clone(), make);
     rsx! {
         div { class: "actions sharebar",
+            label { class: "pin",
+                input {
+                    r#type: "checkbox",
+                    checked: allow_download(),
+                    onchange: move |e: FormEvent| allow_download.set(e.checked()),
+                }
+                span { "Downloads" }
+            }
+            label { class: "pin",
+                input {
+                    r#type: "checkbox",
+                    checked: allow_comments(),
+                    onchange: move |e: FormEvent| allow_comments.set(e.checked()),
+                }
+                span { "Comments" }
+            }
             button { class: "primary ghost", onclick: move |_| all(Vec::new()), "Share all files" }
             button { class: "primary ghost", onclick: move |_| audio(vec!["audio".to_string()]), "Share the audio" }
         }
         for l in links {
             {
                 let url = format!("{origin}/s/{}/{}", space, l.token);
-                let what = if l.kinds.is_empty() { "All files".to_string() } else { format!("Only {}", l.kinds.join(", ")) };
+                let scope = if l.kinds.is_empty() { "All files".to_string() } else { format!("Only {}", l.kinds.join(", ")) };
+                let perm = match (l.download, l.comments) {
+                    (true, true) => "download & comment",
+                    (true, false) => "download only",
+                    (false, true) => "comment only",
+                    (false, false) => "view only",
+                };
+                let what = format!("{scope} · {perm}");
                 let (reg, token, u) = (reg.clone(), l.token.clone(), url.clone());
                 rsx! {
                     div { key: "{l.token}", class: "sharelink",
@@ -445,7 +476,11 @@ fn SharedWith(reg: Doc, owner: String, project: String, with: Vec<String>) -> El
                             input {
                                 r#type: "checkbox",
                                 checked: on,
+                                disabled: visiting,
                                 onchange: move |e: FormEvent| {
+                                    if visiting {
+                                        return;
+                                    }
                                     let v = e.checked();
                                     reg.edit(|d| {
                                         let _ = proj::share_with_org(d, &pid, &org, v);

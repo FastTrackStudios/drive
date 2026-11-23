@@ -103,6 +103,10 @@ pub fn CommentsPanel(
     /// can be pinned at its current time, and a time plays it from there.
     #[props(default)]
     player: Option<String>,
+    /// The org that owns the target (when viewing a shared project from
+    /// another org); empty defaults to the active org.
+    #[props(default)]
+    space: String,
 ) -> Element {
     let has_clock = now_ms.is_some() || player.is_some();
     let read_clock = {
@@ -129,7 +133,12 @@ pub fn CommentsPanel(
         _ => None,
     };
     let ctx = use_drive();
-    let doc = use_doc(target.doc_id());
+    let doc_id = if space.is_empty() {
+        target.doc_id()
+    } else {
+        drive_proto::qualify(&space, &target.doc_id())
+    };
+    let doc = use_doc(doc_id);
     let mut draft = use_signal(String::new);
     let mut pin = use_signal(|| true);
     let mut replying = use_signal(|| None::<String>);
