@@ -100,8 +100,9 @@ fn Editor(id: String) -> Element {
         if let Some((a, b)) = mine.peek().clone() {
             let d = restore_doc.peek();
             if let (Ok(a), Ok(b)) = (d.get_cursor_pos(&a), d.get_cursor_pos(&b)) {
+                let id_js = serde_json::to_string(&restore_id).unwrap_or_else(|_| "\"\"".into());
                 let js = format!(
-                    "const e=document.getElementById('{restore_id}'); if (e && document.activeElement===e) e.setSelectionRange({},{});",
+                    "const e=document.getElementById({id_js}); if (e && document.activeElement===e) e.setSelectionRange({},{});",
                     a.current.pos, b.current.pos
                 );
                 document::eval(&js);
@@ -117,8 +118,9 @@ fn Editor(id: String) -> Element {
             let doc = doc.clone();
             let area_id = area_id.clone();
             spawn(async move {
+                let id_js = serde_json::to_string(&area_id).unwrap_or_else(|_| "\"\"".into());
                 let js = format!(
-                    "const e=document.getElementById('{area_id}'); return e ? [e.selectionStart, e.selectionEnd] : [0,0];"
+                    "const e=document.getElementById({id_js}); return e ? [e.selectionStart, e.selectionEnd] : [0,0];"
                 );
                 if let Ok(v) = document::eval(&js).await
                     && let Some(arr) = v.as_array()

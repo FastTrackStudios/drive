@@ -89,7 +89,7 @@
 .redit .places { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
 .editorfoot { display: flex; gap: 8px; margin-top: 12px; }
 
-@media (max-width: 760px) {
+@media (max-width: 599px) {
   .rulebar .actions { margin-left: 0; }
   .rulesummary > div { grid-template-columns: 1fr; gap: 0; }
   .redit .act .albl { min-width: 0; flex-basis: calc(100% - 30px); }

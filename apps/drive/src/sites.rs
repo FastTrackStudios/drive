@@ -213,9 +213,12 @@ fn SiteCard(space: String, id: String) -> Element {
         .collect();
     let waiting = build.as_ref().is_none_or(|b| site.requested > b.at);
     let node_url = sites::node_path(&space, &id);
-    let public_url = build
-        .as_ref()
-        .and_then(|b| b.published.iter().find(|p| !p.starts_with('/')).cloned());
+    let public_url = build.as_ref().and_then(|b| {
+        b.published
+            .iter()
+            .find(|p| p.starts_with("https://") || p.starts_with("http://"))
+            .cloned()
+    });
     let (state_class, state) = match &build {
         None if waiting => ("sitestate wait", "Waiting for its first build".to_string()),
         None => ("sitestate", "Not built".to_string()),

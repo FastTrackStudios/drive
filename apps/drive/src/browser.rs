@@ -966,6 +966,18 @@ fn AppDocs(app: String) -> Element {
 
 // ── the inspector ───────────────────────────────────────────────────────
 
+fn safe_href(url: String) -> Option<String> {
+    let t = url.trim();
+    if t.starts_with("https://")
+        || t.starts_with("http://")
+        || (t.starts_with('/') && !t.starts_with("//"))
+    {
+        Some(t.to_string())
+    } else {
+        None
+    }
+}
+
 #[component]
 pub fn Inspector(space: String) -> Element {
     let mut nav = use_nav();
@@ -981,7 +993,10 @@ pub fn Inspector(space: String) -> Element {
     let up = online(&reg);
     let download = file_url(&item, &space);
     let (where_, open_link) = match &item.src {
-        Src::Doc { id, .. } => (app_label(&item.kind.app), item.kind.link(id)),
+        Src::Doc { id, .. } => (
+            app_label(&item.kind.app),
+            item.kind.link(id).and_then(safe_href),
+        ),
         _ => (item.at.clone(), None),
     };
     let can_view = download.is_some() && viewable(&item);

@@ -61,7 +61,7 @@ a { color: inherit; }
 
 .notes { max-width: 1100px; }
 .notegrid { display: grid; grid-template-columns: 220px 1fr; gap: 14px; }
-@media (max-width: 700px) { .notegrid { grid-template-columns: 1fr; } }
+@media (max-width: 599px) { .notegrid { grid-template-columns: 1fr; } }
 .notelist { list-style: none; margin: 0; padding: 6px; background: var(--surface); border-radius: 12px; align-self: start; }
 .notelist li { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; border-radius: 8px; cursor: pointer; color: var(--ink-2); }
 .notelist li.on { background: var(--surface-2); color: var(--ink); }
@@ -270,11 +270,10 @@ h2.sec { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter
 .meter.small { height: 6px; }
 .policy .primary { align-self: flex-start; margin-top: 4px; }
 
-/* Phones: the inspector is a sheet (app-shell makes the sidebar a drawer). */
-@media (max-width: 760px) {
+/* Phones (app-shell switches below 600 points; mobile::InspectorSheet holds the inspector). */
+@media (max-width: 599px) {
   .tab, .tab.inspecting { grid-template-columns: minmax(0, 1fr); }
   .inspector, .tab.inspecting .inspector { display: none; }
-  .tab.picked .inspector { display: flex; position: fixed; z-index: 25; left: 0; right: 0; bottom: 0; max-height: 72vh; border-left: 0; border-top: 1px solid var(--rule); border-radius: 18px 18px 0 0; box-shadow: 0 -20px 50px rgba(0,0,0,.6); padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
   .ibig { width: 84px; height: 84px; }
   .kbox.ibox { height: 160px; }
   .kbox.ibox .kicon { width: 84px; height: 84px; }
@@ -383,7 +382,7 @@ h2.sec { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter
 .fvbody { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; justify-content: center; }
 .fvbody > .dv { max-width: 1100px; }
 .fvfoot { padding: 6px 14px; font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--rule); background: var(--sheet); font-variant-numeric: tabular-nums; }
-@media (max-width: 760px) {
+@media (max-width: 599px) {
   .fvbody { padding: 8px; }
   .fvhead { padding: 8px 10px; gap: 8px; }
   .fvhead .primary.ghost { display: none; }

@@ -206,18 +206,27 @@ pub fn RulePage(space: String, id: String) -> Element {
     let mut draft = use_signal(Rule::default);
     let mut removing = use_signal(|| false);
     let phone = app_shell::ui::use_shell().form() == app_shell::ui::FormFactor::Phone;
+    let mut auto_opened = use_signal(|| false);
+    {
+        let (rd, id) = (rules_doc.clone(), id.clone());
+        use_effect(move || {
+            if *auto_opened.peek() {
+                return;
+            }
+            if let Some(r) = doc::rule(&rd.loro(), &id) {
+                auto_opened.set(true);
+                if r.actions.is_empty() && r.when.groups.is_empty() && r.name == "New rule" {
+                    draft.set(r);
+                    editing.set(true);
+                }
+            }
+        });
+    }
     let Some(rule) = doc::rule(&rules_doc.loro(), &id) else {
         return rsx! {
             section { class: "pane", p { class: "empty", "This rule is gone (or still loading)." } }
         };
     };
-    let fresh = rule.actions.is_empty() && rule.when.groups.is_empty() && rule.name == "New rule";
-    use_hook(|| {
-        if fresh {
-            draft.set(rule.clone());
-            editing.set(true);
-        }
-    });
     let names = device_names(&reg.loro());
     let problem = Matcher::new(&rule).err().map(|e| e.to_string());
     let feeds = eval::feeds_itself(&rule);

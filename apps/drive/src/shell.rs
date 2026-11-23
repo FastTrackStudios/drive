@@ -215,7 +215,9 @@ fn PlaceTab(pane: String, active: bool) -> Element {
             div { class: "content",
                 Content { key: "{view}", space: view.clone() }
             }
-            Inspector { key: "{view}", space: view.clone() }
+            if !phone {
+                Inspector { key: "{view}", space: view.clone() }
+            }
             if phone && active {
                 mobile::InspectorSheet { nav, space: view.clone(), open: picked && !(nav.preview)() }
             }

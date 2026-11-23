@@ -216,6 +216,7 @@ pub fn destination_of(p: &Place) -> Option<String> {
         Place::Drive(_)
         | Place::Adopted(_)
         | Place::Location { .. }
+        | Place::Volume { .. }
         | Place::Kind(_)
         | Place::App(_) => "drive",
         Place::Overview | Place::AllOrgs | Place::Everything => "search",
@@ -232,13 +233,22 @@ pub fn go_destination(shell: Shell, nav: Nav, id: &str, projects: SheetSpec) {
     shell.close_overlays();
     match id {
         "drive" => nav.go_home(Place::Drive(None)),
-        "search" => nav.go_home(Place::Overview),
+        "search" => {
+            nav.go_home(Place::Overview);
+            focus_search();
+        }
         "tags" => nav.go_home(Place::Tags),
         "projects" => {
             shell.open_sheet(projects);
         }
         _ => {}
     }
+}
+
+fn focus_search() {
+    crate::host::eval(
+        "(function(){var f=function(){var el=document.querySelector('.as-search input');if(el){el.focus();return true;}return false;};if(!f()){requestAnimationFrame(function(){if(!f()){setTimeout(f,50);}});}})()",
+    );
 }
 
 /// The round button: upload, a new folder, a new project (a menu: an
@@ -501,6 +511,15 @@ mod tests {
         );
         assert_eq!(
             destination_of(&Place::Kind("audio".into())).as_deref(),
+            Some("drive")
+        );
+        assert_eq!(
+            destination_of(&Place::Volume {
+                device: "d".into(),
+                root: "/".into(),
+                path: String::new(),
+            })
+            .as_deref(),
             Some("drive")
         );
         assert_eq!(destination_of(&Place::Overview).as_deref(), Some("search"));

@@ -73,7 +73,7 @@ select.tagadd { appearance: none; color-scheme: dark; margin-top: 8px; }
 .primary.tagdanger { background: #ef4444; color: #fff; }
 .primary.ghost.tagdanger { background: var(--surface-2); color: #fca5a5; }
 
-@media (max-width: 760px) {
+@media (max-width: 599px) {
   .tagmgr.editing { grid-template-columns: minmax(0, 1fr); }
   .tagmgr.editing .tageditor { order: -1; }
   .tagmanager .capture input { min-width: 0; }

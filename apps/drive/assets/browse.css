@@ -10,7 +10,7 @@
 .more { display: flex; justify-content: center; padding: 14px 0 24px; }
 .ihint { color: var(--ink-3); font-size: 13px; margin: 4px 0 8px; }
 .actions .primary:disabled { opacity: .45; cursor: not-allowed; }
-@media (max-width: 760px) {
+@media (max-width: 599px) {
   .viewhead .actions { width: 100%; gap: 8px; }
   .viewhead .actions .primary { height: 32px; padding: 0 12px; font-size: 13px; }
 }
