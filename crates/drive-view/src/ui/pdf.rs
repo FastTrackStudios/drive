@@ -98,6 +98,7 @@ pub fn PdfView(
             b.title().map(str::to_string),
         )
     };
+    let (pw, ph) = (pw.max(1.0), ph.max(1.0));
     let p = page();
     let mut go = move |to: usize| {
         if to < pages {
@@ -222,7 +223,11 @@ pub fn PdfView(
                     r#type: "search",
                     placeholder: "Find in this PDF",
                     value: "{query}",
-                    oninput: move |e| query.set(e.value()),
+                    oninput: move |e| {
+                        query.set(e.value());
+                        hits.set(Vec::new());
+                        hit.set(0);
+                    },
                     onkeydown: move |e: KeyboardEvent| {
                         if e.key().to_string() == "Enter" {
                             if hits.read().is_empty() || e.modifiers().shift() {
@@ -281,7 +286,7 @@ pub fn PdfView(
                 for c in comments.read().iter().cloned() {
                     button {
                         class: "dv-noteitem",
-                        onclick: move |_| page.set(c.page),
+                        onclick: move |_| go(c.page),
                         span { class: "dv-hint", "p. {c.page + 1} · {c.kind}" }
                         if !c.author.is_empty() {
                             b { " {c.author}" }
