@@ -369,6 +369,7 @@ mod tests {
         std::fs::create_dir_all(r.join("lib/Strings")).unwrap();
         let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(r.join("lib/Strings/legato.wav"), &big).unwrap();
+        std::fs::write(r.join("lib/empty.txt"), []).unwrap();
         std::fs::write(r.join("lib/x.tmp"), b"t").unwrap();
         let op = crate::storage::StorageConfig::Fs {
             root: r.to_string_lossy().into(),
@@ -377,10 +378,12 @@ mod tests {
         .unwrap();
         let (idx, st) = walk_storage("s", &op, "lib", None).await.unwrap();
         let paths: Vec<&str> = idx.entries.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, ["Strings", "Strings/legato.wav"]);
-        assert_eq!(st.hashed, 1);
+        assert_eq!(paths, ["Strings", "Strings/legato.wav", "empty.txt"]);
+        assert_eq!(st.hashed, 2);
         // The same sampled hash as walking it on disk.
         let (disk, _) = walk("d", &r.join("lib"), None);
         assert_eq!(idx.entries[1].sampled, disk.entries[1].sampled);
+        assert_eq!(idx.entries[2].size, 0);
+        assert_eq!(idx.entries[2].sampled, disk.entries[2].sampled);
     }
 }
