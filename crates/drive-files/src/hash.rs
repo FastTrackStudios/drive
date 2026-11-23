@@ -21,6 +21,9 @@ pub fn of_file(path: &Path) -> std::io::Result<String> {
 
 /// The byte ranges a sampled hash reads from something `len` long.
 pub fn sample_ranges(len: u64) -> Vec<std::ops::Range<u64>> {
+    if len == 0 {
+        return Vec::new();
+    }
     if len <= SAMPLE {
         return vec![0..len];
     }
@@ -61,6 +64,15 @@ pub fn sampled(path: &Path) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_files_need_no_sample_reads() {
+        assert!(sample_ranges(0).is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty");
+        std::fs::write(&path, []).unwrap();
+        assert_eq!(sampled(&path).unwrap(), sampled_of(0, &[]));
+    }
 
     #[test]
     fn full_and_sampled() {
