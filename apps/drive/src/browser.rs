@@ -1429,6 +1429,20 @@ pub fn Preview(space: String) -> Element {
     };
     let close = move |_| nav.preview.set(false);
     let phone = app_shell::ui::use_shell().form() == app_shell::ui::FormFactor::Phone;
+    let header = rsx! {
+        header { class: "fvhead",
+            img { class: "fvicon", src: icon(&item.kind.icon), alt: "" }
+            div { class: "fvname",
+                b { "{item.name}" }
+                span { class: "ikind", "{item.kind.name} · {human(item.size)}" }
+            }
+            if !status().is_empty() {
+                span { class: "fvstatus", "{status}" }
+            }
+            a { class: "primary ghost", href: "{url}", "Download" }
+            button { class: "x", title: "Close (Esc)", onclick: close, "✕" }
+        }
+    };
     rsx! {
         div {
             class: if phone { "fullview phone" } else { "fullview" },
@@ -1438,36 +1452,12 @@ pub fn Preview(space: String) -> Element {
                     nav.preview.set(false);
                 }
             },
-            header { class: "fvhead",
-                img { class: "fvicon", src: icon(&item.kind.icon), alt: "" }
-                div { class: "fvname",
-                    b { "{item.name}" }
-                    span { class: "ikind", "{item.kind.name} · {human(item.size)}" }
-                }
-                if !status().is_empty() {
-                    span { class: "fvstatus", "{status}" }
-                }
-                a { class: "primary ghost", href: "{url}", "Download" }
-                button { class: "x", title: "Close (Esc)", onclick: close, "✕" }
+            if phone {
+                crate::mobile::QuickLookSwipe { nav, {header} }
+            } else {
+                {header}
             }
-            div { class: if phone { "fvbody swiped" } else { "fvbody" },
-                if phone {
-                    crate::mobile::QuickLookSwipe { nav,
-                        div { class: "fvswipe",
-                            drive_view::Viewer {
-                                key: "{url}",
-                                kind: item.kind.id.clone(),
-                                parent: item.kind.parent.clone(),
-                                name: item.name.clone(),
-                                url: url.clone(),
-                                size: item.size,
-                                bearer: drive_dioxus::auth::bearer(),
-                                peaks: sidecar_url(&item, &space, drive_sidecars::Kind::Peaks),
-                                poster: sidecar_url(&item, &space, drive_sidecars::Kind::Thumb1024),
-                            }
-                        }
-                    }
-                } else {
+            div { class: "fvbody",
                 drive_view::Viewer {
                     key: "{url}",
                     kind: item.kind.id.clone(),
@@ -1476,12 +1466,11 @@ pub fn Preview(space: String) -> Element {
                     url: url.clone(),
                     size: item.size,
                     bearer: drive_dioxus::auth::bearer(),
-                    on_anchor: Some(EventHandler::new(move |a| anchor.set(Some(a)))),
-                    on_save,
-                    on_pdf_edit,
+                    on_anchor: (!phone).then(|| EventHandler::new(move |a| anchor.set(Some(a)))),
+                    on_save: on_save.filter(|_| !phone),
+                    on_pdf_edit: on_pdf_edit.filter(|_| !phone),
                     peaks: sidecar_url(&item, &space, drive_sidecars::Kind::Peaks),
                     poster: sidecar_url(&item, &space, drive_sidecars::Kind::Thumb1024),
-                }
                 }
             }
             if let Some(a) = anchor() {

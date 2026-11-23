@@ -453,14 +453,14 @@ pub fn WithTab(nav: Nav, children: Element) -> Element {
     rsx! { {children} }
 }
 
-/// Quick Look's frame on a phone: swipe left for the next file, right for
+/// Quick Look's header on a phone: swipe left for the next file, right for
 /// the one before, down to close.
 #[component]
 pub fn QuickLookSwipe(nav: Nav, children: Element) -> Element {
     let mut nav = nav;
     rsx! {
         Swipeable {
-            style: "flex: 1 1 0px; min-width: 0; min-height: 0; display: flex; flex-direction: column;".to_string(),
+            style: "flex: none; min-width: 0; display: flex;".to_string(),
             on_swipe: move |s: Swipe| match s {
                 Swipe::Left => crate::browser::quick_look_step(nav, true),
                 Swipe::Right => crate::browser::quick_look_step(nav, false),
