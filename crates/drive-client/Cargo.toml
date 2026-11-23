@@ -1,6 +1,6 @@
 [package]
 name = "drive-client"
-description = "What an app embeds to use Drive: documents that sync live and work offline, and presence"
+description = "What an app embeds to use Drive: documents that sync live and work offline, and presence, in a browser or a native app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,9 @@ loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-channel = "0.3"
+
+# In a browser: the page's WebSocket, timers, localStorage and IndexedDB.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -19,3 +22,19 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "Event", "Window", "Storage", "Location", "IdbFactory", "IdbDatabase", "IdbOpenDbRequest", "IdbRequest", "IdbObjectStore", "IdbTransaction", "IdbTransactionMode", "DomStringList"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+# In a native app (a desktop or phone build): a WebSocket on Tokio and a
+# folder for the copies, named as drive-native names them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+drive-native = { path = "../drive-native" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+futures-util = { version = "0.3", features = ["sink"] }
+getrandom = "0.3"
+tracing = "0.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+drive-node = { path = "../drive-node" }
+axum = "0.8"
+tempfile = "3"

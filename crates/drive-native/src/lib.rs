@@ -94,7 +94,9 @@ struct Inner {
 #[derive(Clone)]
 pub struct Drive(Arc<Inner>);
 
-fn file_name(id: &str) -> String {
+/// The file a document's copy is kept in (also how `drive-client` names
+/// a native app's copies).
+pub fn file_name(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
