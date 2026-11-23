@@ -158,21 +158,59 @@ async fn every_org(rooms: &Rooms) -> Vec<String> {
 }
 
 /// The org an HTTP request is about: `?space=` / `?org=`, or the first
-/// path segment after `/index/` or `/fetch/`.
-fn org_of_request(uri: &axum::http::Uri) -> Option<String> {
+/// path segment after `/index/` or `/fetch/`. Rejects duplicate or
+/// conflicting `space`/`org` query parameters so middleware and handlers
+/// can never disagree on which org a request targets.
+fn org_of_request(uri: &axum::http::Uri) -> Result<Option<String>, StatusCode> {
     let q = uri.query().unwrap_or("");
+    let mut found: Option<(&str, String)> = None;
     for kv in q.split('&') {
-        if let Some(v) = kv
+        if let Some((key, val)) = kv
             .strip_prefix("space=")
-            .or_else(|| kv.strip_prefix("org="))
+            .map(|v| ("space", v))
+            .or_else(|| kv.strip_prefix("org=").map(|v| ("org", v)))
         {
-            return Some(percent_decode(v));
+            if found.is_some() {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            found = Some((key, percent_decode(val)));
         }
     }
-    let mut parts = uri.path().trim_start_matches('/').split('/');
+    let path = uri.path();
+    let expected = if path == "/shared" {
+        Some("org")
+    } else if matches!(
+        path,
+        "/search"
+            | "/list"
+            | "/tree"
+            | "/tree/file"
+            | "/copies"
+            | "/protection"
+            | "/at-risk"
+            | "/stats"
+    ) {
+        Some("space")
+    } else {
+        None
+    };
+    if let Some(want) = expected {
+        return match found {
+            Some((k, v)) if k == want && !v.is_empty() => Ok(Some(v)),
+            _ => Err(StatusCode::BAD_REQUEST),
+        };
+    }
+    if let Some((k, v)) = found {
+        // Sidecar routes read `space`; reject mismatched `org=`.
+        if path.starts_with("/sidecar/") && k != "space" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        return Ok(Some(v));
+    }
+    let mut parts = path.trim_start_matches('/').split('/');
     match parts.next() {
-        Some("index") | Some("fetch") => parts.next().map(percent_decode),
-        _ => None,
+        Some("index") | Some("fetch") => Ok(parts.next().map(percent_decode)),
+        _ => Ok(None),
     }
 }
 
@@ -181,12 +219,14 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Ok(hex) = std::str::from_utf8(&b[i + 1..i + 3])
+            && let Ok(v) = u8::from_str_radix(hex, 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(if b[i] == b'+' { b' ' } else { b[i] });
         i += 1;
@@ -210,13 +250,26 @@ async fn guard(
     else {
         return (StatusCode::UNAUTHORIZED, "sign in").into_response();
     };
-    // Writing a blob needs a sign-in only (its name is its hash); reading
+    // Unscoped write/mutation endpoints (blobs, sidecar cache, PDF edits)
+    // still require membership in at least one org on this node.
+    if !who.all
+        && who.orgs.is_empty()
+        && req.method() != axum::http::Method::GET
+        && req.method() != axum::http::Method::HEAD
+    {
+        return (StatusCode::FORBIDDEN, "not a member of any org").into_response();
+    }
+    // Writing a blob needs a sign-in (and org membership above); reading
     // one needs nothing (share links hand out its URL).
     let blob = req.uri().path().starts_with("/blobs/");
     if blob {
         return next.run(req).await;
     }
-    if let Some(org) = org_of_request(req.uri())
+    let org = match org_of_request(req.uri()) {
+        Ok(o) => o,
+        Err(status) => return (status, "invalid org parameter").into_response(),
+    };
+    if let Some(org) = org
         && !who.member_of(&org)
         && !shared_file_read(&rooms, &who, &org, req.method().clone(), req.uri().clone()).await
     {
@@ -280,8 +333,9 @@ async fn guard_writes(
 }
 
 /// Sidecar requests: a plain read by content key is open (like a blob);
-/// one that names a space (asking its device to make it), and every write
-/// or purge, goes through [`guard`].
+/// one that names a space or asks the node to generate a sidecar (`name`
+/// or `hash` without `make=0`), and every write or purge, goes through
+/// [`guard`].
 async fn guard_sidecars(
     State(rooms): State<Arc<Rooms>>,
     peer: Remote,
@@ -289,9 +343,16 @@ async fn guard_sidecars(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let read = req.method() == axum::http::Method::GET || req.method() == axum::http::Method::HEAD;
-    let names_space = org_of_request(req.uri()).is_some();
+    let names_space = match org_of_request(req.uri()) {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(status) => return (status, "invalid org parameter").into_response(),
+    };
+    let q = query_map(req.uri());
+    let asks_make =
+        q.get("make").map(String::as_str) != Some("0") && (q.contains_key("name") || q.contains_key("hash"));
     let stats = req.uri().path() == "/sidecars/stats";
-    if read && !names_space && !stats {
+    if read && !names_space && !asks_make && !stats {
         return next.run(req).await;
     }
     guard(State(rooms), peer, req, next).await
@@ -399,14 +460,18 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
     let api = Router::new()
         .route("/sync", get(sync))
         .route("/health", get(|| async { "ok" }))
+        .with_state(rooms.clone())
         // A page's own spans, on to the collector this node exports to
         // (telemetry::relay): off unless the node has one.
-        .route(
-            "/otlp/v1/traces",
-            axum::routing::post(telemetry::relay)
+        .merge(
+            Router::new()
+                .route("/otlp/v1/traces", axum::routing::post(telemetry::relay))
+                .layer(axum::middleware::from_fn_with_state(
+                    rooms.clone(),
+                    guard_writes,
+                ))
                 .layer(axum::extract::DefaultBodyLimit::max(1 << 20)),
         )
-        .with_state(rooms.clone())
         .merge(
             Router::new()
                 .route("/orgs", get(orgs))

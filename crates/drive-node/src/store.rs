@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use drive_files::index::LocationIndex;
@@ -21,6 +22,10 @@ const READERS: usize = 4;
 pub struct Store {
     /// Every write, and the transactions, on one connection.
     write: Mutex<turso::Connection>,
+    /// True while a write transaction is open on `write`, so if its future
+    /// was dropped mid-way (a cancelled index upload), the very next writer
+    /// rolls it back before any `save` can execute inside it.
+    tx_open: AtomicBool,
     reads: ReadPool,
     /// Bumped each time a space's index rows change (put, drop, rename):
     /// what is worked out from them is good while it stays the same.
@@ -239,6 +244,7 @@ impl Store {
         }
         Ok(Store {
             write: Mutex::new(conn),
+            tx_open: AtomicBool::new(false),
             reads: ReadPool {
                 idle: std::sync::Mutex::new(idle),
                 permits: Semaphore::new(READERS),
@@ -251,6 +257,12 @@ impl Store {
     async fn writer(&self) -> Held<'_> {
         let asked = Instant::now();
         let g = self.write.lock().await;
+        // If an earlier transactional write (such as `put_index`) was dropped
+        // mid-way, roll its open transaction back before *any* later write
+        // (`save`, `delete`, another `put_index`, …) runs inside it.
+        if self.tx_open.swap(false, Ordering::AcqRel) {
+            let _ = g.execute("ROLLBACK", ()).await;
+        }
         let span = tracing::Span::current();
         span.record("store.wait_ms", ms(asked));
         span.record("store.conn", "write");
@@ -400,14 +412,10 @@ impl Store {
     #[tracing::instrument(name = "drive.store.put_index", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn put_index(&self, space: &str, index: &LocationIndex) -> turso::Result<usize> {
         let conn = self.writer().await;
-        // A request cut off mid-way (its client gone, an agent restarted
-        // during a big upload) drops this future after BEGIN and leaves the
-        // transaction open on the shared connection; every later BEGIN would
-        // then fail. Roll any such leftover back first (with none open this
-        // fails harmlessly): the leftover's DELETE is undone, so that
-        // location keeps its previous rows.
+        // Defensive rollback in case a raw transaction was left open on the write connection.
         let _ = conn.execute("ROLLBACK", ()).await;
         conn.execute("BEGIN", ()).await?;
+        self.tx_open.store(true, Ordering::Release);
         let result = async {
             conn.execute(
                 "DELETE FROM entries WHERE space = ?1 AND location = ?2",
@@ -468,12 +476,20 @@ impl Store {
         .await;
         match result {
             Ok(n) => {
-                conn.execute("COMMIT", ()).await?;
-                self.changed(space);
-                Ok(n)
+                let committed = conn.execute("COMMIT", ()).await;
+                if committed.is_ok() {
+                    self.tx_open.store(false, Ordering::Release);
+                    self.changed(space);
+                    Ok(n)
+                } else {
+                    let _ = conn.execute("ROLLBACK", ()).await;
+                    self.tx_open.store(false, Ordering::Release);
+                    Err(committed.unwrap_err())
+                }
             }
             Err(e) => {
                 let _ = conn.execute("ROLLBACK", ()).await;
+                self.tx_open.store(false, Ordering::Release);
                 Err(e)
             }
         }
@@ -709,7 +725,7 @@ impl Store {
             .query(
                 "SELECT location, path, name, dir, size, mtime, sampled FROM entries \
                  WHERE space = ?1 AND location = ?2 AND dir = 0 \
-                 AND (?3 = '' OR substr(path, 1, length(?3) + 1) = ?3 || '/') ORDER BY path",
+                 AND (?3 = '' OR path = ?3 OR substr(path, 1, length(?3) + 1) = ?3 || '/') ORDER BY path",
                 vec![
                     Value::Text(space.into()),
                     Value::Text(location.into()),
@@ -1059,5 +1075,61 @@ mod tests {
             .unwrap();
         assert_eq!(found.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn abandoned_transaction_does_not_roll_back_later_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.db");
+        let store = Store::open(&path).await.unwrap();
+        // Simulate an aborted put_index leaving a BEGIN open on the writer connection.
+        {
+            let conn = store.write.lock().await;
+            conn.execute("BEGIN", ()).await.unwrap();
+            store.tx_open.store(true, Ordering::Release);
+        }
+        // The next save must roll back the abandoned transaction first so it commits on its own.
+        store.save("org/doc", vec![1, 2, 3, 4]).await.unwrap();
+        drop(store);
+
+        let reopened = Store::open(&path).await.unwrap();
+        assert_eq!(reopened.load("org/doc").await.unwrap(), Some(vec![1, 2, 3, 4]));
+    }
+
+    #[tokio::test]
+    async fn under_matches_single_file_part_and_folder_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("node.db")).await.unwrap();
+        store
+            .put_index(
+                "church",
+                &index(
+                    "l1",
+                    vec![
+                        sized("Charts/a.pdf", 10),
+                        sized("Charts/sub/b.pdf", 20),
+                        sized("Charts2/c.pdf", 30),
+                    ],
+                ),
+            )
+            .await
+            .unwrap();
+        let single: Vec<String> = store
+            .under("church", "l1", "Charts/a.pdf")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        assert_eq!(single, ["Charts/a.pdf"]);
+
+        let folder: Vec<String> = store
+            .under("church", "l1", "Charts")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        assert_eq!(folder, ["Charts/a.pdf", "Charts/sub/b.pdf"]);
     }
 }

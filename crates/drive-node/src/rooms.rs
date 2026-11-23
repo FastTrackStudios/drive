@@ -22,22 +22,27 @@ struct Room {
     peers: HashMap<Peer, Outbox>,
     /// Their latest presence: (name, json).
     presence: HashMap<Peer, (String, String)>,
-    /// Changed since it was last saved.
-    dirty: bool,
+    /// Bumped on every edit/update; saved tracks the latest flushed revision.
+    dirty: u64,
+    saved: u64,
 }
 
 type Outbox = mpsc::UnboundedSender<ToClient>;
+type PendingFetch = (Peer, oneshot::Sender<Result<String, String>>);
+type PendingBrowse = (Peer, oneshot::Sender<Result<drive_proto::Browsed, String>>);
 
 pub struct Rooms {
     rooms: Mutex<HashMap<DocId, Room>>,
+    /// Serialises flush_loop and flush_now so an older snapshot never overwrites a newer one.
+    flushing: Mutex<()>,
     pub store: Store,
     next_peer: AtomicU64,
     /// Connected agents, by (space, device): their peer and outbox.
     agents: Mutex<HashMap<(String, String), (Peer, Outbox)>>,
-    /// Fetches waiting for an agent's answer.
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
-    /// Browse requests waiting for an agent's answer.
-    browsing: Mutex<HashMap<u64, oneshot::Sender<Result<drive_proto::Browsed, String>>>>,
+    /// Fetches waiting for an agent's answer: (expected agent peer, sender).
+    pending: Mutex<HashMap<u64, PendingFetch>>,
+    /// Browse requests waiting for an agent's answer: (expected agent peer, sender).
+    browsing: Mutex<HashMap<u64, PendingBrowse>>,
     next_req: AtomicU64,
     /// Who may read and write what (the issuer's orgs).
     pub auth: crate::auth::Auth,
@@ -64,6 +69,7 @@ impl Rooms {
         Rooms {
             auth,
             rooms: Mutex::new(HashMap::new()),
+            flushing: Mutex::new(()),
             store,
             next_peer: AtomicU64::new(1),
             agents: Mutex::new(HashMap::new()),
@@ -201,7 +207,7 @@ impl Rooms {
         if let Ok(bytes) = room.doc.export(ExportMode::updates(&before))
             && !bytes.is_empty()
         {
-            room.dirty = true;
+            room.dirty += 1;
             for o in room.peers.values() {
                 let _ = o.send(ToClient::Update {
                     doc: id.to_string(),
@@ -247,16 +253,16 @@ impl Rooms {
         ask: drive_proto::Browse,
         wait: Duration,
     ) -> Result<drive_proto::Browsed, FetchError> {
-        let outbox = self
+        let (agent_peer, outbox) = self
             .agents
             .lock()
             .await
             .get(&(space.to_string(), device.to_string()))
-            .map(|(_, o)| o.clone())
+            .map(|(p, o)| (*p, o.clone()))
             .ok_or_else(|| FetchError::Offline(device.to_string()))?;
         let req = self.next_req.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.browsing.lock().await.insert(req, tx);
+        self.browsing.lock().await.insert(req, (agent_peer, tx));
         if outbox.send(ToClient::Browse { req, ask }).is_err() {
             self.browsing.lock().await.remove(&req);
             return Err(FetchError::Offline(device.to_string()));
@@ -329,16 +335,16 @@ impl Rooms {
             })
             .await
             .ok_or(FetchError::NoLocation)?;
-        let outbox = self
+        let (agent_peer, outbox) = self
             .agents
             .lock()
             .await
             .get(&(space.to_string(), device.clone()))
-            .map(|(_, o)| o.clone())
+            .map(|(p, o)| (*p, o.clone()))
             .ok_or_else(|| FetchError::Offline(device.clone()))?;
         let req = self.next_req.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(req, tx);
+        self.pending.lock().await.insert(req, (agent_peer, tx));
         if outbox.send(msg(req)).is_err() {
             self.pending.lock().await.remove(&req);
             return Err(FetchError::Offline(device));
@@ -374,7 +380,8 @@ impl Rooms {
                     doc,
                     peers: HashMap::new(),
                     presence: HashMap::new(),
-                    dirty: false,
+                    dirty: 0,
+                    saved: 0,
                 },
             );
         }
@@ -395,23 +402,30 @@ impl Rooms {
     }
 
     async fn flush(&self) {
-        let dirty: Vec<(DocId, Vec<u8>)> = {
-            let mut rooms = self.rooms.lock().await;
+        let _guard = self.flushing.lock().await;
+        let dirty: Vec<(DocId, u64, Vec<u8>)> = {
+            let rooms = self.rooms.lock().await;
             rooms
-                .iter_mut()
-                .filter(|(_, r)| r.dirty)
+                .iter()
+                .filter(|(_, r)| r.dirty > r.saved)
                 .filter_map(|(id, r)| {
-                    r.dirty = false;
                     r.doc
                         .export(ExportMode::Snapshot)
                         .ok()
-                        .map(|s| (id.clone(), s))
+                        .map(|s| (id.clone(), r.dirty, s))
                 })
                 .collect()
         };
-        for (id, snapshot) in dirty {
-            if let Err(e) = self.store.save(&id, snapshot).await {
-                tracing::warn!(doc.id = %id, error = %e, "a document did not save");
+        for (id, rev, snapshot) in dirty {
+            match self.store.save(&id, snapshot).await {
+                Ok(()) => {
+                    if let Some(r) = self.rooms.lock().await.get_mut(&id) {
+                        r.saved = r.saved.max(rev);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(doc.id = %id, error = %e, "a document did not save");
+                }
             }
         }
     }
@@ -434,7 +448,9 @@ impl Rooms {
             _ => None,
         };
         let allowed = match (&named, &msg) {
-            (Some(id), ToNode::Update { .. }) => self.may_write(who, id).await,
+            (Some(id), ToNode::Update { .. } | ToNode::Agent { .. }) => {
+                self.may_write(who, id).await
+            }
             (Some(id), _) => self.may(who, id).await,
             (None, _) => true,
         };
@@ -478,7 +494,7 @@ impl Rooms {
                 let room = self.ensure(&mut rooms, &id).await;
                 match room.doc.import(&bytes) {
                     Ok(_) => {
-                        room.dirty = true;
+                        room.dirty += 1;
                         for (p, o) in &room.peers {
                             if *p != peer {
                                 let _ = o.send(ToClient::Update {
@@ -498,7 +514,9 @@ impl Rooms {
             }
             ToNode::Presence { doc: id, json } => {
                 let mut rooms = self.rooms.lock().await;
-                if let Some(room) = rooms.get_mut(&id) {
+                if let Some(room) = rooms.get_mut(&id)
+                    && room.peers.contains_key(&peer)
+                {
                     room.presence.insert(peer, (name.to_string(), json.clone()));
                     for (p, o) in &room.peers {
                         if *p != peer {
@@ -523,12 +541,18 @@ impl Rooms {
                 crate::transfer::publish(self, &space).await;
             }
             ToNode::Fetched { req, result } => {
-                if let Some(tx) = self.pending.lock().await.remove(&req) {
+                let mut map = self.pending.lock().await;
+                if map.get(&req).is_some_and(|(expected, _)| *expected == peer)
+                    && let Some((_, tx)) = map.remove(&req)
+                {
                     let _ = tx.send(result);
                 }
             }
             ToNode::Browsed { req, result } => {
-                if let Some(tx) = self.browsing.lock().await.remove(&req) {
+                let mut map = self.browsing.lock().await;
+                if map.get(&req).is_some_and(|(expected, _)| *expected == peer)
+                    && let Some((_, tx)) = map.remove(&req)
+                {
                     let _ = tx.send(result);
                 }
             }

@@ -333,19 +333,20 @@ pub fn fill(t: Arc<Transfer>, src: Source, blobs: BlobStore) {
         }
         let result = async {
             let mut w = blobs.writer(&hash).await.map_err(|e| e.to_string())?;
-            let mut s =
-                std::pin::pin!(t.fetcher.stream(src.clone(), 0, src.size.saturating_sub(1)));
-            while let Some(b) = s.next().await {
-                match b {
-                    Ok(b) => {
-                        if let Err(e) = w.write(b).await {
+            if src.size > 0 {
+                let mut s = std::pin::pin!(t.fetcher.stream(src.clone(), 0, src.size - 1));
+                while let Some(b) = s.next().await {
+                    match b {
+                        Ok(b) => {
+                            if let Err(e) = w.write(b).await {
+                                w.abandon().await;
+                                return Err(e.to_string());
+                            }
+                        }
+                        Err(e) => {
                             w.abandon().await;
                             return Err(e.to_string());
                         }
-                    }
-                    Err(e) => {
-                        w.abandon().await;
-                        return Err(e.to_string());
                     }
                 }
             }

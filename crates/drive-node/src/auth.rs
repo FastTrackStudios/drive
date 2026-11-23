@@ -269,17 +269,30 @@ fn percent(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 3 <= b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 3 <= b.len()
+            && let Ok(hex) = std::str::from_utf8(&b[i + 1..i + 3])
+            && let Ok(v) = u8::from_str_radix(hex, 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn is_local_host(host: &str) -> bool {
+    let bare = |name: &str| {
+        host == name
+            || host
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+    };
+    bare("127.0.0.1") || bare("localhost") || bare("[::1]")
 }
 
 /// Whether a request comes from this computer itself: from loopback, not
@@ -300,14 +313,42 @@ pub fn is_local(addr: Option<SocketAddr>, headers: &HeaderMap) -> bool {
         .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    let local_name =
-        host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]");
-    from_loopback && !forwarded && local_name
+    from_loopback && !forwarded && is_local_host(host)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_host_rejects_evil_suffixes() {
+        let lo = Some("127.0.0.1:43210".parse().unwrap());
+        for good in [
+            "localhost",
+            "localhost:8096",
+            "127.0.0.1",
+            "127.0.0.1:8096",
+            "[::1]",
+            "[::1]:8096",
+        ] {
+            let mut h = HeaderMap::new();
+            h.insert(axum::http::header::HOST, good.parse().unwrap());
+            assert!(is_local(lo, &h), "{good} should be local");
+        }
+        for bad in [
+            "",
+            "localhost.evil.example",
+            "localhost.evil.example:8096",
+            "127.0.0.1.evil.example",
+            "[::1].evil.example",
+            "localhost:notaport",
+            "localhost:",
+        ] {
+            let mut h = HeaderMap::new();
+            h.insert(axum::http::header::HOST, bad.parse().unwrap());
+            assert!(!is_local(lo, &h), "{bad} must not be local");
+        }
+    }
 
     #[test]
     fn a_token_from_the_header_or_the_cookie() {
