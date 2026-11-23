@@ -25,11 +25,32 @@ pub struct Catalog {
     pub blobs: BlobStore,
     /// Each space's names, as of a version of its document.
     pub names: NameCache,
+    /// Each space's protection reports, as of its document and its rows.
+    pub reports: ReportCache,
 }
 
 /// A space's names (locations, devices, storages, what the node keeps) by
 /// space, with the version of the space document they were read from.
 pub type NameCache = Arc<std::sync::Mutex<HashMap<String, (loro::Frontiers, Arc<DocNames>)>>>;
+
+/// A space's protection reports (by space and how many short files each
+/// lists), with the version of the space document and the generation of
+/// its index rows they were worked out from: checking every file against
+/// every policy is a scan of the whole space, done again only when one of
+/// the two has moved. The lock lets one request work them out while the
+/// others wait for its answer instead of scanning too.
+#[derive(Clone, Default)]
+pub struct ReportCache {
+    done: Arc<std::sync::Mutex<HashMap<(String, usize), Reports>>>,
+    working: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone)]
+struct Reports {
+    version: loro::Frontiers,
+    generation: u64,
+    reports: Arc<Vec<drive_files::protect::Report>>,
+}
 
 type Q = Query<HashMap<String, String>>;
 
@@ -304,15 +325,76 @@ pub async fn protection(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let space_id = q(&p, "space");
     let limit = q(&p, "limit").parse().unwrap_or(50);
-    let (policies, locations, sites) = c
+    let reports = reports(&c, space_id, limit).await?;
+    Ok(Json(serde_json::json!({ "reports": *reports })))
+}
+
+/// Every policy checked against every indexed file of a space, each
+/// listing at most `limit` files short: from the cache while neither the
+/// space document nor its rows have changed.
+#[tracing::instrument(name = "drive.protection", skip_all, fields(protection.cached = tracing::field::Empty, protection.files = tracing::field::Empty))]
+async fn reports(
+    c: &Catalog,
+    space_id: &str,
+    limit: usize,
+) -> Result<Arc<Vec<drive_files::protect::Report>>, StatusCode> {
+    let key = (space_id.to_string(), limit.min(1000));
+    let span = tracing::Span::current();
+    let current = |version: &loro::Frontiers, generation: u64| {
+        c.reports
+            .done
+            .lock()
+            .expect("reports")
+            .get(&key)
+            .filter(|r| r.version == *version && r.generation == generation)
+            .map(|r| r.reports.clone())
+    };
+    let version = c
+        .rooms
+        .read(&drive_files::space_doc(space_id), |d| d.oplog_frontiers())
+        .await;
+    if let Some(r) = current(&version, c.rooms.store.generation(space_id)) {
+        span.record("protection.cached", true);
+        return Ok(r);
+    }
+    let _working = c.reports.working.lock().await;
+    // The generation before the rows: rows changed meanwhile make the
+    // answer stale at once, never a stale answer kept as fresh.
+    let generation = c.rooms.store.generation(space_id);
+    let (version, policies, locations, sites) = c
         .rooms
         .read(&drive_files::space_doc(space_id), |d| {
-            (space::policies(d), space::locations(d), space::sites(d))
+            (
+                d.oplog_frontiers(),
+                space::policies(d),
+                space::locations(d),
+                space::sites(d),
+            )
         })
         .await;
+    // Someone else worked it out while this one waited.
+    if let Some(r) = current(&version, generation) {
+        span.record("protection.cached", true);
+        return Ok(r);
+    }
+    span.record("protection.cached", false);
     let rows = c.rooms.store.files(space_id).await.map_err(fail)?;
-    let reports = drive_files::protect::check(&policies, &locations, &sites, &rows, limit);
-    Ok(Json(serde_json::json!({ "reports": reports })))
+    span.record("protection.files", rows.len());
+    let reports = tokio::task::spawn_blocking(move || {
+        drive_files::protect::check(&policies, &locations, &sites, &rows, key.1)
+    })
+    .await
+    .map_err(fail)?;
+    let reports = Arc::new(reports);
+    c.reports.done.lock().expect("reports").insert(
+        (space_id.to_string(), limit.min(1000)),
+        Reports {
+            version,
+            generation,
+            reports: reports.clone(),
+        },
+    );
+    Ok(reports)
 }
 
 /// `?space=&policy=&limit=`: the files a policy finds short of copies, as
@@ -323,21 +405,16 @@ pub async fn at_risk(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let space_id = q(&p, "space");
     let limit: usize = q(&p, "limit").parse().unwrap_or(200).clamp(1, 1000);
-    let (policies, locations, sites) = c
-        .rooms
-        .read(&drive_files::space_doc(space_id), |d| {
-            (space::policies(d), space::locations(d), space::sites(d))
-        })
-        .await;
-    let policies: Vec<_> = policies
-        .into_iter()
-        .filter(|x| q(&p, "policy").is_empty() || x.id == q(&p, "policy"))
-        .collect();
-    let rows = c.rooms.store.files(space_id).await.map_err(fail)?;
-    let reports = drive_files::protect::check(&policies, &locations, &sites, &rows, limit);
+    // Each policy is checked on its own, so one policy's report is the
+    // same in the whole space's set.
+    let reports = reports(&c, space_id, limit).await?;
     let mut found = Vec::new();
     let mut kept = Vec::new();
-    for short in reports.iter().flat_map(|r| r.short.iter()) {
+    for short in reports
+        .iter()
+        .filter(|r| q(&p, "policy").is_empty() || r.policy.id == q(&p, "policy"))
+        .flat_map(|r| r.short.iter())
+    {
         if let Some(f) = c
             .rooms
             .store
@@ -369,27 +446,9 @@ pub async fn stats(
     Query(p): Q,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let space_id = q(&p, "space");
-    let rows = c.rooms.store.files(space_id).await.map_err(fail)?;
-    let mut exts: HashMap<String, (u64, u64)> = HashMap::new();
-    let mut locations: HashMap<String, (u64, u64)> = HashMap::new();
-    let (mut files, mut bytes) = (0u64, 0u64);
-    for r in &rows {
-        let name = r.path.rsplit('/').next().unwrap_or_default();
-        let ext = name
-            .rsplit_once('.')
-            .map(|(_, e)| e.to_ascii_lowercase())
-            .unwrap_or_default();
-        let e = exts.entry(ext).or_default();
-        e.0 += 1;
-        e.1 += r.size;
-        let l = locations.entry(r.location.clone()).or_default();
-        l.0 += 1;
-        l.1 += r.size;
-        files += 1;
-        bytes += r.size;
-    }
+    let s = c.rooms.store.stats(space_id).await.map_err(fail)?;
     Ok(Json(
-        serde_json::json!({ "files": files, "bytes": bytes, "exts": exts, "locations": locations }),
+        serde_json::json!({ "files": s.files, "bytes": s.bytes, "exts": s.exts, "locations": s.locations }),
     ))
 }
 
@@ -489,11 +548,11 @@ pub async fn shared(
     let orgs: Vec<String> = c
         .rooms
         .store
-        .list()
+        .ids()
         .await
         .map_err(fail)?
         .into_iter()
-        .filter_map(|(id, _)| id.strip_suffix("/drive:space").map(str::to_string))
+        .filter_map(|id| id.strip_suffix("/drive:space").map(str::to_string))
         .filter(|o| *o != to)
         .collect();
     let mut out = Vec::new();
@@ -510,4 +569,150 @@ pub async fn shared(
         }
     }
     Ok(Json(serde_json::json!({ "shared": out })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use drive_files::index::{IndexEntry, LocationIndex};
+    use drive_files::space::{Location, Policy};
+
+    fn location(id: &str, volume: &str) -> Location {
+        Location {
+            id: id.into(),
+            name: id.into(),
+            device: "pc".into(),
+            path: format!("/{id}"),
+            volume: volume.into(),
+            storage: String::new(),
+            mirror_of: String::new(),
+            index: String::new(),
+            files: 0,
+            bytes: 0,
+            built: 0,
+        }
+    }
+
+    fn index(location: &str, files: &[(&str, &str)]) -> LocationIndex {
+        LocationIndex {
+            location: location.into(),
+            root: String::new(),
+            built: 1,
+            entries: files
+                .iter()
+                .map(|(path, sampled)| IndexEntry {
+                    path: (*path).into(),
+                    dir: false,
+                    size: 10,
+                    mtime: 1,
+                    sampled: (*sampled).into(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The reports checked afresh from every row, as before the cache.
+    async fn slow(c: &Catalog, space_id: &str, limit: usize) -> serde_json::Value {
+        let (policies, locations, sites) = c
+            .rooms
+            .read(&drive_files::space_doc(space_id), |d| {
+                (space::policies(d), space::locations(d), space::sites(d))
+            })
+            .await;
+        let rows = c.rooms.store.files(space_id).await.unwrap();
+        serde_json::to_value(drive_files::protect::check(
+            &policies, &locations, &sites, &rows, limit,
+        ))
+        .unwrap()
+    }
+
+    async fn assert_reports_match(c: &Catalog, space_id: &str) {
+        let cached = reports(c, space_id, 50).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&*cached).unwrap(),
+            slow(c, space_id, 50).await
+        );
+    }
+
+    #[tokio::test]
+    async fn protection_follows_the_rows_and_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("drive.db"))
+            .await
+            .unwrap();
+        let rooms = Arc::new(Rooms::new(store, crate::auth::Auth::new(None)));
+        let blobs = drive_files::storage::StorageConfig::Fs {
+            root: dir.path().join("blobs").to_string_lossy().into_owned(),
+        }
+        .blobs()
+        .unwrap();
+        let c = Catalog {
+            rooms: rooms.clone(),
+            blobs,
+            names: Default::default(),
+            reports: Default::default(),
+        };
+        let doc = drive_files::space_doc("home");
+        rooms
+            .edit(&doc, "t", |d| {
+                space::add_location(d, &location("work", "/")).unwrap();
+                space::add_location(d, &location("ext", "/mnt/ext")).unwrap();
+                space::set_policy(
+                    d,
+                    &Policy {
+                        id: "two".into(),
+                        name: "two copies".into(),
+                        scope: vec!["work".into()],
+                        copies: 2,
+                        media: 2,
+                        offsite: 0,
+                    },
+                )
+                .unwrap();
+            })
+            .await;
+        rooms
+            .store
+            .put_index("home", &index("work", &[("a.wav", "A"), ("b.wav", "B")]))
+            .await
+            .unwrap();
+        assert_reports_match(&c, "home").await;
+        assert_eq!(reports(&c, "home", 50).await.unwrap()[0].ok, 0);
+        // Asked again with nothing changed: the same answer, not a new one.
+        let first = reports(&c, "home", 50).await.unwrap();
+        assert!(Arc::ptr_eq(&first, &reports(&c, "home", 50).await.unwrap()));
+
+        // A copy comes in on another disk: a.wav is now kept.
+        rooms
+            .store
+            .put_index("home", &index("ext", &[("backup/a.wav", "A")]))
+            .await
+            .unwrap();
+        assert_reports_match(&c, "home").await;
+        assert_eq!(reports(&c, "home", 50).await.unwrap()[0].ok, 1);
+
+        // The policy changes in the document: asked for one copy, both are.
+        rooms
+            .edit(&doc, "t", |d| {
+                space::set_policy(
+                    d,
+                    &Policy {
+                        id: "two".into(),
+                        name: "one copy".into(),
+                        scope: vec!["work".into()],
+                        copies: 1,
+                        media: 1,
+                        offsite: 0,
+                    },
+                )
+                .unwrap();
+            })
+            .await;
+        assert_reports_match(&c, "home").await;
+        assert_eq!(reports(&c, "home", 50).await.unwrap()[0].ok, 2);
+
+        // The copy's location is dropped.
+        rooms.store.drop_index("home", "ext").await.unwrap();
+        assert_reports_match(&c, "home").await;
+    }
 }
