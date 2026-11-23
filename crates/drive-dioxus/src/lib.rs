@@ -352,10 +352,13 @@ fn Connected(
     });
     // Keep the token fresh: a new one reconnects with it; a refused
     // refresh (signed out at the issuer) asks for a sign-in again.
+    // Without a token of its own (a native app the node lets in), there is
+    // nothing to refresh: a refresh would fail and restart the app.
+    let has_token = token.is_some();
     use_future(move || {
         let ctx = ctx.clone();
         async move {
-            if !ctx.signed_in {
+            if !ctx.signed_in || !has_token {
                 return;
             }
             loop {
