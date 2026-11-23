@@ -145,13 +145,13 @@ Voyager while it is off.
   file is offline". A device with an iroh endpoint instead serves the file
   in place and the node streams the ranges asked for
   ([transfer.md](transfer.md)).
-- **The Computers folder** (`drive mount ~/Drive --computers
-  ~/Computers`): `Computers/<device>/<location>/…`, read-only, built from
-  the indexes this device keeps a copy of (it lists everything offline).
-  Reading this device's files reads them in place; another computer's are
-  fetched through the node and cached. `user.drive.state` is `here`,
-  `cached`, `remote` or `offline`; `user.drive.copies` lists every location
-  holding the same content.
+- **The Devices folder** (`~/Drive/Devices/<device>/Locations/<location>/…`,
+  and `…/Disks/<disk>/…` for every disk, live; [mount.md](mount.md)):
+  read-only, built from the indexes this device keeps a copy of (it lists
+  everything offline). Reading this device's files reads them in place;
+  another computer's are fetched through the node and cached.
+  `user.drive.state` is `here`, `cached`, `remote` or `offline`;
+  `user.drive.copies` lists every location holding the same content.
 
 - **Browsing** (docs/browse.md): any folder of any disk of a computer
   that is on, live and read-only, without indexing it; "Index this

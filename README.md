@@ -18,6 +18,7 @@ installed.
 - [docs/tags.md](docs/tags.md): tags, fields and tag search.
 - [docs/rules.md](docs/rules.md): file rules, synced and run by every device (dry run first; nothing deleted).
 - [docs/sidecars.md](docs/sidecars.md): thumbnails and waveforms, derived once per file content.
+- [docs/mount.md](docs/mount.md): one folder for everything: the Drive tree, and every device's locations and disks under `Devices/`.
 - [docs/browse.md](docs/browse.md): every computer's disks, browsed live and read-only.
 - [docs/transfer.md](docs/transfer.md): file bytes between devices over iroh-blobs, by range, in place.
 - [docs/app-files.md](docs/app-files.md): any Drive file as a real local path at disk speed, for apps (an audio engine), wherever it lives.
