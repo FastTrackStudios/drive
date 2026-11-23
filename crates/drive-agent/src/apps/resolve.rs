@@ -408,7 +408,10 @@ impl Apps {
             206 => {}
             200 if from > 0 => w.restart()?,
             200 => {}
-            416 if Some(from) == size => {}
+            416 if Some(from) == size => {
+                on_bytes(from);
+                return w.finish(hash, size).map(|n| (n, from));
+            }
             s => return Err(format!("answered {s}")),
         }
         let mut resp = resp;
