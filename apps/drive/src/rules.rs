@@ -175,9 +175,9 @@ fn Switches(space: String, rule: Rule) -> Element {
                 span { class: "lbl", if on { "On" } else { "Off" } }
             }
             div { class: "segmented",
-                button { class: if !live { "seg on" } else { "seg" }, onclick: dry, "Dry run" }
+                button { class: if !live { "mode-button on" } else { "mode-button" }, onclick: dry, "Dry run" }
                 button {
-                    class: if live { "seg on golive" } else { "seg" },
+                    class: if live { "mode-button on golive" } else { "mode-button" },
                     onclick: move |_| if !live { confirming.set(true) },
                     "Live"
                 }
@@ -1044,18 +1044,36 @@ fn RuleEditor(space: String, draft: Signal<Rule>) -> Element {
                     div { key: "{gi}", class: "rgroup",
                         div { class: "row",
                             select {
-                                onchange: move |e| draft.write().when.groups[gi].all = e.value() == "all",
+                                onchange: move |e| {
+                                    if let Some(group) = draft.write().when.groups.get_mut(gi) {
+                                        group.all = e.value() == "all";
+                                    }
+                                },
                                 option { value: "all", selected: g.all, "All of" }
                                 option { value: "any", selected: !g.all, "Any of" }
                             }
-                            button { class: "x", title: "Remove the group", onclick: move |_| { draft.write().when.groups.remove(gi); }, "×" }
+                            button {
+                                class: "x",
+                                title: "Remove the group",
+                                onclick: move |_| {
+                                    let mut rule = draft.write();
+                                    if gi < rule.when.groups.len() {
+                                        rule.when.groups.remove(gi);
+                                    }
+                                },
+                                "×"
+                            }
                         }
                         for (ci , c) in g.conditions.iter().enumerate() {
                             ConditionRow { key: "{gi}-{ci}", draft, gi, ci, cond: c.clone(), lists: lists.clone() }
                         }
                         button {
                             class: "primary ghost small",
-                            onclick: move |_| draft.write().when.groups[gi].conditions.push(Condition::is(new_test("name"))),
+                            onclick: move |_| {
+                                if let Some(group) = draft.write().when.groups.get_mut(gi) {
+                                    group.conditions.push(Condition::is(new_test("name")));
+                                }
+                            },
                             "+ Condition"
                         }
                     }
@@ -1183,7 +1201,7 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                         RulePlace::Location { location, path } => rsx! {
                             select {
                                 onchange: move |e| {
-                                    if let RulePlace::Location { location, .. } = &mut draft.write().scope.places[pi] {
+                                    if let Some(RulePlace::Location { location, .. }) = draft.write().scope.places.get_mut(pi) {
                                         *location = e.value();
                                     }
                                 },
@@ -1193,7 +1211,7 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                                 placeholder: "folder inside (empty: all of it)",
                                 value: "{path}",
                                 oninput: move |e| {
-                                    if let RulePlace::Location { path, .. } = &mut draft.write().scope.places[pi] {
+                                    if let Some(RulePlace::Location { path, .. }) = draft.write().scope.places.get_mut(pi) {
                                         *path = e.value();
                                     }
                                 },
@@ -1205,7 +1223,7 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                                 placeholder: "folder (empty: all of it)",
                                 value: "{path}",
                                 oninput: move |e| {
-                                    if let RulePlace::Drive { path } = &mut draft.write().scope.places[pi] {
+                                    if let Some(RulePlace::Drive { path }) = draft.write().scope.places.get_mut(pi) {
                                         *path = e.value();
                                     }
                                 },
@@ -1215,7 +1233,7 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                             span { "Project" }
                             select {
                                 onchange: move |e| {
-                                    if let RulePlace::Project { project } = &mut draft.write().scope.places[pi] {
+                                    if let Some(RulePlace::Project { project }) = draft.write().scope.places.get_mut(pi) {
                                         *project = e.value();
                                     }
                                 },
@@ -1226,7 +1244,7 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                             span { "Tagged" }
                             select {
                                 onchange: move |e| {
-                                    if let RulePlace::Tag { tag } = &mut draft.write().scope.places[pi] {
+                                    if let Some(RulePlace::Tag { tag }) = draft.write().scope.places.get_mut(pi) {
                                         *tag = e.value();
                                     }
                                 },
@@ -1234,7 +1252,16 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                             }
                         },
                     }
-                    button { class: "x", onclick: move |_| { draft.write().scope.places.remove(pi); }, "×" }
+                    button {
+                        class: "x",
+                        onclick: move |_| {
+                            let mut rule = draft.write();
+                            if pi < rule.scope.places.len() {
+                                rule.scope.places.remove(pi);
+                            }
+                        },
+                        "×"
+                    }
                 }
             }
             select {
@@ -1316,7 +1343,7 @@ fn ConditionRow(
             input {
                 placeholder: "wav, aif, mp3",
                 value: "{any.join(\", \")}",
-                oninput: move |e| put(Test::Extension {
+                onchange: move |e| put(Test::Extension {
                     any: e.value().split([',', ' ']).map(|s| s.trim().trim_start_matches('.').to_string()).filter(|s| !s.is_empty()).collect(),
                 }),
             }
@@ -1648,13 +1675,23 @@ fn ActionRow(draft: Signal<Rule>, ai: usize, action: Action, lists: Lists) -> El
                 button {
                     class: "x",
                     disabled: ai == 0,
-                    onclick: move |_| draft.write().actions.swap(ai, ai - 1),
+                    onclick: move |_| {
+                        let mut rule = draft.write();
+                        if ai > 0 && ai < rule.actions.len() {
+                            rule.actions.swap(ai, ai - 1);
+                        }
+                    },
                     "↑"
                 }
                 button {
                     class: "x",
                     disabled: ai + 1 >= n,
-                    onclick: move |_| draft.write().actions.swap(ai, ai + 1),
+                    onclick: move |_| {
+                        let mut rule = draft.write();
+                        if ai + 1 < rule.actions.len() {
+                            rule.actions.swap(ai, ai + 1);
+                        }
+                    },
                     "↓"
                 }
                 button {
