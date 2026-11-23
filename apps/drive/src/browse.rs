@@ -115,9 +115,13 @@ pub fn DeviceVolumes(space: String, device: String, live: bool) -> Element {
         was.set(live);
         roots.clone().restart();
     }
+    let asking = roots().is_none();
     let list = roots().flatten().map(|(_, r, _)| r).unwrap_or_default();
     rsx! {
         document::Stylesheet { href: STYLE }
+        if asking {
+            div { class: "vol loading", "Asking…" }
+        }
         for r in list {
             {
                 let mount = s(&r, "mount");

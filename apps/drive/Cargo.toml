@@ -17,10 +17,10 @@ serde_json.workspace = true
 loro.workspace = true
 serde.workspace = true
 # The window: sidebar, top bar, tabs once a second one opens (main, 2026-11-21).
-app-shell = { git = "https://github.com/FastTrackStudios/app-shell", rev = "bc68a681c61f4e9cb00303c7e2e06a80e097d938" }
+app-shell = { git = "https://github.com/FastTrackStudios/app-shell", rev = "8f8ac555c07f552b638963efe0d07a9d0b4ab8d6" }
 # Natively: the Blitz window without a system frame, the shell's title bar
 # drawing the window's buttons (and dragging it).
-app-shell-native = { git = "https://github.com/FastTrackStudios/app-shell", rev = "bc68a681c61f4e9cb00303c7e2e06a80e097d938", optional = true }
+app-shell-native = { git = "https://github.com/FastTrackStudios/app-shell", rev = "8f8ac555c07f552b638963efe0d07a9d0b4ab8d6", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
