@@ -23,9 +23,9 @@
 .toggle.on { color: var(--ink); }
 .toggle.on .knob { background: var(--accent); }
 .segmented { display: inline-flex; padding: 3px; border-radius: 11px; background: var(--surface-2); }
-.segmented .seg { height: 26px; padding: 0 12px; border-radius: 8px; color: var(--ink-3); font-size: 13px; font-weight: 650; }
-.segmented .seg.on { background: var(--surface); color: var(--ink); }
-.segmented .seg.on.golive { background: rgba(240,194,75,.2); color: #f5d68a; }
+.segmented .mode-button { height: 26px; padding: 0 12px; border-radius: 8px; color: var(--ink-3); font-size: 13px; font-weight: 650; }
+.segmented .mode-button.on { background: var(--surface); color: var(--ink); }
+.segmented .mode-button.on.golive { background: rgba(240,194,75,.2); color: #f5d68a; }
 .confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; background: rgba(240,194,75,.1); border: 1px solid rgba(240,194,75,.3); color: #f5d68a; font-size: 13.5px; margin: 8px 0; flex-basis: 100%; }
 
 .rulehead .back { color: var(--ink-2); font-weight: 600; font-size: 14px; }
@@ -98,4 +98,4 @@
   .rules input.short, .redit input.short { flex: 1 1 100px; }
 }
 .redit fieldset > button, .redit .rgroup > button { align-self: flex-start; }
-.segmented, .segmented .seg, .toggle { flex: none; }
+.segmented, .segmented .mode-button, .toggle { flex: none; }
