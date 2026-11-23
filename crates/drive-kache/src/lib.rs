@@ -96,8 +96,8 @@ pub struct Found {
 
 type Flight = Shared<BoxFuture<'static, Result<(), String>>>;
 
-/// A listing kept for its later pages: (prefix, when, (key, size, hash)).
-type Listed = (String, Instant, Vec<(String, u64, String)>);
+/// A peer listing kept for later pages: (prefix, when, (key, size, hash)).
+type ListedPeers = (String, Instant, Vec<(String, u64, String)>);
 
 /// The shared cache of one device.
 pub struct Kache {
@@ -108,7 +108,7 @@ pub struct Kache {
     inflight: Mutex<HashMap<String, Flight>>,
     down: Mutex<HashMap<EndpointId, Instant>>,
     conns: Mutex<HashMap<EndpointId, iroh::endpoint::Connection>>,
-    listed: Mutex<Option<Listed>>,
+    listed_peers: Mutex<Option<ListedPeers>>,
 }
 
 impl Kache {
@@ -121,7 +121,7 @@ impl Kache {
             inflight: Mutex::new(HashMap::new()),
             down: Mutex::new(HashMap::new()),
             conns: Mutex::new(HashMap::new()),
-            listed: Mutex::new(None),
+            listed_peers: Mutex::new(None),
         })
     }
 
@@ -265,29 +265,34 @@ impl Kache {
     }
 
     /// Keys under `prefix` here and on every peer that answers in time:
-    /// (key, size, hash), in order. Kept for a few seconds, for the pages
-    /// of one listing.
+    /// (key, size, hash), in order. Peer results are reused across pages.
     pub async fn list(&self, prefix: &str) -> Vec<(String, u64, String)> {
-        if let Some((p, at, keys)) = self.listed.lock().expect("listed").as_ref()
-            && p == prefix
-            && at.elapsed() < Duration::from_secs(10)
-        {
-            return keys.clone();
-        }
+        let cached = self
+            .listed_peers
+            .lock()
+            .expect("listed peers")
+            .as_ref()
+            .filter(|(p, at, _)| p == prefix && at.elapsed() < Duration::from_secs(10))
+            .map(|(_, _, keys)| keys.clone());
+        let peers = match cached {
+            Some(keys) => keys,
+            None => {
+                let keys = self.list_peers(prefix).await;
+                *self.listed_peers.lock().expect("listed peers") =
+                    Some((prefix.to_string(), Instant::now(), keys.clone()));
+                keys
+            }
+        };
         let mut all: std::collections::BTreeMap<String, (u64, String)> = self
             .store
             .list(prefix)
             .into_iter()
             .map(|(k, o)| (k, (o.size, o.hash)))
             .collect();
-        for (k, size, hash) in self.list_peers(prefix).await {
+        for (k, size, hash) in peers {
             all.entry(k).or_insert((size, hash));
         }
-        let keys: Vec<(String, u64, String)> =
-            all.into_iter().map(|(k, (s, h))| (k, s, h)).collect();
-        *self.listed.lock().expect("listed") =
-            Some((prefix.to_string(), Instant::now(), keys.clone()));
-        keys
+        all.into_iter().map(|(k, (s, h))| (k, s, h)).collect()
     }
 
     /// Keep connections to the group open, so a lookup does not pay for
