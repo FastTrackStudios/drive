@@ -106,6 +106,16 @@ pub fn token() -> Option<String> {
     load().map(|t| t.access_token)
 }
 
+/// What [`fresh_token`] will give, when that is known without asking
+/// anyone: `Some(None)` with no token stored, `Some(Some(t))` with one good
+/// for `margin_ms` more, `None` when it would have to refresh.
+pub fn settled_token(margin_ms: f64) -> Option<Option<String>> {
+    match load() {
+        None => Some(None),
+        Some(t) => (t.expires_at - now() > margin_ms).then_some(Some(t.access_token)),
+    }
+}
+
 /// `Authorization` header value for the node's HTTP routes, if signed in.
 pub fn bearer() -> Option<String> {
     token().map(|t| format!("Bearer {t}"))
