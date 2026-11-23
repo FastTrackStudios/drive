@@ -85,6 +85,10 @@ pub fn valid_hash(h: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+fn fits_budget(used: u64, need: u64, budget: u64) -> bool {
+    used.checked_add(need).is_some_and(|total| total <= budget)
+}
+
 impl AppCache {
     /// Open (or make) the cache in `root`, keeping at most `budget` bytes of
     /// entries no app holds. Entries whose file is gone are forgotten;
@@ -245,7 +249,7 @@ impl AppCache {
     pub fn make_room(&self, need: u64, pinned: &dyn Fn(&str) -> bool) -> bool {
         self.evict(None, need, pinned);
         let inner = self.inner.lock().expect("cache");
-        inner.total + need <= self.budget()
+        fits_budget(inner.total, need, self.budget())
     }
 
     /// Remember what a name was when it was fetched.
@@ -267,7 +271,7 @@ impl AppCache {
     fn evict(&self, keep: Option<&str>, need: u64, pinned: &dyn Fn(&str) -> bool) -> Vec<PathBuf> {
         let budget = self.budget();
         let mut inner = self.inner.lock().expect("cache");
-        if inner.total + need <= budget {
+        if fits_budget(inner.total, need, budget) {
             return Vec::new();
         }
         let target = (budget / 10 * 9).saturating_sub(need);
@@ -286,13 +290,13 @@ impl AppCache {
             inner.map.remove(&h);
             inner.total -= size;
             self.append(&mut inner, &h, None, None);
-            gone.push(self.object_path(&h));
+            let path = self.object_path(&h);
+            // A commit for the same hash must wait until this unlink finishes.
+            self.remove_owned(&path);
+            gone.push(path);
         }
-        let over = inner.total + need > budget;
+        let over = !fits_budget(inner.total, need, budget);
         drop(inner);
-        for p in &gone {
-            self.remove_owned(p);
-        }
         if !gone.is_empty() {
             tracing::info!(
                 apps.evicted = gone.len(),
@@ -328,6 +332,8 @@ impl AppCache {
             );
             return;
         }
+        #[cfg(test)]
+        tests::check_unlink_lock(self, path);
         if let Err(e) = std::fs::remove_file(path) {
             tracing::warn!(error = %e, "an app cache file could not be removed");
         }
@@ -412,6 +418,48 @@ fn read_journal(path: &Path) -> (HashMap<String, Obj>, HashMap<String, Named>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static CHECK_UNLINK_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn check_unlink_lock(cache: &AppCache, path: &Path) {
+        if path.starts_with(&cache.objects) && CHECK_UNLINK_LOCK.get() {
+            assert!(
+                matches!(
+                    cache.inner.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ),
+                "eviction must exclude commits until the old file is unlinked"
+            );
+        }
+    }
+
+    #[test]
+    fn eviction_keeps_the_cache_lock_until_the_file_is_unlinked() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AppCache::open(dir.path(), 1024).unwrap();
+        let none = |_: &str| false;
+        let hash = put(&cache, b"old", &none);
+
+        CHECK_UNLINK_LOCK.set(true);
+        cache.set_budget(0, &none);
+        CHECK_UNLINK_LOCK.set(false);
+
+        assert!(!cache.object_path(&hash).exists());
+        assert!(!cache.has(&hash));
+    }
+
+    #[test]
+    fn eviction_handles_requests_near_the_byte_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AppCache::open(dir.path(), u64::MAX).unwrap();
+        let none = |_: &str| false;
+        let hash = put(&cache, b"old", &none);
+
+        assert!(cache.make_room(u64::MAX, &none));
+        assert!(!cache.has(&hash));
+    }
 
     fn put(c: &AppCache, bytes: &[u8], pinned: &dyn Fn(&str) -> bool) -> String {
         let h = blake3::hash(bytes).to_hex().to_string();
