@@ -354,7 +354,7 @@ dependencies = [
 [[package]]
 name = "app-shell"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/app-shell?tag=v0.3.1#165e90d9c9f1bd4074f1691d9b9d6b032f0cbee7"
+source = "git+https://github.com/FastTrackStudios/app-shell?rev=8f8ac555c07f552b638963efe0d07a9d0b4ab8d6#8f8ac555c07f552b638963efe0d07a9d0b4ab8d6"
 dependencies = [
  "dioxus",
  "futures-channel",
@@ -368,18 +368,34 @@ dependencies = [
 [[package]]
 name = "app-shell-native"
 version = "0.1.0"
-source = "git+https://github.com/FastTrackStudios/app-shell?tag=v0.3.1#165e90d9c9f1bd4074f1691d9b9d6b032f0cbee7"
+source = "git+https://github.com/FastTrackStudios/app-shell?rev=8f8ac555c07f552b638963efe0d07a9d0b4ab8d6#8f8ac555c07f552b638963efe0d07a9d0b4ab8d6"
 dependencies = [
+ "anyrender",
+ "anyrender_vello_cpu",
  "app-shell",
+ "blitz-dom",
  "blitz-html",
+ "blitz-net",
+ "blitz-paint",
  "blitz-shell",
+ "blitz-traits",
  "dioxus",
+ "dioxus-asset-resolver",
  "dioxus-native",
  "futures-channel",
+ "futures-timer",
  "futures-util",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "peniko",
+ "png 0.17.16",
+ "tokio",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2838,10 +2854,14 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "js-sys",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tracing",
+ "tracing-opentelemetry",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3877,7 +3897,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
- "png",
+ "png 0.18.1",
  "skrifa 0.42.1",
  "smallvec",
  "vello_common 0.0.9",
@@ -4828,7 +4848,7 @@ dependencies = [
  "image-webp",
  "moxcms",
  "num-traits",
- "png",
+ "png 0.18.1",
  "tiff",
  "zune-core",
  "zune-jpeg",
@@ -8138,6 +8158,19 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde",
  "time",
+]
+
+[[package]]
+name = "png"
+version = "0.17.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
+dependencies = [
+ "bitflags 1.3.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]
@@ -12004,7 +12037,7 @@ dependencies = [
  "futures-intrusive",
  "log",
  "peniko",
- "png",
+ "png 0.18.1",
  "skrifa 0.44.0",
  "static_assertions",
  "thiserror 2.0.21",
@@ -12024,7 +12057,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
- "png",
+ "png 0.18.1",
  "smallvec",
  "thiserror 2.0.21",
 ]
@@ -12041,7 +12074,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
- "png",
+ "png 0.18.1",
  "smallvec",
  "thiserror 2.0.21",
 ]
@@ -12057,7 +12090,7 @@ dependencies = [
  "guillotiere",
  "log",
  "peniko",
- "png",
+ "png 0.18.1",
  "smallvec",
  "thiserror 2.0.21",
 ]
@@ -12070,7 +12103,7 @@ dependencies = [
  "bytemuck",
  "glifo 0.1.1",
  "hashbrown 0.17.1",
- "png",
+ "png 0.18.1",
  "vello_common 0.0.8",
 ]
 
