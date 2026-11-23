@@ -1317,6 +1317,48 @@ fn text_editor(text: Text, mut set: impl FnMut(Text) + Clone + 'static) -> Eleme
     }
 }
 
+const BYTES_PER_MIB: u128 = 1 << 20;
+const MIB_DECIMAL_PLACES: usize = 20;
+
+fn size_in_mib(bytes: u64) -> String {
+    let bytes = u128::from(bytes);
+    let whole = bytes / BYTES_PER_MIB;
+    let remainder = bytes % BYTES_PER_MIB;
+    if remainder == 0 {
+        return whole.to_string();
+    }
+    // A fraction with denominator 2^20 has at most 20 decimal places.
+    let decimal = remainder * 5_u128.pow(MIB_DECIMAL_PLACES as u32);
+    let fraction = format!("{decimal:0MIB_DECIMAL_PLACES$}");
+    format!("{whole}.{}", fraction.trim_end_matches('0'))
+}
+
+fn bytes_from_mib(value: &str) -> Option<u64> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if value.is_empty()
+        || value == "."
+        || fraction.len() > MIB_DECIMAL_PLACES
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        u128::from(whole.parse::<u64>().ok()?)
+    };
+    let partial = if fraction.is_empty() {
+        0
+    } else {
+        let scale = 10_u128.pow(fraction.len() as u32);
+        (fraction.parse::<u128>().ok()? * BYTES_PER_MIB + scale / 2) / scale
+    };
+    u64::try_from(whole * BYTES_PER_MIB + partial).ok()
+}
+
 #[component]
 fn ConditionRow(
     draft: Signal<Rule>,
@@ -1376,10 +1418,15 @@ fn ConditionRow(
                 class: "num",
                 r#type: "number",
                 min: "0",
-                value: "{bytes / 1_048_576}",
-                oninput: move |e| put(Test::Size { cmp, bytes: e.value().parse::<u64>().unwrap_or(0) * 1_048_576 }),
+                step: "any",
+                value: "{size_in_mib(bytes)}",
+                onchange: move |e| {
+                    if let Some(bytes) = bytes_from_mib(&e.value()) {
+                        put(Test::Size { cmp, bytes });
+                    }
+                },
             }
-            span { "MB" }
+            span { "MiB" }
         },
         Test::Date { of, range } => {
             let (kind, n, unit, day) = match &range {
@@ -1724,6 +1771,34 @@ pub fn SidebarRules() -> Element {
             label: "Rules",
             icon: "Sync",
             note: if n > 0 { n.to_string() } else { String::new() },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_input_round_trips_bytes() {
+        for bytes in [0, 1, 512, 524_288, 1_048_576, 1_048_577, u64::MAX] {
+            assert_eq!(bytes_from_mib(&size_in_mib(bytes)), Some(bytes));
+        }
+        assert_eq!(size_in_mib(524_288), "0.5");
+        assert_eq!(bytes_from_mib(".25"), Some(262_144));
+    }
+
+    #[test]
+    fn size_input_rejects_out_of_range_or_invalid_values() {
+        for value in [
+            "17592186044416",
+            "18446744073709551615",
+            "-1",
+            ".",
+            "",
+            "NaN",
+        ] {
+            assert_eq!(bytes_from_mib(value), None, "{value}");
         }
     }
 }
