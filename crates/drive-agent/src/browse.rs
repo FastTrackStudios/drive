@@ -10,7 +10,7 @@
 //!   The path is resolved on disk (`..`, symlinks) and refused unless it
 //!   stays inside that root; `/proc`, `/sys`, `/dev` and this agent's own
 //!   data folder (its credentials) are never listed or read.
-//! - **Read-only.** Files are opened with `File::open` (read access only);
+//! - **Read-only.** Files are opened for read access only;
 //!   nothing here creates, writes, renames, deletes or changes the
 //!   permissions of anything (the `nothing_here_writes` test reads this
 //!   file's source to keep it so).
@@ -232,10 +232,22 @@ pub fn list(
     })
 }
 
+/// Open for reading without waiting for a writer if a path resolves to a pipe.
+pub(crate) fn open_read_only(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
 /// Up to `len` bytes of a regular file from `start` (opened for reading
 /// only); `len` 0 answers its size and time alone.
 pub fn read(path: &Path, start: u64, len: u32) -> Result<Chunk, String> {
-    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut f = open_read_only(path).map_err(|e| e.to_string())?;
     let meta = f.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".into());
@@ -478,6 +490,39 @@ mod tests {
         assert_eq!(p2.offset, LIST_MAX);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reading_a_pipe_does_not_wait_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipe");
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // The C string is valid for the duration of mkfifo.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        let (done, result) = mpsc::channel();
+        let read_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            done.send(read(&read_path, 0, 1)).unwrap();
+        });
+        let outcome = result.recv_timeout(Duration::from_secs(1));
+        if outcome.is_err() {
+            // Unblock the old implementation so a failure leaves no stuck worker.
+            let _pipe = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .unwrap();
+            worker.join().unwrap();
+            panic!("read waited for a pipe writer");
+        }
+        worker.join().unwrap();
+        assert_eq!(outcome.unwrap().err().as_deref(), Some("not a file"));
+    }
+
     #[test]
     fn reads_ranges_of_files_only() {
         let (t, rules) = tree();
@@ -561,7 +606,6 @@ mod tests {
         for bad in [
             "fs::write",
             "File::create",
-            "OpenOptions",
             "remove_file",
             "remove_dir",
             "fs::rename",
@@ -570,6 +614,10 @@ mod tests {
             "hard_link",
             "fs::copy",
             ".write(true)",
+            ".append(true)",
+            ".create(true)",
+            ".create_new(true)",
+            ".truncate(true)",
             "set_len",
             "write_all",
         ] {
