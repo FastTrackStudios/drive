@@ -43,6 +43,8 @@ MOUNTPOINT/
   4 s when it is on, 1.5 s for the node's memory of it when it is off.
   - An off device still lists its locations (from the index) and its
     disks (from the node's memory, or the registry).
+  - A device that does not answer in time is not asked again for a
+    minute: its disks answer `EHOSTDOWN` at once meanwhile.
   - Inside an off device's disk you see the folders the node has seen
     before. Everything else fails at once with `EHOSTDOWN` ("Host is
     down").
