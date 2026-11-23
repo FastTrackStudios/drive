@@ -517,7 +517,22 @@ fn mount(api: Router, apps: Vec<(String, PathBuf)>) -> Router {
             app = app.nest(&format!("{prefix}/api"), api.clone());
         }
         let index = dir.join("index.html");
-        let serve = ServeDir::new(&dir).fallback(ServeFile::new(index));
+        // Each file is sent as the `.br`/`.zst`/`.gz` made beside it at
+        // deploy when the browser takes that encoding (the app's wasm is a
+        // quarter of its size in brotli).
+        let serve = ServeDir::new(&dir)
+            .precompressed_br()
+            .precompressed_zstd()
+            .precompressed_gzip()
+            .fallback(
+                ServeFile::new(index)
+                    .precompressed_br()
+                    .precompressed_gzip(),
+            );
+        // Only the app's own files: the node's routes keep their headers.
+        let serve = Router::new()
+            .fallback_service(serve)
+            .layer(axum::middleware::from_fn(app_caching));
         if prefix.is_empty() {
             app = app.fallback_service(serve);
         } else {
@@ -526,6 +541,42 @@ fn mount(api: Router, apps: Vec<(String, PathBuf)>) -> Router {
         tracing::info!(app.prefix = %prefix, app.dir = %dir.display(), "serving app");
     }
     app.layer(axum::middleware::from_fn(telemetry::requests))
+}
+
+/// How an app's files are cached. Its built files (`…/assets/…`) are named
+/// for their content, so a browser keeps them for good; a page is asked
+/// for again every time, so a new build is seen at once. A missing built
+/// file is a 404, never the page: a page from an older build asking for
+/// its old files must fail plainly, not run HTML as its code.
+async fn app_caching(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{HeaderValue, StatusCode, header};
+    let asset = req.uri().path().contains("/assets/");
+    let mut res = next.run(req).await;
+    let html = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("text/html"));
+    if asset && html {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if res.status().is_success() {
+        let cache = if asset {
+            Some("public, max-age=31536000, immutable")
+        } else if html {
+            Some("no-cache")
+        } else {
+            None
+        };
+        if let Some(c) = cache {
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static(c));
+        }
+    }
+    res
 }
 
 async fn sync(
