@@ -15,6 +15,8 @@
 //! body, resolved, resolved_by, resolved_at, deleted, version, anchor: {
 //! kind, … } }; `reviews` map: version → { state, by, at }.
 
+use std::collections::HashMap;
+
 use loro::cursor::{Cursor, Side};
 use loro::{LoroDoc, LoroMap, LoroValue, ValueOrContainer};
 
@@ -314,19 +316,61 @@ pub fn all(doc: &LoroDoc) -> Vec<Comment> {
     out
 }
 
-/// The threads, oldest first; a reply whose thread is gone starts its own.
+/// Threads and their replies, oldest first. A reply with a missing parent
+/// starts its own thread. A cycle uses the first parent encountered twice.
 pub fn threads(doc: &LoroDoc) -> Vec<Thread> {
     let all = all(doc);
-    let roots: Vec<&Comment> = all
+    let roots = thread_roots(&all);
+    let mut replies: HashMap<usize, Vec<Comment>> = HashMap::new();
+    let mut threads = Vec::new();
+    for (index, (comment, root)) in all.into_iter().zip(roots).enumerate() {
+        if index == root {
+            threads.push((index, comment));
+        } else {
+            replies.entry(root).or_default().push(comment);
+        }
+    }
+    threads
+        .into_iter()
+        .map(|(index, root)| Thread {
+            root,
+            replies: replies.remove(&index).unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn thread_roots(comments: &[Comment]) -> Vec<usize> {
+    let by_id: HashMap<_, _> = comments
         .iter()
-        .filter(|c| c.parent.is_empty() || !all.iter().any(|p| p.id == c.parent))
+        .enumerate()
+        .map(|(index, comment)| (comment.id.as_str(), index))
         .collect();
+    let mut roots = vec![None; comments.len()];
+    let mut seen_from = vec![None; comments.len()];
+    let mut path = Vec::new();
+    for start in 0..comments.len() {
+        let mut index = start;
+        let root = loop {
+            if let Some(root) = roots[index] {
+                break root;
+            }
+            if seen_from[index] == Some(start) {
+                break index;
+            }
+            seen_from[index] = Some(start);
+            path.push(index);
+            let Some(&parent) = by_id.get(comments[index].parent.as_str()) else {
+                break index;
+            };
+            index = parent;
+        };
+        for index in path.drain(..) {
+            roots[index] = Some(root);
+        }
+    }
     roots
         .into_iter()
-        .map(|r| Thread {
-            root: r.clone(),
-            replies: all.iter().filter(|c| c.parent == r.id).cloned().collect(),
-        })
+        .map(|root| root.expect("thread root"))
         .collect()
 }
 
@@ -434,6 +478,23 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_cycle_remains_visible() {
+        let doc = LoroDoc::new();
+        let first = add(&doc, new("First", Anchor::Whole, None), 1).unwrap();
+        let second = add(&doc, new("Second", Anchor::Whole, Some(&first)), 2).unwrap();
+        comment_map(&doc, &first)
+            .unwrap()
+            .insert("parent", second.as_str())
+            .unwrap();
+
+        let threads = threads(&doc);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].root.id, first);
+        assert_eq!(threads[0].replies.len(), 1);
+        assert_eq!(threads[0].replies[0].id, second);
+    }
+
+    #[test]
     fn threads_replies_resolve_and_reviews() {
         let d = LoroDoc::new();
         let a = add(
@@ -449,12 +510,13 @@ mod tests {
             1_000,
         )
         .unwrap();
-        let _r = add(
+        let r = add(
             &d,
             new("Pulled it down 1.5 dB", Anchor::Whole, Some(&a)),
             2_000,
         )
         .unwrap();
+        let nested = add(&d, new("Sounds good", Anchor::Whole, Some(&r)), 2_500).unwrap();
         let b = add(
             &d,
             new(
@@ -484,7 +546,13 @@ mod tests {
             }
         );
         assert!(t[0].root.resolved);
-        assert_eq!(t[0].replies.len(), 1);
+        assert_eq!(
+            t[0].replies
+                .iter()
+                .map(|reply| &reply.id)
+                .collect::<Vec<_>>(),
+            [&r, &nested]
+        );
         assert_eq!(t[1].root.body, "Love the intro!");
         assert_eq!(t[1].root.edited, 5_000);
         assert_eq!(

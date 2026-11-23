@@ -87,7 +87,8 @@ impl Rule {
                     for d in v.split(',') {
                         let d = d.trim().to_ascii_uppercase();
                         let at = d.len().checked_sub(2).ok_or_else(|| format!("BYDAY {d}"))?;
-                        let (ord, day) = d.split_at(at);
+                        let (ord, day) =
+                            d.split_at_checked(at).ok_or_else(|| format!("BYDAY {d}"))?;
                         let wd = WEEKDAYS
                             .iter()
                             .position(|w| *w == day)
@@ -346,13 +347,14 @@ fn from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
         return None;
     }
     // Howard Hinnant's days_from_civil.
+    let y = i128::from(y);
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
-    let m = i64::from(m);
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1;
+    let m = i128::from(m);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i128::from(d) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
+    i64::try_from(era * 146_097 + doe - 719_468).ok()
 }
 
 fn civil(z: i64) -> (i64, u32, u32) {
@@ -527,6 +529,7 @@ mod tests {
             "",
             "BYDAY=SU",
             "FREQ=HOURLY",
+            "FREQ=WEEKLY;BYDAY=éU",
             "FREQ=WEEKLY;BYDAY=1SU",
             "FREQ=DAILY;INTERVAL=0",
             "FREQ=WEEKLY;BYSETPOS=1",

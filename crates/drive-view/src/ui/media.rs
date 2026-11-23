@@ -110,7 +110,7 @@ pub fn AudioView(
                     wave.set(Wave::Ready(p.columns(BUCKETS), src.url.clone()));
                     return;
                 }
-                if src.size > WAVEFORM_MAX {
+                if src.size == 0 || src.size > WAVEFORM_MAX {
                     wave.set(Wave::Plain(src.url.clone()));
                     return;
                 }

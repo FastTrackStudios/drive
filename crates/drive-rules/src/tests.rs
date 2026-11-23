@@ -253,6 +253,16 @@ fn conditions_match_names_extensions_kinds_sizes_and_dates() {
         }),
         &pdf
     ));
+    assert!(check(
+        Condition::is(Test::Date {
+            of: DateOf::Modified,
+            range: Range::InLast {
+                n: u32::MAX,
+                unit: Unit::Years,
+            },
+        }),
+        &pdf,
+    ));
     // A date the file system does not record never matches, negated or not.
     assert!(!check(
         Condition::is(Test::Date {
@@ -565,6 +575,41 @@ fn a_new_rule_is_off_and_a_dry_run() {
 }
 
 #[test]
+fn blank_rename_and_move_out_of_storage_are_blocked() {
+    let mut fx = Fixture::new();
+    fx.locations[0].in_storage = true;
+    fx.locations[1].device = "bs".into();
+    let lib = Library::load(&fx.tags);
+    let f = file("in/a.wav", 10, now());
+    let r = rule(
+        vec![],
+        vec![
+            Action::Rename {
+                name: String::new(),
+            },
+            Action::Move {
+                to: Dest::Location {
+                    location: "arch".into(),
+                    path: "out".into(),
+                },
+                name: String::new(),
+            },
+        ],
+    );
+    let p = Matcher::new(&r)
+        .unwrap()
+        .plan(&f, &fx.world(&lib, device(true)));
+    assert_eq!(
+        p.steps[0].blocked.as_deref(),
+        Some("the rename needs a name")
+    );
+    assert_eq!(
+        p.steps[1].blocked.as_deref(),
+        Some("moves out of a storage's location are not built yet")
+    );
+}
+
+#[test]
 fn moves_on_a_computer_are_blocked_unless_the_device_allows_them() {
     let fx = Fixture::new();
     let lib = Library::load(&fx.tags);
@@ -860,6 +905,10 @@ fn noops_are_not_redone() {
     );
     let p = Matcher::new(&r).unwrap().plan(&f, &w);
     assert_eq!(p.steps.len(), 4, "one step per tag");
+    assert_eq!(
+        p.steps.iter().map(|step| step.action).collect::<Vec<_>>(),
+        [0, 0, 1, 2]
+    );
     assert!(p.steps[0].noop);
     assert!(p.steps[1].blocked.is_some());
     assert!(p.steps[2].noop, "already in the project");

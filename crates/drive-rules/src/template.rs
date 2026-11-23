@@ -82,20 +82,7 @@ pub fn civil(ms: i64) -> (i64, u32, u32) {
 
 /// `YYYY-MM-DD` → milliseconds at its midnight, UTC.
 pub fn day_ms(day: &str) -> Option<i64> {
-    let mut it = day.trim().splitn(3, '-');
-    let y: i64 = it.next()?.parse().ok()?;
-    let m: i64 = it.next()?.parse().ok()?;
-    let d: i64 = it.next()?.parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some((era * 146_097 + doe - 719_468) * 86_400_000)
+    drive_spine::recur::days(day)?.checked_mul(86_400_000)
 }
 
 #[cfg(test)]
@@ -112,6 +99,9 @@ mod tests {
             (2024, 2, 29)
         );
         assert!(day_ms("2026-13-01").is_none());
+        assert!(day_ms("2026-02-31").is_none());
+        assert!(day_ms("9223372036854775807-01-01").is_none());
+        assert!(day_ms("1000000000-01-01").is_none());
     }
 
     #[test]
