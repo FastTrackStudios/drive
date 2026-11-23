@@ -102,6 +102,33 @@ impl DriveFs {
         INodeNo(self.inodes.lock().expect("inodes").ino(id))
     }
 
+    /// Whether the tree's top folder has an entry named `name`.
+    pub(crate) fn has_top(&self, name: &str) -> bool {
+        tree::lookup(&self.agent.files, None, name).is_some()
+    }
+
+    /// A folder's rows (`.`, `..`, then its entries): (inode, kind, name).
+    pub(crate) fn rows(&self, ino: INodeNo) -> Result<Vec<(INodeNo, FileType, String)>, Errno> {
+        let id = self.id_of(ino)?;
+        let parent_ino = match id.and_then(|i| tree::parent_of(&self.agent.files, i)) {
+            Some(p) => self.ino_of(p),
+            None => INodeNo::ROOT,
+        };
+        let mut rows: Vec<(INodeNo, FileType, String)> = vec![
+            (ino, FileType::Directory, ".".into()),
+            (parent_ino, FileType::Directory, "..".into()),
+        ];
+        for e in tree::children(&self.agent.files, id) {
+            let kind = if e.dir {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            };
+            rows.push((self.ino_of(e.id), kind, e.name));
+        }
+        Ok(rows)
+    }
+
     fn time(ms: i64) -> SystemTime {
         UNIX_EPOCH + Duration::from_millis(ms.max(0) as u64)
     }
@@ -570,26 +597,10 @@ impl Filesystem for DriveFs {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let id = match self.id_of(ino) {
-            Ok(id) => id,
+        let rows = match self.rows(ino) {
+            Ok(r) => r,
             Err(e) => return reply.error(e),
         };
-        let parent_ino = match id.and_then(|i| tree::parent_of(&self.agent.files, i)) {
-            Some(p) => self.ino_of(p),
-            None => INodeNo::ROOT,
-        };
-        let mut rows: Vec<(INodeNo, FileType, String)> = vec![
-            (ino, FileType::Directory, ".".into()),
-            (parent_ino, FileType::Directory, "..".into()),
-        ];
-        for e in tree::children(&self.agent.files, id) {
-            let kind = if e.dir {
-                FileType::Directory
-            } else {
-                FileType::RegularFile
-            };
-            rows.push((self.ino_of(e.id), kind, e.name));
-        }
         for (i, (ino, kind, name)) in rows.into_iter().enumerate().skip(offset as usize) {
             if reply.add(ino, (i + 1) as u64, kind, &name) {
                 break;

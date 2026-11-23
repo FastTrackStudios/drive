@@ -1,11 +1,11 @@
-//! What the Computers view shows: every device's locations, their
+//! What the Devices folder shows: every device's locations, their
 //! indexes as trees, who is online and where each content's copies are.
 //! Built by the daemon; the FUSE mount (feature `mount`) draws it.
 
 use std::collections::{HashMap, HashSet};
 
 use drive_files::index::{LocationIndex, Tree};
-use drive_files::space::Location;
+use drive_files::space::{Location, Volume};
 
 /// What the folder shows: refreshed by the agent's loop.
 #[derive(Default)]
@@ -29,6 +29,7 @@ impl View {
         locations: Vec<Location>,
         indexes: HashMap<String, std::sync::Arc<LocationIndex>>,
         online: HashSet<String>,
+        volumes: &[Volume],
     ) -> View {
         let mut copies: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
         for idx in indexes.values() {
@@ -52,7 +53,7 @@ impl View {
             copies,
             ..View::default()
         };
-        v.set_devices(me, devices, locations, online);
+        v.set_devices(me, devices, locations, online, volumes);
         v
     }
 
@@ -74,11 +75,14 @@ impl View {
         devices: Vec<(String, String)>,
         locations: Vec<Location>,
         online: HashSet<String>,
+        volumes: &[Volume],
     ) {
-        // Only devices that have a location.
+        // Only devices that have a location or a disk (not browsers).
         self.devices = devices
             .into_iter()
-            .filter(|(id, _)| locations.iter().any(|l| &l.device == id))
+            .filter(|(id, _)| {
+                locations.iter().any(|l| &l.device == id) || volumes.iter().any(|v| &v.device == id)
+            })
             .collect();
         self.me = me.to_string();
         self.locations = locations;

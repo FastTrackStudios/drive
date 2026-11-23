@@ -40,6 +40,7 @@ pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
         .map(|d| (d.id, d.name))
         .collect();
     let (me, locations, online) = (a.device_id(), space::locations(&a.space), online_devices(a));
+    let volumes = space::volumes(&a.space);
     // The trees of millions of entries are rebuilt only when an index has
     // changed; who is online changes far more often.
     let unchanged = view.read().expect("view").built_from(&indexes);
@@ -47,9 +48,9 @@ pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
     if unchanged {
         view.write()
             .expect("view")
-            .set_devices(&me, devices, locations, online);
+            .set_devices(&me, devices, locations, online, &volumes);
     } else {
-        let built = View::build(&me, devices, locations, indexes, online);
+        let built = View::build(&me, devices, locations, indexes, online, &volumes);
         *view.write().expect("view") = built;
     }
     crate::telemetry::mark_rss();

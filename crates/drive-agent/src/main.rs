@@ -13,9 +13,11 @@
 //! drive [--dir DIR] storage add webdav NAME ENDPOINT [USER PASSWORD]
 //! drive [--dir DIR] put LOCAL_FILE_OR_FOLDER [FOLDER]
 //! drive [--dir DIR] ls [FOLDER] | status PATH | pin PATH | unpin PATH
-//! drive [--dir DIR] mount MOUNTPOINT [--computers PATH]
-//!                                   # the space as a folder, and every computer's
-//!                                   # files under PATH (runs until stopped)
+//! drive [--dir DIR] mount MOUNTPOINT [--no-devices] [--computers PATH]
+//!                                   # the space as a folder, every device under
+//!                                   # MOUNTPOINT/Devices (its locations and disks;
+//!                                   # --no-devices leaves it out), and the devices
+//!                                   # alone at PATH too (runs until stopped)
 //! drive [--dir DIR] serve     # no mount: index, answer the node, watch
 //!
 //! Every computer's files (indexed in place, searchable while it is off):
@@ -86,13 +88,15 @@ mod agent;
 mod apps;
 mod available;
 mod browse;
-#[cfg(feature = "mount")]
-mod computers;
 mod daemon;
+#[cfg(feature = "mount")]
+mod devices;
 #[cfg(feature = "mount")]
 mod fs;
 mod kache;
 mod mcp;
+#[cfg(feature = "mount")]
+mod one;
 mod placement;
 mod places;
 mod rules;
@@ -559,18 +563,36 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         #[cfg(feature = "mount")]
         "mount" => {
             let at = PathBuf::from(args.get(1).ok_or("mount MOUNTPOINT")?);
+            let at = std::path::absolute(&at).map_err(|e| e.to_string())?;
+            let folder = !args.iter().any(|x| x == "--no-devices");
+            let alone = flag(args, "--computers")
+                .map(|p| std::path::absolute(p).map_err(|e| e.to_string()))
+                .transpose()?;
             let a = Arc::new(start(dir).await?);
-            let view = Arc::new(RwLock::new(computers::View::default()));
+            let view = Arc::new(RwLock::new(devices::View::default()));
             let space = a.cfg.lock().expect("cfg").space.clone();
             let rt = tokio::runtime::Handle::current();
+            // Neither the devices' disks nor browsing from elsewhere ever
+            // walks into Drive's own mounts.
+            let guard: Vec<PathBuf> = std::iter::once(at.clone()).chain(alone.clone()).collect();
+            browse::never_browse(&guard);
             let main = mount_fs(&at, &format!("drive:{space}"), || {
-                fs::DriveFs::new(a.clone(), rt.clone())
+                let devices = folder.then(|| {
+                    devices::DevicesFs::new(
+                        a.clone(),
+                        view.clone(),
+                        rt.clone(),
+                        one::DEVICES_BASE,
+                        guard.clone(),
+                    )
+                });
+                one::OneFs::new(fs::DriveFs::new(a.clone(), rt.clone()), devices)
             })
             .await?;
-            let others = match flag(args, "--computers") {
+            let others = match &alone {
                 Some(p) => Some(
-                    mount_fs(Path::new(&p), &format!("drive-computers:{space}"), || {
-                        computers::ComputersFs::new(a.clone(), view.clone(), rt.clone())
+                    mount_fs(p, &format!("drive-devices:{space}"), || {
+                        devices::DevicesFs::new(a.clone(), view.clone(), rt.clone(), 0, guard.clone())
                     })
                     .await?,
                 ),
@@ -1148,6 +1170,9 @@ async fn mount_fs<F: fuser::Filesystem + Send + Sync + 'static>(
     }
     std::fs::create_dir_all(at).map_err(|e| e.to_string())?;
     let mut config = fuser::Config::default();
+    // A slow answer (another device's disk, a file brought from elsewhere)
+    // holds one thread, not the whole mount.
+    config.n_threads = Some(4);
     config.mount_options = vec![
         fuser::MountOption::FSName(name.to_string()),
         fuser::MountOption::Subtype("drive".into()),
