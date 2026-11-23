@@ -66,7 +66,9 @@ pub struct Settings {
 
 impl Settings {
     pub fn budget(&self) -> u64 {
-        self.budget_gib.unwrap_or(DEFAULT_BUDGET_GIB) << 30
+        self.budget_gib
+            .unwrap_or(DEFAULT_BUDGET_GIB)
+            .saturating_mul(1 << 30)
     }
 }
 

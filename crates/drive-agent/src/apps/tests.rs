@@ -15,6 +15,15 @@ use super::resolve::Source;
 use super::*;
 use crate::agent::{Agent, Config};
 
+#[test]
+fn large_app_cache_budgets_do_not_wrap() {
+    let budget = Settings {
+        budget_gib: Some(1 << 34),
+        ..Default::default()
+    };
+    assert_eq!(budget.budget(), u64::MAX);
+}
+
 async fn node() -> (String, tempfile::TempDir) {
     let data = tempfile::tempdir().unwrap();
     let opts = drive_node::Options {
