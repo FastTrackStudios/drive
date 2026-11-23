@@ -458,7 +458,7 @@ impl DevicesFs {
     ) -> Result<Vec<u8>, Errno> {
         if device == self.me() {
             let path = self.local_path(root, rel)?;
-            let f = File::open(path).map_err(|_| Errno::EIO)?;
+            let f = crate::browse::open_read_only(&path).map_err(|_| Errno::EIO)?;
             if !f.metadata().is_ok_and(|m| m.is_file()) {
                 return Err(Errno::EISDIR);
             }
