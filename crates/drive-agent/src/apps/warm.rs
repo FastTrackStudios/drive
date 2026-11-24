@@ -13,7 +13,7 @@ use drive_local::{FileProgress, FileState, OpenOptions, Progress, Started, Warm}
 use futures::StreamExt;
 
 use super::resolve::Source;
-use super::{Apps, ConnCtx, leases, now_ms};
+use super::{Apps, ConnCtx};
 
 /// Progress is sent at most this often while bytes move.
 const TICK: Duration = Duration::from_millis(250);
@@ -342,7 +342,12 @@ async fn one(
         let begun = *f.get_or_insert(n);
         state.lock().expect("state").moving.insert(i, (n, begun));
     };
-    let r = apps.materialize(&src, opts, &on_bytes).await;
+    let r = apps.materialize(&src, opts, &on_bytes).await.and_then(|f| {
+        if opts.lease {
+            apps.hold_file(c.id, &label, &format!("warm #{job}"), &f)?;
+        }
+        Ok(f)
+    });
     let mut s = state.lock().expect("state");
     s.moving.remove(&i);
     let fp = match r {
@@ -358,20 +363,6 @@ async fn one(
                 s.here_bytes += b;
             }
             s.done += 1;
-            if opts.lease {
-                apps.a.leases.hold(
-                    c.id,
-                    leases::Item {
-                        target: label.clone(),
-                        path: f.path.clone(),
-                        hash: f.hash.clone(),
-                        size: f.size,
-                        how: f.how,
-                        why: format!("warm #{job}"),
-                        since: now_ms(),
-                    },
-                );
-            }
             FileProgress {
                 target: label,
                 state: FileState::Ready,
