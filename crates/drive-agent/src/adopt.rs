@@ -347,10 +347,7 @@ impl Agent {
         }
         let bytes = r.bytes().await.map_err(|x| x.to_string())?;
         std::fs::create_dir_all(cached.parent().expect("a parent")).map_err(|x| x.to_string())?;
-        let tmp = cached.with_extension("part");
-        std::fs::write(&tmp, &bytes)
-            .and_then(|_| std::fs::rename(&tmp, &cached))
-            .map_err(|x| x.to_string())?;
+        crate::agent::write_atomic(&cached, &bytes).map_err(|x| x.to_string())?;
         Ok(cached)
     }
 }

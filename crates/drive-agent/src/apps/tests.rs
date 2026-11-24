@@ -1046,3 +1046,37 @@ async fn unpinning_keeps_bytes_other_files_and_apps_still_need() {
     d.a.pin(&b, false).await.unwrap();
     assert!(!d.a.is_cached(&h));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fetching_a_blob_leaves_an_apps_partial_alone() {
+    let (url, _node) = node().await;
+    let d = device(&url, "dev-1", "Voyager").await;
+    let src = d.disk.path().join("take.wav");
+    std::fs::write(&src, pattern(4096, 9)).unwrap();
+    let e = d.a.put(&src, None, "take.wav").await.unwrap();
+    std::fs::remove_file(d.a.cache_path(&e.hash)).unwrap();
+    // An app's resumable fetch of the same blob is half done.
+    let part = d.a.cache_path(&e.hash).with_extension("part");
+    std::fs::write(&part, b"half").unwrap();
+    let got = d.a.fetch(&e.hash).await.unwrap();
+    assert_eq!(std::fs::read(got).unwrap(), pattern(4096, 9));
+    assert_eq!(std::fs::read(&part).unwrap(), b"half", "the partial is the app's");
+}
+
+#[test]
+fn concurrent_atomic_writes_each_land_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("blob");
+    let writers: Vec<_> = (0..8u8)
+        .map(|i| {
+            let dest = dest.clone();
+            std::thread::spawn(move || crate::agent::write_atomic(&dest, &pattern(1 << 20, i)))
+        })
+        .collect();
+    for w in writers {
+        w.join().unwrap().unwrap();
+    }
+    let got = std::fs::read(&dest).unwrap();
+    assert!((0..8u8).any(|i| got == pattern(1 << 20, i)), "one writer's bytes, whole");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp files left");
+}

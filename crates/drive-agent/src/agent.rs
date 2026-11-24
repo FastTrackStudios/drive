@@ -354,14 +354,7 @@ impl Agent {
         self.mark(hash, State::Downloading, true);
         let result = self.fetch_bytes(hash).await;
         self.mark(hash, State::Downloading, false);
-        let bytes = result?;
-        let tmp = path.with_extension("part");
-        tokio::fs::write(&tmp, &bytes)
-            .await
-            .map_err(|e| e.to_string())?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .map_err(|e| e.to_string())?;
+        write_atomic_async(path.clone(), result?).await?;
         let _ = space::set_held(&self.space, &self.device_id(), hash, Some("local"));
         self.commit_space();
         Ok(path)
@@ -407,9 +400,7 @@ impl Agent {
         let size = bytes.len() as u64;
         let cached = self.cache_path(&h);
         if !cached.exists() {
-            tokio::fs::write(&cached, &bytes)
-                .await
-                .map_err(|e| e.to_string())?;
+            write_atomic_async(cached, bytes.clone()).await?;
         }
         let me = self.device_id();
         let _ = space::set_held(&self.space, &me, &h, Some("local"));
@@ -503,6 +494,33 @@ impl Agent {
         self.commit_files();
         tree::entry(&self.files, id).ok_or_else(|| "the file vanished".to_string())
     }
+}
+
+/// Write `bytes` to `dest` whole or not at all: through a temp file of
+/// this write's own beside it, renamed over `dest`, so concurrent writers
+/// of the same file never share (or truncate) one another's bytes.
+pub(crate) fn write_atomic(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = dest.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dest.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, dest));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// [`write_atomic`], off the async workers.
+pub(crate) async fn write_atomic_async(dest: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || write_atomic(&dest, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// This device's description, for the registry.

@@ -641,10 +641,7 @@ impl DevicesFs {
                 Errno::EIO
             })?;
         let _ = std::fs::create_dir_all(cached.parent().expect("a parent"));
-        let tmp = cached.with_extension("part");
-        std::fs::write(&tmp, &bytes)
-            .and_then(|_| std::fs::rename(&tmp, &cached))
-            .map_err(|_| Errno::EIO)?;
+        crate::agent::write_atomic(&cached, &bytes).map_err(|_| Errno::EIO)?;
         Ok(cached)
     }
 
