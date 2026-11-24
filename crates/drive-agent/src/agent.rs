@@ -87,18 +87,14 @@ impl Config {
     pub fn save(&self, dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join("config.json");
-        std::fs::write(
+        // Credentials inside: readable by this user only, from the start.
+        drive_local::write_private(
             &path,
-            serde_json::to_string_pretty(self).expect("a config serializes"),
+            serde_json::to_string_pretty(self)
+                .expect("a config serializes")
+                .as_bytes(),
         )
-        .map_err(|e| e.to_string())?;
-        // Credentials inside: readable by this user only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-        Ok(())
+        .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// The node's HTTP address, from its sync address.

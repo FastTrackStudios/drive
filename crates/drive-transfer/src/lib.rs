@@ -50,12 +50,8 @@ pub fn secret_key(key_file: &Path) -> Result<iroh::SecretKey, String> {
     if let Some(dir) = key_file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(key_file, key.to_bytes()).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(key_file, std::fs::Permissions::from_mode(0o600));
-    }
+    drive_local::write_private(key_file, &key.to_bytes())
+        .map_err(|e| format!("{}: {e}", key_file.display()))?;
     Ok(key)
 }
 
