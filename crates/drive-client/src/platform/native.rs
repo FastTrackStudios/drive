@@ -70,11 +70,44 @@ pub(crate) fn after(ms: u32, f: impl FnOnce() + Send + 'static) {
     });
 }
 
-/// This computer's node (`DRIVE_NODE`, default the local one).
+/// The node this computer uses: `DRIVE_NODE`, else the one this computer's
+/// agent joined (its config.json's `node`), else a node on this computer.
+/// A desktop app on a computer without a node of its own (a Mac beside
+/// its agent) thus reaches the same node as its agent.
 pub(crate) fn default_url() -> String {
-    std::env::var("DRIVE_NODE")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    let agent_config = agent_dir(env("DRIVE_AGENT_DIR"), env("XDG_DATA_HOME"), env("HOME"))
+        .and_then(|d| std::fs::read_to_string(d.join("config.json")).ok());
+    node_url(
+        std::env::var("DRIVE_NODE").ok().as_deref(),
+        agent_config.as_deref(),
+    )
+}
+
+/// The agent's folder, found as the agent finds it: `DRIVE_AGENT_DIR`,
+/// else `drive-agent` in the user's data folder.
+fn agent_dir(
+    dir: Option<std::ffi::OsString>,
+    xdg_data: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(d) = dir {
+        return Some(PathBuf::from(d));
+    }
+    let base = xdg_data
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".local").join("share")))?;
+    Some(base.join("drive-agent"))
+}
+
+fn node_url(env: Option<&str>, agent_config: Option<&str>) -> String {
+    if let Some(v) = env.map(str::trim).filter(|v| !v.is_empty()) {
+        return v.to_string();
+    }
+    agent_config
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+        .and_then(|c| c.get("node")?.as_str().map(str::to_owned))
+        .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| "ws://127.0.0.1:8096/sync".to_string())
 }
 
@@ -312,5 +345,50 @@ impl Socket {
 
     pub(crate) fn close(&self) {
         let _ = self.tx.send(Out::Close);
+    }
+}
+
+#[cfg(test)]
+mod node_tests {
+    use super::{agent_dir, node_url};
+    use std::path::PathBuf;
+
+    const LOCAL: &str = "ws://127.0.0.1:8096/sync";
+
+    #[test]
+    fn drive_node_wins_over_the_agents_node() {
+        let config = r#"{"node":"wss://node.example/sync"}"#;
+        assert_eq!(node_url(Some("ws://other/sync"), Some(config)), "ws://other/sync");
+    }
+
+    #[test]
+    fn without_drive_node_the_agents_node_is_used() {
+        let config = r#"{"device_id":"d","node":"wss://node.example/sync"}"#;
+        assert_eq!(node_url(None, Some(config)), "wss://node.example/sync");
+        assert_eq!(node_url(Some("  "), Some(config)), "wss://node.example/sync");
+    }
+
+    #[test]
+    fn without_either_it_is_this_computers_node() {
+        assert_eq!(node_url(None, None), LOCAL);
+        assert_eq!(node_url(None, Some("not json")), LOCAL);
+        assert_eq!(node_url(None, Some(r#"{"node":""}"#)), LOCAL);
+    }
+
+    #[test]
+    fn the_agents_folder_is_found_as_the_agent_finds_it() {
+        assert_eq!(
+            agent_dir(Some("/d".into()), Some("/x".into()), Some("/h".into())),
+            Some(PathBuf::from("/d"))
+        );
+        assert_eq!(
+            agent_dir(None, Some("/x".into()), Some("/h".into())),
+            Some(PathBuf::from("/x/drive-agent"))
+        );
+        assert_eq!(
+            agent_dir(None, None, Some("/h".into())),
+            Some(PathBuf::from("/h/.local/share/drive-agent"))
+        );
+        assert_eq!(agent_dir(None, None, None), None);
     }
 }
