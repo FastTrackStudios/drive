@@ -105,6 +105,7 @@ mod daemon;
 mod devices;
 #[cfg(feature = "mount")]
 mod fs;
+mod fileprovider;
 // Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]
 mod index_db;

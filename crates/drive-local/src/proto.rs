@@ -77,6 +77,94 @@ pub enum Op {
     Pins,
     /// The cache: its use, budget and pins.
     Status,
+    // ── The Drive tree, for a system file provider (macOS File Provider:
+    //    docs/fileprovider.md). Ids are tree ids; the top is `root`. ──
+    /// One item.
+    FpItem { id: String },
+    /// A folder's items, a page at a time: `after` is the last page's
+    /// `next` (none: from the start).
+    FpList {
+        parent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    /// The tree's version now ([`FpChanges`] since it later).
+    FpAnchor,
+    /// What changed since `anchor`.
+    FpChanges { anchor: String },
+    /// A file's bytes, copied into `into` (a folder the asking process
+    /// can read); the answer is the copy's path and the item.
+    FpFetch { id: String, into: std::path::PathBuf },
+    /// A new file or folder; a file's bytes are read from `from`.
+    FpCreate {
+        parent: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        dir: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<std::path::PathBuf>,
+    },
+    /// Rename, move and/or replace a file's bytes (from `from`).
+    FpModify {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<std::path::PathBuf>,
+    },
+    /// Into the Drive's Trash (nothing is ever deleted).
+    FpDelete { id: String },
+}
+
+/// One item of the Drive tree, as a file provider shows it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FpItem {
+    pub id: String,
+    /// `root` for what is at the top.
+    pub parent: String,
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    /// Changed, ms since the epoch.
+    pub mtime: i64,
+    /// Changes whenever the item's bytes do (its content hash).
+    pub content: String,
+    /// Changes whenever its name or place does.
+    pub meta: String,
+    /// Its bytes are on this device now (no download to open it).
+    pub here: bool,
+}
+
+/// A page of a folder.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FpPage {
+    pub items: Vec<FpItem>,
+    /// Pass as `after` for the next page; none: that was the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+}
+
+/// What changed since an anchor.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FpChanges {
+    pub updated: Vec<FpItem>,
+    pub deleted: Vec<String>,
+    /// The anchor these changes bring the asker to.
+    pub anchor: String,
+    /// The anchor could not be gone back to: enumerate everything again.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub expired: bool,
+}
+
+/// A fetched file.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FpFetched {
+    pub path: std::path::PathBuf,
+    pub item: FpItem,
 }
 
 /// How to open.
