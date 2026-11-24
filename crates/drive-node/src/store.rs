@@ -355,15 +355,45 @@ impl Store {
     }
 
     /// Move a space's index rows to a new space name.
+    ///
+    /// All or nothing. A location `to` already has rows for keeps them
+    /// (they came in under the new name), and `to`'s totals are counted
+    /// again from its rows, so a rename onto a space that has an index
+    /// (or a rename that stopped half-way before) never collides.
     pub async fn rename_space(&self, from: &str, to: &str) -> turso::Result<()> {
+        if from == to {
+            return Ok(());
+        }
         let conn = self.writer().await;
-        for table in ["entries", "entry_stats"] {
+        conn.execute("BEGIN", ()).await?;
+        self.tx_open.store(true, Ordering::Release);
+        let names = || vec![Value::Text(from.into()), Value::Text(to.into())];
+        let result = async {
             conn.execute(
-                &format!("UPDATE {table} SET space = ?2 WHERE space = ?1"),
-                vec![Value::Text(from.into()), Value::Text(to.into())],
+                "DELETE FROM entries WHERE space = ?1 \
+                 AND location IN (SELECT DISTINCT location FROM entries WHERE space = ?2)",
+                names(),
             )
             .await?;
+            conn.execute("UPDATE entries SET space = ?2 WHERE space = ?1", names())
+                .await?;
+            conn.execute("DELETE FROM entry_stats WHERE space IN (?1, ?2)", names())
+                .await?;
+            conn.execute(
+                "INSERT INTO entry_stats (space, location, ext, files, bytes) \
+                 SELECT space, location, ext, count(*), sum(size) FROM entries \
+                 WHERE space = ?1 AND dir = 0 GROUP BY space, location, ext",
+                vec![Value::Text(to.into())],
+            )
+            .await?;
+            conn.execute("COMMIT", ()).await
         }
+        .await;
+        if result.is_err() {
+            let _ = conn.execute("ROLLBACK", ()).await;
+        }
+        self.tx_open.store(false, Ordering::Release);
+        result?;
         self.changed(from);
         self.changed(to);
         Ok(())
@@ -970,6 +1000,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn renaming_onto_a_space_with_rows_keeps_its_index_and_totals_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("node.db")).await.unwrap();
+        // Both names have a location with `.wav` files: the same totals key.
+        store
+            .put_index("work", &index("l1", vec![sized("a.wav", 10)]))
+            .await
+            .unwrap();
+        store
+            .put_index("work", &index("l2", vec![sized("b.wav", 3)]))
+            .await
+            .unwrap();
+        store
+            .put_index(
+                "studio",
+                &index("l1", vec![sized("c.wav", 7), sized("d.kf", 1)]),
+            )
+            .await
+            .unwrap();
+
+        store.rename_space("work", "studio").await.unwrap();
+
+        assert_stats_match(&store, "studio").await;
+        assert_eq!(store.stats("work").await.unwrap(), Stats::default());
+        assert!(store.files("work").await.unwrap().is_empty());
+        // The location both had keeps the index it has under the new name.
+        let studio = store.stats("studio").await.unwrap();
+        assert_eq!(studio.locations["l1"], (2, 8));
+        assert_eq!(studio.locations["l2"], (1, 3));
+
+        // Renaming a space to its own name leaves it as it is.
+        store.rename_space("studio", "studio").await.unwrap();
+        assert_eq!(store.stats("studio").await.unwrap(), studio);
+    }
+
+    #[tokio::test]
     async fn a_database_from_before_the_totals_counts_them_when_it_opens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.db");
@@ -1093,7 +1159,10 @@ mod tests {
         drop(store);
 
         let reopened = Store::open(&path).await.unwrap();
-        assert_eq!(reopened.load("org/doc").await.unwrap(), Some(vec![1, 2, 3, 4]));
+        assert_eq!(
+            reopened.load("org/doc").await.unwrap(),
+            Some(vec![1, 2, 3, 4])
+        );
     }
 
     #[tokio::test]
