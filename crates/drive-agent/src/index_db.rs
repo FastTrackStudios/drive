@@ -130,6 +130,33 @@ impl IndexDb {
         Self::open_once(path).await
     }
 
+    /// Open the database at `path` only if it is there, to read: nothing
+    /// is made, and a file that will not open is left as it is (`drive
+    /// where`, which must work with Drive down and change nothing).
+    pub async fn open_existing(path: &Path) -> turso::Result<Option<IndexDb>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let db = turso::Builder::new_local(&path.to_string_lossy())
+            .experimental_multiprocess_wal(true)
+            .build()
+            .await?;
+        let conn = db.connect()?;
+        conn.execute("PRAGMA busy_timeout = 5000", ()).await?;
+        let mut readers = Vec::with_capacity(READERS);
+        for _ in 0..READERS {
+            let r = db.connect()?;
+            r.execute("PRAGMA busy_timeout = 5000", ()).await?;
+            readers.push(r);
+        }
+        Ok(Some(IndexDb {
+            write: Mutex::new(conn),
+            tx_open: AtomicBool::new(false),
+            readers: std::sync::Mutex::new(readers),
+            permits: Semaphore::new(READERS),
+        }))
+    }
+
     async fn open_once(path: &Path) -> turso::Result<IndexDb> {
         let db = turso::Builder::new_local(&path.to_string_lossy())
             .experimental_multiprocess_wal(true)
@@ -296,6 +323,30 @@ impl IndexDb {
             Some(row) => Ok(Some(entry(&row, 0)?)),
             None => Ok(None),
         }
+    }
+
+    /// Entries of every location whose name contains `words` (any case):
+    /// (location, entry), at most `limit`.
+    pub async fn find(&self, words: &str, limit: usize) -> turso::Result<Vec<(String, IndexEntry)>> {
+        let r = self.reader().await;
+        let like = format!(
+            "%{}%",
+            words.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        let mut rows = r
+            .query(
+                &format!(
+                    "SELECT location, {ENTRY} FROM entries WHERE lname LIKE ?1 ESCAPE '\\' \
+                     ORDER BY location, path LIMIT {limit}"
+                ),
+                vec![t(&like)],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push((text(row.get_value(0)?), entry(&row, 1)?));
+        }
+        Ok(out)
     }
 
     /// A folder's entries (`""`: the location's root), folders first, by
