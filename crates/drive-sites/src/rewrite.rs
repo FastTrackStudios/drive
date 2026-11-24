@@ -94,6 +94,10 @@ static SRCSET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)(\ssrcset\s*=\s*)("([^"]*)"|'([^']*)')"#).expect("a regex"));
 static CSS_URL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"url\(\s*(["']?)(/[^"')]*)(["']?)\s*\)"#).expect("a regex"));
+/// Where text written as it is starts: a comment, or the opening tag of an
+/// element whose contents are code (its own attributes are still placed).
+static VERBATIM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<!--|<(pre|code|script)(?:\s[^>]*)?>").expect("a regex"));
 static HEAD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)<head(\s[^>]*)?>").expect("a regex"));
 
@@ -105,7 +109,83 @@ fn css(p: &Placement, text: &str) -> String {
         .into_owned()
 }
 
+/// `text` cut into runs of markup (`true`: URLs in it are placed) and runs
+/// left as written: comments, and what `<pre>`, `<code>` and `<script>`
+/// hold (a snippet showing `href="/x"` is not a link). An unclosed one
+/// runs to the end.
+fn runs(text: &str) -> Vec<(bool, &str)> {
+    // ASCII lowercasing keeps every byte where it was.
+    let lower = text.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(m) = VERBATIM.captures_at(text, at) {
+        let whole = m.get(0).expect("the match");
+        let (from, end) = match m.get(1) {
+            // A comment, `<!--` to `-->`.
+            None => (
+                whole.start(),
+                lower[whole.end()..]
+                    .find("-->")
+                    .map_or(text.len(), |i| whole.end() + i + 3),
+            ),
+            // An element's contents, up to its closing tag.
+            Some(name) => (
+                whole.end(),
+                closing(&lower, whole.end(), &name.as_str().to_ascii_lowercase())
+                    .unwrap_or(text.len()),
+            ),
+        };
+        out.push((true, &text[at..from]));
+        out.push((false, &text[from..end]));
+        at = end;
+    }
+    out.push((true, &text[at..]));
+    out
+}
+
+/// Where `</name>` (or `</name ...>`) first starts in `lower` from `from`.
+fn closing(lower: &str, from: usize, name: &str) -> Option<usize> {
+    let tag = format!("</{name}");
+    let mut at = from;
+    while let Some(i) = lower[at..].find(&tag) {
+        let start = at + i;
+        let next = lower[start + tag.len()..].chars().next();
+        if next.is_none_or(|c| c == '>' || c == '/' || c.is_whitespace()) {
+            return Some(start);
+        }
+        at = start + tag.len();
+    }
+    None
+}
+
 fn html(p: &Placement, text: &str) -> String {
+    let shim = p.shim();
+    let mut out = String::with_capacity(text.len() + shim.len());
+    let mut shim_in = false;
+    for (live, run) in runs(text) {
+        if !live {
+            out.push_str(run);
+            continue;
+        }
+        let placed = markup(p, run);
+        match HEAD.find(&placed).filter(|_| !shim_in) {
+            Some(m) => {
+                out.push_str(&placed[..m.end()]);
+                out.push_str(&shim);
+                out.push_str(&placed[m.end()..]);
+                shim_in = true;
+            }
+            None => out.push_str(&placed),
+        }
+    }
+    if !shim_in {
+        out.insert_str(0, &shim);
+    }
+    out
+}
+
+/// The URLs in a run of markup, placed.
+fn markup(p: &Placement, text: &str) -> String {
     let t = ATTR.replace_all(text, |c: &regex::Captures| {
         let (q, v) = match (c.get(3), c.get(4)) {
             (Some(v), _) => ('"', v.as_str()),
@@ -132,12 +212,7 @@ fn html(p: &Placement, text: &str) -> String {
             .collect();
         format!("{}{q}{}{q}", &c[1], placed.join(", "))
     });
-    let t = css(p, &t);
-    let shim = p.shim();
-    match HEAD.find(&t) {
-        Some(m) => format!("{}{shim}{}", &t[..m.end()], &t[m.end()..]),
-        None => format!("{shim}{t}"),
-    }
+    css(p, &t)
 }
 
 /// Place one output file (HTML and CSS change; anything else is as it was).
@@ -228,5 +303,42 @@ mod tests {
         assert!(shim.ends_with("</script>"), "{shim}");
         assert!(!shim.contains('\u{2028}'), "{shim}");
         assert!(shim.contains(r#"var B="/sites/a\u003c/script>"#), "{shim}");
+    }
+
+    #[test]
+    fn code_scripts_and_comments_stay_as_written() {
+        let p = Placement::from_base_url("/s/w", false);
+        let page = concat!(
+            "<html><!-- <head> href=\"/c\" --><HEAD><title>t</title></HEAD><body>",
+            "<pre><code>&lt;a href=\"/pre\"&gt; url(/pre.png)</code></pre>",
+            "<p>Use <code class=x>src=\"/inline\"</code> or <a href=\"/real\">this</a>.</p>",
+            "<script src=\"/app.js\">var s = ' href=\"/js\"'; var h = '<head>';</script>",
+            "<SCRIPT>x(' src=\"/js2\"')</SCRIPT><img src=\"/after.png\">",
+            "<pre>a</preamble> href=\"/pre2\"</pre>",
+            "<!-- unclosed src=\"/tail\"",
+            "</body></html>",
+        );
+        let out = String::from_utf8(file(&p, "index.html", page.as_bytes())).unwrap();
+        for kept in [
+            "<!-- <head> href=\"/c\" -->",
+            "&lt;a href=\"/pre\"&gt; url(/pre.png)",
+            "<code class=x>src=\"/inline\"</code>",
+            "var s = ' href=\"/js\"'; var h = '<head>';",
+            "x(' src=\"/js2\"')",
+            "</preamble> href=\"/pre2\"</pre>",
+            "src=\"/tail\"",
+        ] {
+            assert!(out.contains(kept), "{kept} in {out}");
+        }
+        for placed in [
+            "href=\"/s/w/real\"",
+            "src=\"/s/w/app.js\"",
+            "src=\"/s/w/after.png\"",
+        ] {
+            assert!(out.contains(placed), "{placed} in {out}");
+        }
+        // The shim goes in the real head, not the one in the comment.
+        assert!(out.contains("<HEAD><script>(function"), "{out}");
+        assert_eq!(out.matches("(function(){var B=").count(), 1, "{out}");
     }
 }
