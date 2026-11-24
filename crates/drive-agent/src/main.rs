@@ -972,6 +972,14 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         // its working copy (docs/working-copies.md).
         "own" => {
             let a = start(dir).await?;
+            // The tree's edits must reach the node (the agent running beside
+            // this command gets them from there): not while it is away.
+            if tokio::time::timeout(std::time::Duration::from_secs(15), a.drive.online())
+                .await
+                .is_err()
+            {
+                return Err("the node is not reachable: `drive own` needs it, try again when it is".into());
+            }
             let targets: Vec<String> = match args.get(1).map(String::as_str) {
                 Some("--all") => {
                     let mine: Vec<String> = a.my_locations().into_iter().map(|l| l.id).collect();
@@ -1008,6 +1016,8 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 }
             }
             settle(&a).await;
+            // Let the last edits go out and the copies be saved.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             if failed > 0 {
                 return Err(format!("{failed} not owned"));
             }

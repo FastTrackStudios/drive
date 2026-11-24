@@ -385,9 +385,13 @@ impl Agent {
                     .find(|d| d.id == self.device_id())
                     .map_or_else(|| self.device_id(), |d| d.name);
                 let date = chrono_date(drive_files::now_ms());
-                let aside = plan::conflict_name(rel, &device, &date);
-                if folder.join(&aside).exists() {
-                    return Err(format!("{rel}: {aside} is already there; next time"));
+                let mut aside = plan::conflict_name(rel, &device, &date);
+                let mut n = 2;
+                while folder.join(&aside).exists()
+                    || tree::resolve(&self.files, &aside_path(root, &self.files, &aside)).is_some()
+                {
+                    aside = plan::conflict_name(rel, &device, &format!("{date} {n}"));
+                    n += 1;
                 }
                 std::fs::rename(&path, folder.join(&aside)).map_err(|e| format!("{rel}: {e}"))?;
                 self.up(&aside, None, root, folder, last, vanished).await?;
@@ -454,6 +458,16 @@ impl Agent {
             .unwrap_or_default();
         if current != h {
             self.keep_blob(&h, bytes).await;
+            // The upload may have taken a while: a change to the tree file
+            // that arrived meanwhile wins (the next pass compares again).
+            let now = tree::entry(&self.files, tid)
+                .map(|e| e.hash)
+                .unwrap_or_default();
+            if now != current {
+                return Err(format!(
+                    "{rel}: changed in the Drive during the upload; next time"
+                ));
+            }
             tree::set_content(&self.files, tid, size, &h).map_err(|e| e.to_string())?;
         }
         last.insert(rel.to_string(), record(&tree::id_string(tid)));
@@ -526,6 +540,16 @@ impl Agent {
 struct Views<'a> {
     disk: &'a BTreeMap<String, OnDisk>,
     tree: &'a BTreeMap<String, InTree>,
+}
+
+/// A path under the working copy's root as a path of the Drive.
+fn aside_path(root: TreeID, doc: &LoroDoc, rel: &str) -> String {
+    let base = tree::path_of(doc, root);
+    if base.is_empty() {
+        rel.to_string()
+    } else {
+        format!("{base}/{rel}")
+    }
 }
 
 /// A file's size and modified time now (`None`: not a file there).

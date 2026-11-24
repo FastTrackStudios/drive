@@ -53,8 +53,28 @@ Folders follow their files: a folder made on one side is made on the
 other.
 
 It runs a few seconds after the folder (its location's watcher) or the
-tree changes, and every ten minutes. One reconcile of a working copy runs
-at a time, across processes too (a lock on `<root>.lock`).
+tree changes, and every ten minutes.
+
+### Safety
+
+- **One reconcile of a working copy at a time**, across processes too: a
+  lock on `<root>.lock`, taken before anything is read.
+- **No reconcile from a copy behind the last sync.** If the last-sync view
+  names a tree file this process's copy of the tree does not have yet, it
+  does nothing; otherwise it would read those files as gone.
+- **The tree is committed before the last-sync view is saved**, so a crash
+  leaves the view behind the tree (redone next time), never ahead of it.
+- **Every file is checked again right before it is acted on.** A file
+  being written is left for the next pass, and is recorded from its size
+  and time before the read. A file that changed on disk or in the Drive
+  since the walk is left alone.
+- **Nothing on disk is overwritten without a copy.** A file replaced by
+  the Drive's version is moved into `.drive-trash` first.
+- **No pass sends more than max(20, 5 %) of the files to a trash.** A
+  folder that went missing, or a copy of the tree that is wrong, is caught.
+  The pass says so and leaves them.
+- `drive own` needs the node reachable, so its tree edits reach the agent
+  running beside it.
 
 A working copy's files are not copied into the agent's cache. The file on
 disk is this device's copy of their bytes.
@@ -78,3 +98,13 @@ holds the bytes.
   for session folders (the largest file in today's songs is 120 MB); big
   media should stream.
 - A folder emptied on one side stays, empty, on the other.
+- `.drive-trash` is never pruned. Every version replaced from the Drive is
+  kept.
+- A bulk delete over the trash limit is refused on every pass and only
+  logged; there is no command to let it through yet.
+- Two processes reconciling the same working copy, both with current copies
+  of the tree, are kept apart by the lock, but each plans from its own copy.
+  This happens only while `drive own` runs beside the agent.
+- On file systems with 1–2 s timestamps (exFAT, some network shares), a
+  same-size save right after a sync can be missed until the file changes
+  again.
