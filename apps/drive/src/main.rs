@@ -409,6 +409,18 @@ fn Calendar() -> Element {
                                 },
                                 "✕"
                             }
+                            if e.is_generated() {
+                                button {
+                                    class: "x",
+                                    title: "Delete every meeting of this event",
+                                    onclick: {
+                                        let doc = doc.clone();
+                                        let series = e.series.clone();
+                                        move |_| doc.edit(|d| spine::remove_series(d, &series))
+                                    },
+                                    "✕ all"
+                                }
+                            }
                         }
                     }
                 }

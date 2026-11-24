@@ -317,6 +317,18 @@ pub fn remove_event(doc: &LoroDoc, id: &str) {
     let _ = events_map(doc).delete(id);
 }
 
+/// Remove a recurring event and every meeting of it: the rule, and the
+/// events that stand for one of its meetings (moved or renamed). Removing
+/// one generated meeting only skips it ([`skip_occurrence`]).
+pub fn remove_series(doc: &LoroDoc, series: &str) {
+    let map = events_map(doc);
+    for e in events(doc) {
+        if e.id == series || e.series == series {
+            let _ = map.delete(&e.id);
+        }
+    }
+}
+
 /// A new id, unique across peers: this peer's id and its next counter.
 pub fn new_id(doc: &LoroDoc, prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -474,4 +486,47 @@ mod tests {
         titles.sort();
         assert_eq!(titles, ["Rehearsal", "Service (moved)"]);
     }
+
+    #[test]
+    fn removing_a_series_removes_every_meeting_and_keeps_the_rest() {
+        let d = LoroDoc::new();
+        put_event(
+            &d,
+            &Event {
+                id: "s".into(),
+                title: "Weekly".into(),
+                date: "2026-11-01".into(),
+                repeat: "FREQ=WEEKLY".into(),
+                ..Default::default()
+            },
+        );
+        put_event(
+            &d,
+            &Event {
+                id: "moved".into(),
+                title: "Weekly (moved)".into(),
+                date: "2026-11-07".into(),
+                series: "s".into(),
+                occurrence: "2026-11-08".into(),
+                ..Default::default()
+            },
+        );
+        put_event(
+            &d,
+            &Event {
+                id: "other".into(),
+                title: "One-off".into(),
+                date: "2026-11-10".into(),
+                ..Default::default()
+            },
+        );
+        assert!(calendar(&d, "2026-11-01", "2026-11-30").len() > 2);
+        remove_series(&d, "s");
+        let left: Vec<String> = calendar(&d, "2026-11-01", "2026-11-30")
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(left, ["other"]);
+    }
+
 }
