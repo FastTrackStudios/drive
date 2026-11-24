@@ -500,7 +500,48 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
             Ok(serde_json::to_value(apps.a.leases.pins()).expect("pins")),
         ),
         Op::Status => c.answer(id, Ok(serde_json::to_value(apps.status()).expect("status"))),
+        // The Drive tree for a system file provider (crate::fileprovider).
+        Op::FpItem { id: item } => c.answer(id, apps.a.fp_item(&item).map(json)),
+        Op::FpList {
+            parent,
+            after,
+            limit,
+        } => c.answer(id, apps.a.fp_list(&parent, after.as_deref(), limit).map(json)),
+        Op::FpAnchor => c.answer(id, Ok(serde_json::json!({ "anchor": apps.a.fp_anchor() }))),
+        Op::FpChanges { anchor } => c.answer(id, Ok(json(apps.a.fp_changes(&anchor)))),
+        Op::FpFetch { id: item, into } => {
+            let r = apps.a.fp_fetch(&item, &into).await;
+            c.answer(id, r.map(json));
+        }
+        Op::FpCreate {
+            parent,
+            name,
+            dir,
+            from,
+        } => {
+            let r = apps.a.fp_create(&parent, &name, dir, from.as_deref()).await;
+            c.answer(id, r.map(json));
+        }
+        Op::FpModify {
+            id: item,
+            name,
+            parent,
+            from,
+        } => {
+            let r = apps
+                .a
+                .fp_modify(&item, name.as_deref(), parent.as_deref(), from.as_deref())
+                .await;
+            c.answer(id, r.map(json));
+        }
+        Op::FpDelete { id: item } => {
+            c.answer(id, apps.a.fp_delete(&item).map(|()| serde_json::Value::Null))
+        }
     }
+}
+
+fn json<T: Serialize>(v: T) -> serde_json::Value {
+    serde_json::to_value(v).expect("an answer serializes")
 }
 
 /// Every target in one go: what is here answers at once (in parallel);

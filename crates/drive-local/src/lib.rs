@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use proto::{
-    Event, FileProgress, FileState, Holder, How, LocalFile, OpenOptions, Pin, Priority, Progress,
-    Resolved, Started, Status, Warm,
+    Event, FileProgress, FileState, FpChanges, FpFetched, FpItem, FpPage, Holder, How, LocalFile,
+    OpenOptions, Pin, Priority, Progress, Resolved, Started, Status, Warm,
 };
 use proto::{Message, Op, PortFile, Request};
 
