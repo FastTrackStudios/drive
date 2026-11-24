@@ -30,6 +30,17 @@ pub struct Store {
     /// Bumped each time a space's index rows change (put, drop, rename):
     /// what is worked out from them is good while it stays the same.
     generations: std::sync::Mutex<HashMap<String, u64>>,
+    /// The last [`Store::list`], kept until a document is saved, renamed
+    /// or deleted: every open view asks for a listing every few seconds,
+    /// and each used to read the whole `docs` table (drive#61).
+    listing: std::sync::Mutex<Listing>,
+}
+
+#[derive(Default)]
+struct Listing {
+    /// Bumped by every write to `docs`.
+    generation: u64,
+    rows: Option<(u64, std::sync::Arc<Vec<(String, u64)>>)>,
 }
 
 /// Read connections, handed out one request at a time.
@@ -250,6 +261,7 @@ impl Store {
                 permits: Semaphore::new(READERS),
             },
             generations: Default::default(),
+            listing: Default::default(),
         })
     }
 
@@ -340,7 +352,15 @@ impl Store {
             vec![Value::Text(id.into()), Value::Blob(snapshot)],
         )
         .await?;
+        self.docs_changed();
         Ok(())
+    }
+
+    /// A write to `docs`: the kept listing is stale.
+    fn docs_changed(&self) {
+        let mut l = self.listing.lock().expect("listing");
+        l.generation += 1;
+        l.rows = None;
     }
 
     /// Give a document a new id (nothing happens if `to` already exists).
@@ -351,6 +371,7 @@ impl Store {
             vec![Value::Text(from.into()), Value::Text(to.into())],
         )
         .await?;
+        self.docs_changed();
         Ok(())
     }
 
@@ -406,12 +427,32 @@ impl Store {
             vec![Value::Text(id.into())],
         )
         .await?;
+        self.docs_changed();
         Ok(())
     }
 
     /// Every stored document id with its snapshot size.
     #[tracing::instrument(name = "drive.store.docs", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
-    pub async fn list(&self) -> turso::Result<Vec<(String, u64)>> {
+    pub async fn list(&self) -> turso::Result<std::sync::Arc<Vec<(String, u64)>>> {
+        let generation = {
+            let l = self.listing.lock().expect("listing");
+            if let Some((g, rows)) = &l.rows
+                && *g == l.generation
+            {
+                return Ok(rows.clone());
+            }
+            l.generation
+        };
+        let rows = std::sync::Arc::new(self.list_now().await?);
+        let mut l = self.listing.lock().expect("listing");
+        // Kept only if nothing was written while it was read.
+        if l.generation == generation {
+            l.rows = Some((generation, rows.clone()));
+        }
+        Ok(rows)
+    }
+
+    async fn list_now(&self) -> turso::Result<Vec<(String, u64)>> {
         let conn = self.reader().await;
         let mut rows = conn
             .query("SELECT id, length(snapshot) FROM docs", ())
@@ -1362,4 +1403,29 @@ mod tests {
             .collect();
         assert_eq!(folder, ["Charts/a.pdf", "Charts/sub/b.pdf"]);
     }
+
+    #[tokio::test]
+    async fn the_listing_is_kept_until_a_document_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("drive.db")).await.unwrap();
+        store.save("me/a", vec![1, 2, 3]).await.unwrap();
+        let first = store.list().await.unwrap();
+        assert_eq!(*first, [("me/a".to_string(), 3)]);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &store.list().await.unwrap()),
+            "nothing changed: the same listing, not another scan"
+        );
+        store.save("me/b", vec![9]).await.unwrap();
+        let ids = |l: &[(String, u64)]| l.iter().map(|(i, _)| i.clone()).collect::<Vec<_>>();
+        let mut after_save = ids(&store.list().await.unwrap());
+        after_save.sort();
+        assert_eq!(after_save, ["me/a", "me/b"]);
+        store.rename("me/a", "me/c").await.unwrap();
+        let mut after_rename = ids(&store.list().await.unwrap());
+        after_rename.sort();
+        assert_eq!(after_rename, ["me/b", "me/c"]);
+        store.delete("me/b").await.unwrap();
+        assert_eq!(ids(&store.list().await.unwrap()), ["me/c"]);
+    }
+
 }

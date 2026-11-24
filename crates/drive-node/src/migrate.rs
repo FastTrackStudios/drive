@@ -100,8 +100,8 @@ pub async fn rename_app(store: &Store, org: &str, from: &str, to: &str) -> Resul
         .list()
         .await
         .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|(id, _)| id)
+        .iter()
+        .map(|(id, _)| id.clone())
         .filter(|id| id.starts_with(&prefix))
         .collect();
     for id in &ids {
@@ -142,8 +142,8 @@ pub async fn to_org_ids(
         .list()
         .await
         .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|(id, _)| id)
+        .iter()
+        .map(|(id, _)| id.clone())
         .filter(|id| !id.contains('/'))
         .collect();
     for id in &ids {

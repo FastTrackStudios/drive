@@ -847,7 +847,7 @@ pub async fn backfill_once(sc: &Sidecars, rooms: &Rooms, per_pass: usize) -> usi
         .list()
         .await
         .unwrap_or_default()
-        .into_iter()
+        .iter()
         .filter_map(|(id, _)| id.strip_suffix("/drive:files").map(str::to_string))
         .collect();
     let mut done = 0;

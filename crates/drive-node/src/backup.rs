@@ -22,8 +22,8 @@ pub async fn archive(store: &Store) -> Result<(Vec<u8>, usize), String> {
     let mut raw = MAGIC.to_vec();
     let ids = store.list().await.map_err(|e| e.to_string())?;
     let mut n = 0;
-    for (id, _) in ids {
-        let Some(snap) = store.load(&id).await.map_err(|e| e.to_string())? else {
+    for (id, _) in ids.iter() {
+        let Some(snap) = store.load(id).await.map_err(|e| e.to_string())? else {
             continue;
         };
         raw.extend_from_slice(&(id.len() as u32).to_le_bytes());
