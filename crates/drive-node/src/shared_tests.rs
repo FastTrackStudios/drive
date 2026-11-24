@@ -93,7 +93,7 @@ async fn world(dir: &std::path::Path) -> World {
         .merge(
             Router::new()
                 .route("/list", get(ok))
-                .route("/search", get(ok))
+                .route("/search", get(ok).post(ok))
                 .route("/fetch/{space}/{location}", get(ok))
                 .layer(axum::middleware::from_fn_with_state(
                     rooms.clone(),
@@ -536,4 +536,27 @@ async fn share_link_permissions_and_guest_name_dedup() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_posted_search_is_guarded_as_the_get() {
+    let dir = tempfile::tempdir().unwrap();
+    let w = world(dir.path()).await;
+    let post = |token: &'static str, url: &'static str| {
+        let app = w.app.clone();
+        async move {
+            let req = axum::http::Request::post(url)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"sampled":[]}"#))
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    assert_eq!(post("tm", "/search?space=cody").await, StatusCode::OK);
+    assert_eq!(
+        post("tb", "/search?space=cody").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(post("tm", "/search").await, StatusCode::BAD_REQUEST);
 }

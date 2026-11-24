@@ -490,6 +490,7 @@ fn Results(space: String, wanted: Wanted) -> Element {
     // box always did); otherwise the tagged files, and what names, path
     // pieces and kinds find.
     let mut asks: Vec<String> = Vec::new();
+    let mut hashes: Vec<String> = Vec::new();
     if let Some(s) = &search {
         if let (true, Wanted::Text(q)) = (s.is_plain(), &wanted) {
             asks.push(format!("q={}&limit=200", enc(q.trim())));
@@ -500,7 +501,7 @@ fn Results(space: String, wanted: Wanted) -> Element {
                     Wanted::Tag(id) => lib.tagged(id),
                     Wanted::Text(_) => lib.targets().map(|(target, _)| target).collect(),
                 };
-                let mut hashes: Vec<_> = targets
+                hashes = targets
                     .into_iter()
                     .filter_map(|target| match target {
                         Target::Content(hash)
@@ -513,10 +514,6 @@ fn Results(space: String, wanted: Wanted) -> Element {
                     .collect();
                 hashes.sort_unstable();
                 hashes.dedup();
-                // Keep each request within typical request-line limits.
-                for batch in hashes.chunks(48) {
-                    asks.push(format!("sampled={}&limit=1000", batch.join(",")));
-                }
             }
             for w in h.words {
                 asks.push(format!("q={}&limit=300", enc(&w)));
@@ -531,8 +528,16 @@ fn Results(space: String, wanted: Wanted) -> Element {
     }
     let key = asks.join("|");
     let sp = space.clone();
-    let rows = use_resource(use_reactive!(|(sp, key)| async move {
+    let rows = use_resource(use_reactive!(|(sp, key, hashes)| async move {
         let mut out: Vec<serde_json::Value> = Vec::new();
+        // The tagged contents go in the body: a tag can be on more files
+        // than a URL can name.
+        if !hashes.is_empty()
+            && let Some(v) = post_search(&sp, &hashes).await
+            && let Some(r) = v["results"].as_array()
+        {
+            out.extend(r.iter().cloned());
+        }
         for ask in key.split('|').filter(|a| !a.is_empty()) {
             if let Some(v) = get(format!("/search?space={}&{ask}", enc(&sp))).await
                 && let Some(r) = v["results"].as_array()
@@ -1072,4 +1077,20 @@ fn TagEditor(space: String, id: String, on_done: EventHandler<()>) -> Element {
             }
         }
     }
+}
+
+/// Every indexed copy of these contents: one POST `/search`.
+async fn post_search(space: &str, sampled: &[String]) -> Option<serde_json::Value> {
+    let body = serde_json::json!({ "sampled": sampled, "limit": 1000 }).to_string();
+    let (status, bytes) = crate::host::request(
+        "POST",
+        &format!("/search?space={}", enc(space)),
+        Some("application/json"),
+        Some(body.into_bytes()),
+    )
+    .await?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }

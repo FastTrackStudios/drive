@@ -598,11 +598,14 @@ impl Store {
         sampled: &[String],
         limit: i64,
     ) -> turso::Result<Vec<Found>> {
-        let sampled: Vec<&String> = sampled
+        let mut sampled: Vec<&String> = sampled
             .iter()
             .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
-            .take(500)
+            // Bounds one search's work: 40 statements at most.
+            .take(20_000)
             .collect();
+        sampled.sort_unstable();
+        sampled.dedup();
         let words: Vec<String> = q
             .split_whitespace()
             .map(|w| w.to_lowercase())
@@ -642,11 +645,41 @@ impl Store {
             out.truncate(limit.clamp(1, 1000) as usize);
             return Ok(out);
         }
+        // A tag can be on thousands of contents: ask in bounded chunks
+        // (each one statement's worth of parameters), newest first overall.
+        const CHUNK: usize = 500;
+        if sampled.len() <= CHUNK {
+            return self
+                .query_entries(space, &words, &exts, &sampled, limit)
+                .await;
+        }
+        let mut out = Vec::new();
+        for chunk in sampled.chunks(CHUNK) {
+            out.extend(
+                self.query_entries(space, &words, &exts, chunk, limit)
+                    .await?,
+            );
+        }
+        out.sort_by(|a, b| b.dir.cmp(&a.dir).then(b.mtime.cmp(&a.mtime)));
+        out.truncate(limit.clamp(1, 1000) as usize);
+        Ok(out)
+    }
+
+    /// One statement of [`Store::search_with`]: names holding every word,
+    /// with one of `exts`, with one of the `sampled` contents.
+    async fn query_entries(
+        &self,
+        space: &str,
+        words: &[String],
+        exts: &[String],
+        sampled: &[&String],
+        limit: i64,
+    ) -> turso::Result<Vec<Found>> {
         let mut sql = String::from(
             "SELECT location, path, name, dir, size, mtime, sampled FROM entries WHERE space = ?1",
         );
         let mut params = vec![Value::Text(space.into())];
-        for w in &words {
+        for w in words {
             params.push(Value::Text(format!("%{}%", w.replace(['%', '_'], ""))));
             sql.push_str(&format!(" AND lname LIKE ?{}", params.len()));
         }
@@ -1141,6 +1174,45 @@ mod tests {
             .unwrap();
         assert_eq!(found.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn search_by_content_takes_every_hash_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("node.db")).await.unwrap();
+        let hashes: Vec<String> = (0..1200).map(|i| format!("{i:064x}")).collect();
+        store
+            .put_index(
+                "home",
+                &LocationIndex {
+                    location: "l1".into(),
+                    root: String::new(),
+                    built: 1,
+                    entries: hashes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, h)| IndexEntry {
+                            mtime: i as i64,
+                            ..file(&format!("f{i}.wav"), h)
+                        })
+                        .collect(),
+                },
+            )
+            .await
+            .unwrap();
+        let found = store
+            .search_with("home", "", &[], &hashes, 1000)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1000);
+        // Newest first across every chunk of hashes.
+        assert_eq!(found[0].path, "f1199.wav");
+        assert_eq!(found[999].path, "f200.wav");
+        let found = store
+            .search_with("home", "f7", &[], &hashes, 1000)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 111); // f7, f70..f79, f700..f799
     }
 
     #[tokio::test]
