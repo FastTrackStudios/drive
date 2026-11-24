@@ -255,10 +255,20 @@ pub async fn walk_storage(
     Ok((index, stats))
 }
 
-/// The published form: postcard, then zstd.
+/// The published form: postcard, then zstd. Streamed: postcard writes
+/// straight into the compressor, never a whole uncompressed copy (for
+/// millions of files that copy was most of an upload's memory, drive#47).
 pub fn encode(index: &LocationIndex) -> Vec<u8> {
-    let raw = postcard::to_stdvec(index).expect("an index serializes");
-    zstd::encode_all(raw.as_slice(), 9).expect("zstd compresses in memory")
+    use std::io::Write;
+    let z = zstd::stream::Encoder::new(Vec::new(), 9).expect("zstd starts in memory");
+    let mut w = std::io::BufWriter::with_capacity(1 << 16, z);
+    postcard::to_io(index, &mut w).expect("an index serializes");
+    w.flush().expect("zstd compresses in memory");
+    w.into_inner()
+        .ok()
+        .expect("flushed")
+        .finish()
+        .expect("zstd compresses in memory")
 }
 
 /// The most an index may unpack to. A few hundred bytes an entry, so this
@@ -271,61 +281,111 @@ pub fn decode(bytes: &[u8]) -> Option<LocationIndex> {
 }
 
 /// [`decode`], refusing anything that unpacks to more than `max` bytes.
+/// Streamed: postcard reads straight from the decompressor (a path at a
+/// time through a small scratch buffer), so the uncompressed form is
+/// never held whole.
 pub fn decode_within(bytes: &[u8], max: u64) -> Option<LocationIndex> {
     use std::io::Read;
-    let mut raw = Vec::new();
-    zstd::stream::Decoder::new(bytes)
+    let unpacked = zstd::stream::Decoder::new(bytes)
         .ok()?
-        .take(max.saturating_add(1))
-        .read_to_end(&mut raw)
-        .ok()?;
-    if raw.len() as u64 > max {
+        .take(max.saturating_add(1));
+    let reader = std::io::BufReader::with_capacity(1 << 16, unpacked);
+    let mut scratch = vec![0u8; 1 << 16];
+    let (index, (mut rest, _)) = postcard::from_io((reader, &mut scratch)).ok()?;
+    // Whatever follows counts towards the bound too (read, not kept).
+    std::io::copy(&mut rest, &mut std::io::sink()).ok()?;
+    if rest.into_inner().limit() == 0 {
         return None;
     }
-    postcard::from_bytes(&raw).ok()
+    Some(index)
 }
 
 /// An index arranged for browsing: each folder's children.
+///
+/// Positions into the index, not copies of its paths: with millions of
+/// files the copies were a second index's worth of memory (drive#47).
 pub struct Tree {
     /// Shared with whoever else holds the index (an agent keeps one copy
     /// of each and hands it round).
     pub index: std::sync::Arc<LocationIndex>,
-    children: HashMap<String, Vec<usize>>,
-    by_path: HashMap<String, usize>,
+    /// Every entry, by path (for [`Tree::get`]).
+    by_path: Vec<u32>,
+    /// Each folder's entries, by the folder's position ([`ROOT`]: the
+    /// location's root), folders first, by name.
+    children: HashMap<u32, Vec<u32>>,
+    /// Entries whose folder has no entry of its own, by the folder's path.
+    orphans: HashMap<String, Vec<u32>>,
 }
+
+/// The location's root, in [`Tree`]'s `children`.
+const ROOT: u32 = u32::MAX;
 
 impl Tree {
     pub fn new(index: impl Into<std::sync::Arc<LocationIndex>>) -> Tree {
         let index = index.into();
-        let mut children: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut by_path = HashMap::new();
-        for (i, e) in index.entries.iter().enumerate() {
-            children.entry(e.parent().to_string()).or_default().push(i);
-            by_path.insert(e.path.clone(), i);
+        let entries = &index.entries;
+        let mut by_path: Vec<u32> = (0..entries.len() as u32).collect();
+        if !entries.is_sorted_by(|a, b| a.path <= b.path) {
+            by_path.sort_by(|a, b| entries[*a as usize].path.cmp(&entries[*b as usize].path));
         }
-        for list in children.values_mut() {
-            list.sort_by(|a, b| {
-                let (x, y) = (&index.entries[*a], &index.entries[*b]);
-                (!x.dir, x.name().to_lowercase()).cmp(&(!y.dir, y.name().to_lowercase()))
-            });
+        let find = |path: &str| -> Option<u32> {
+            by_path
+                .binary_search_by(|i| entries[*i as usize].path.as_str().cmp(path))
+                .ok()
+                .map(|at| by_path[at])
+        };
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut orphans: HashMap<String, Vec<u32>> = HashMap::new();
+        for (i, e) in entries.iter().enumerate() {
+            let parent = e.parent();
+            if parent.is_empty() {
+                children.entry(ROOT).or_default().push(i as u32);
+            } else if let Some(p) = find(parent) {
+                children.entry(p).or_default().push(i as u32);
+            } else {
+                orphans.entry(parent.to_string()).or_default().push(i as u32);
+            }
+        }
+        let order = |a: &u32, b: &u32| {
+            let (x, y) = (&entries[*a as usize], &entries[*b as usize]);
+            (!x.dir, x.name().to_lowercase()).cmp(&(!y.dir, y.name().to_lowercase()))
+        };
+        for list in children.values_mut().chain(orphans.values_mut()) {
+            list.sort_by(order);
+            list.shrink_to_fit();
         }
         Tree {
             index,
-            children,
             by_path,
+            children,
+            orphans,
         }
+    }
+
+    fn position(&self, path: &str) -> Option<u32> {
+        let entries = &self.index.entries;
+        self.by_path
+            .binary_search_by(|i| entries[*i as usize].path.as_str().cmp(path))
+            .ok()
+            .map(|at| self.by_path[at])
     }
 
     /// A folder's entries (`""`: the location's root).
     pub fn list(&self, dir: &str) -> Vec<&IndexEntry> {
-        self.children
-            .get(dir)
-            .map(|v| v.iter().map(|i| &self.index.entries[*i]).collect())
+        let list = if dir.is_empty() {
+            self.children.get(&ROOT)
+        } else {
+            match self.position(dir) {
+                Some(p) => self.children.get(&p),
+                None => self.orphans.get(dir),
+            }
+        };
+        list.map(|v| v.iter().map(|i| &self.index.entries[*i as usize]).collect())
             .unwrap_or_default()
     }
 
     pub fn get(&self, path: &str) -> Option<&IndexEntry> {
-        self.by_path.get(path).map(|i| &self.index.entries[*i])
+        self.position(path).map(|i| &self.index.entries[i as usize])
     }
 }
 
@@ -414,6 +474,34 @@ mod tests {
         assert!(bomb.len() < 4096);
         assert!(decode_within(&bomb, 1 << 20).is_none());
         assert!(decode_within(&bomb, 16 << 20).is_some());
+    }
+
+
+    #[test]
+    fn a_tree_over_an_unsorted_index_with_missing_folders() {
+        let e = |path: &str, dir| IndexEntry {
+            path: path.into(),
+            dir,
+            size: 1,
+            mtime: 0,
+            sampled: String::new(),
+        };
+        // Out of order, and "b/c" has no entry of its own.
+        let idx = LocationIndex {
+            location: "l".into(),
+            root: "/".into(),
+            built: 0,
+            entries: vec![e("b/c/z.wav", false), e("a", true), e("b", true), e("a/y.wav", false), e("b/c/x.wav", false), e("top.txt", false)],
+        };
+        let t = Tree::new(idx);
+        let names = |dir: &str| t.list(dir).iter().map(|e| e.name().to_string()).collect::<Vec<_>>();
+        assert_eq!(names(""), ["a", "b", "top.txt"]);
+        assert_eq!(names("a"), ["y.wav"]);
+        assert_eq!(names("b/c"), ["x.wav", "z.wav"]);
+        assert!(names("b").is_empty());
+        assert!(names("nowhere").is_empty());
+        assert_eq!(t.get("b/c/z.wav").map(|e| e.size), Some(1));
+        assert!(t.get("b/c").is_none());
     }
 
 }
