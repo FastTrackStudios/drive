@@ -628,10 +628,12 @@ impl Drive {
                 });
             }
             ToClient::Docs { prefix, docs } => self.emit(Event::Docs { prefix, docs }),
-            ToClient::Error { .. }
-            | ToClient::Fetch { .. }
-            | ToClient::Sidecars { .. }
-            | ToClient::Browse { .. } => {}
+            // What the node refused (a document outside your orgs, an
+            // update it could not import): nothing to undo here, but said.
+            ToClient::Error { message } => {
+                tracing::warn!(drive.url = %self.0.url, error = %message, "the node refused a message");
+            }
+            ToClient::Fetch { .. } | ToClient::Sidecars { .. } | ToClient::Browse { .. } => {}
         }
     }
 }
@@ -758,5 +760,43 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
         assert!(stray.is_empty(), "no temporary files are left");
+    }
+
+    #[test]
+    fn an_error_from_the_node_is_logged() {
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                lock(&self.0).extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        copies();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (drive, _events) = Drive::connect(Some(format!("ws://127.0.0.1:{port}/sync")));
+        let buf = Buf::default();
+        let out = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || out.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            drive.receive(ToClient::Error {
+                message: "not allowed: other/x:doc".into(),
+            });
+        });
+        let logged = String::from_utf8(lock(&buf.0).clone()).unwrap();
+        assert!(
+            logged.contains("not allowed: other/x:doc"),
+            "logged: {logged:?}"
+        );
     }
 }
