@@ -70,7 +70,7 @@ fn cache_control(name: &str) -> &'static str {
 async fn serve(c: &Catalog, space: &str, id: &str, path: &str) -> Response {
     let files = c
         .rooms
-        .read(&sites::output_doc(space, id), sites::output)
+        .peek(&sites::output_doc(space, id), sites::output)
         .await;
     if files.is_empty() {
         return (StatusCode::NOT_FOUND, "This site has not been built yet.").into_response();

@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use drive_proto::{DocId, DocInfo, Peer, ToClient, ToNode};
@@ -25,6 +25,31 @@ struct Room {
     /// Bumped on every edit/update; saved tracks the latest flushed revision.
     dirty: u64,
     saved: u64,
+    /// When it was last read, changed or joined: a room nobody has open,
+    /// with nothing left to save, goes once it has been idle for [`IDLE`].
+    used: Instant,
+}
+
+/// How long a room nobody has open stays loaded after its last use.
+const IDLE: Duration = Duration::from_secs(60);
+
+impl Room {
+    fn from_snapshot(id: &str, snapshot: Option<Vec<u8>>) -> Room {
+        let doc = LoroDoc::new();
+        if let Some(snapshot) = snapshot
+            && let Err(e) = doc.import(&snapshot)
+        {
+            tracing::warn!(doc.id = %id, error = %e, "a stored snapshot did not import");
+        }
+        Room {
+            doc,
+            peers: HashMap::new(),
+            presence: HashMap::new(),
+            dirty: 0,
+            saved: 0,
+            used: Instant::now(),
+        }
+    }
 }
 
 type Outbox = mpsc::UnboundedSender<ToClient>;
@@ -225,6 +250,28 @@ impl Rooms {
         f(&room.doc)
     }
 
+    /// Read a document as [`Rooms::read`] does, except that one the store
+    /// does not have is read empty and opens no room: for what anyone may
+    /// ask for without signing in (a site, a share link), so made-up ids
+    /// cannot fill the node's memory with rooms.
+    pub async fn peek<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
+        let mut rooms = self.rooms.lock().await;
+        if !rooms.contains_key(id) {
+            match self.store.load(id).await {
+                Ok(Some(snapshot)) => {
+                    rooms.insert(id.to_string(), Room::from_snapshot(id, Some(snapshot)));
+                }
+                Ok(None) => return f(&LoroDoc::new()),
+                Err(e) => {
+                    tracing::warn!(doc.id = %id, error = %e, "the store could not load a document");
+                    return f(&LoroDoc::new());
+                }
+            }
+        }
+        let room = self.ensure(&mut rooms, id).await;
+        f(&room.doc)
+    }
+
     /// Which devices have an agent connected in `space`.
     pub async fn agents_online(&self, space: &str) -> Vec<String> {
         self.agents
@@ -362,30 +409,18 @@ impl Rooms {
     /// The room for a document, loaded from the store the first time.
     async fn ensure<'a>(&self, rooms: &'a mut HashMap<DocId, Room>, id: &str) -> &'a mut Room {
         if !rooms.contains_key(id) {
-            let doc = LoroDoc::new();
-            match self.store.load(id).await {
-                Ok(Some(snapshot)) => {
-                    if let Err(e) = doc.import(&snapshot) {
-                        tracing::warn!(doc.id = %id, error = %e, "a stored snapshot did not import");
-                    }
-                }
-                Ok(None) => {}
+            let snapshot = match self.store.load(id).await {
+                Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!(doc.id = %id, error = %e, "the store could not load a document")
+                    tracing::warn!(doc.id = %id, error = %e, "the store could not load a document");
+                    None
                 }
-            }
-            rooms.insert(
-                id.to_string(),
-                Room {
-                    doc,
-                    peers: HashMap::new(),
-                    presence: HashMap::new(),
-                    dirty: 0,
-                    saved: 0,
-                },
-            );
+            };
+            rooms.insert(id.to_string(), Room::from_snapshot(id, snapshot));
         }
-        rooms.get_mut(id).expect("just inserted")
+        let room = rooms.get_mut(id).expect("just inserted");
+        room.used = Instant::now();
+        room
     }
 
     /// Save every changed document, every two seconds.
@@ -393,7 +428,17 @@ impl Rooms {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             self.flush().await;
+            self.evict_idle(IDLE).await;
         }
+    }
+
+    /// Let go of every room nobody has open, with nothing left to save,
+    /// unused for `idle`: it is loaded again from the store when asked for.
+    pub async fn evict_idle(&self, idle: Duration) {
+        self.rooms
+            .lock()
+            .await
+            .retain(|_, r| !r.peers.is_empty() || r.dirty > r.saved || r.used.elapsed() < idle);
     }
 
     /// Save every changed document now (before a backup).
@@ -754,3 +799,6 @@ pub(crate) async fn session(
 
 #[cfg(test)]
 mod session_tests;
+
+#[cfg(test)]
+mod evict_tests;

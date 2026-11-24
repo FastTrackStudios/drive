@@ -123,7 +123,7 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
     let doc = drive_files::space_doc(space_id);
     let (share, all) = c
         .rooms
-        .read(&doc, |d| (projects::share(d, token), projects::projects(d)))
+        .peek(&doc, |d| (projects::share(d, token), projects::projects(d)))
         .await;
     let Some(share) = share else {
         tracing::warn!(share.space = %space_id, "a share link that does not exist was asked for");
@@ -146,7 +146,7 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
             if !lent.contains_key(&theirs) {
                 let l = c
                     .rooms
-                    .read(&drive_files::space_doc(&theirs), projects::lends)
+                    .peek(&drive_files::space_doc(&theirs), projects::lends)
                     .await;
                 lent.insert(theirs.clone(), l);
             }
@@ -162,7 +162,7 @@ async fn resolve(c: &Catalog, space_id: &str, token: &str) -> Result<Resolved, S
     project.parts = kept_parts;
     let kinds = c
         .rooms
-        .read(&drive_spine::spine_doc(space_id), Kinds::load)
+        .peek(&drive_spine::spine_doc(space_id), Kinds::load)
         .await;
     let allowed: Vec<String> = share
         .kinds
@@ -546,7 +546,7 @@ pub async fn comments(
         return StatusCode::NOT_FOUND.into_response();
     };
     let id = drive_proto::qualify(r.space_of(part), &file_target(part, f).doc_id());
-    let threads = c.rooms.read(&id, comments::threads).await;
+    let threads = c.rooms.peek(&id, comments::threads).await;
     let json: Vec<serde_json::Value> = threads
         .into_iter()
         .filter(|t| !t.root.deleted)
