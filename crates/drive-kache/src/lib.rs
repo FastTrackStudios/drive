@@ -96,6 +96,18 @@ pub struct Found {
 
 type Flight = Shared<BoxFuture<'static, Result<(), String>>>;
 
+/// A flight's key leaves `inflight` when its task ends, however it ends
+/// (a panic too): the next asker starts a fetch of its own.
+struct Landed<'a>(&'a Kache, &'a str);
+
+impl Drop for Landed<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inflight) = self.0.inflight.lock() {
+            inflight.remove(self.1);
+        }
+    }
+}
+
 /// A peer listing kept for later pages: (prefix, when, (key, size, hash)).
 type ListedPeers = (String, Instant, Vec<(String, u64, String)>);
 
@@ -156,31 +168,38 @@ impl Kache {
         if let Some(got) = self.store.get(key) {
             return Ok(Some(got));
         }
-        let flight = {
-            let mut inflight = self.inflight.lock().expect("inflight");
-            match inflight.get(key) {
-                Some(f) => f.clone(),
-                None => {
-                    let me = self.clone();
-                    let k = key.to_string();
-                    let task = tokio::spawn(async move {
-                        let r = me.fetch_from_group(&k).await;
-                        me.inflight.lock().expect("inflight").remove(&k);
-                        r
-                    });
-                    let f: Flight = async move {
-                        task.await
-                            .unwrap_or_else(|e| Err(format!("fetch task: {e}")))
-                    }
-                    .boxed()
-                    .shared();
-                    inflight.insert(key.to_string(), f.clone());
-                    f
-                }
-            }
-        };
-        flight.await?;
+        let me = self.clone();
+        let k = key.to_string();
+        self.flight(key, async move { me.fetch_from_group(&k).await })
+            .await?;
         Ok(self.store.get(key))
+    }
+
+    /// The one fetch of `key` running now, or `work` started as it: every
+    /// asker waits on the same one.
+    fn flight(
+        self: &Arc<Self>,
+        key: &str,
+        work: impl Future<Output = Result<(), String>> + Send + 'static,
+    ) -> Flight {
+        let mut inflight = self.inflight.lock().expect("inflight");
+        if let Some(f) = inflight.get(key) {
+            return f.clone();
+        }
+        let me = self.clone();
+        let k = key.to_string();
+        let task = tokio::spawn(async move {
+            let _landed = Landed(&me, &k);
+            work.await
+        });
+        let f: Flight = async move {
+            task.await
+                .unwrap_or_else(|e| Err(format!("fetch task: {e}")))
+        }
+        .boxed()
+        .shared();
+        inflight.insert(key.to_string(), f.clone());
+        f
     }
 
     async fn fetch_from_group(&self, key: &str) -> Result<(), String> {
@@ -318,4 +337,20 @@ impl Kache {
 /// The objects' ETag: their BLAKE3, quoted (a strong tag).
 pub fn etag(hash: &str) -> String {
     format!("\"{hash}\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_panicked_fetch_does_not_wedge_its_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), 1 << 20).unwrap();
+        let k = Kache::new(store, Arc::new(Vec::new), Timeouts::default());
+        let r = k.flight("key", async { panic!("a peer fetch panicked") }).await;
+        assert!(r.is_err());
+        assert!(k.inflight.lock().unwrap().is_empty(), "the key is free again");
+        assert_eq!(k.flight("key", async { Ok(()) }).await, Ok(()));
+    }
 }
