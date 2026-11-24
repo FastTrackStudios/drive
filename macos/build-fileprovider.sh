@@ -31,7 +31,7 @@ LIBS=()
 for t in $TARGETS; do
     rustup target add "$t" >/dev/null 2>&1 || true
     (cd "$ROOT" && cargo build --release -p drive-fileprovider --target "$t")
-    LIBS+=("$ROOT/target/$t/release/libdrive_fileprovider.a")
+    LIBS+=("${CARGO_TARGET_DIR:-$ROOT/target}/$t/release/libdrive_fileprovider.a")
 done
 mkdir -p "$OUT_DIR"
 LIB="$OUT_DIR/libdrive_fileprovider.a"
