@@ -168,14 +168,17 @@ impl Agent {
             .collect()
     }
 
-    pub(crate) fn index_cache(&self, location: &str) -> PathBuf {
-        self.dir.join("indexes").join(format!("{location}.idx"))
+    /// A location's index file here; refused for an id that is not a
+    /// plain name.
+    pub(crate) fn index_cache(&self, location: &str) -> Result<PathBuf, String> {
+        let id = crate::synced::id(location)?;
+        Ok(self.dir.join("indexes").join(format!("{id}.idx")))
     }
 
     /// A location's index as last downloaded or built here: decoded once,
     /// then shared until its file changes.
     pub fn cached_index(&self, location: &str) -> Option<Arc<LocationIndex>> {
-        let path = self.index_cache(location);
+        let path = self.index_cache(location).ok()?;
         let meta = std::fs::metadata(&path).ok()?;
         let stamp = (meta.modified().ok(), meta.len());
         if let Some((s, i)) = self.indexes.lock().expect("indexes").get(location)
@@ -244,7 +247,7 @@ impl Agent {
         }
         let bytes = index::encode(&idx);
         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
-        std::fs::write(self.index_cache(&loc.id), &bytes).map_err(|e| e.to_string())?;
+        std::fs::write(self.index_cache(&loc.id)?, &bytes).map_err(|e| e.to_string())?;
         let (node, space_name) = {
             let c = self.cfg.lock().expect("cfg");
             (c.node_http(), c.space.clone())
@@ -308,7 +311,9 @@ impl Agent {
                 match self.fetch_bytes(&loc.index).await {
                     Ok(bytes) => {
                         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
-                        let _ = std::fs::write(self.index_cache(&loc.id), &bytes);
+                        if let Ok(p) = self.index_cache(&loc.id) {
+                            let _ = std::fs::write(p, &bytes);
+                        }
                         self.fetched
                             .lock()
                             .expect("fetched")

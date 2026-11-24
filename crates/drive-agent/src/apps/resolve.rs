@@ -282,7 +282,7 @@ impl Apps {
         size: Option<u64>,
         on_bytes: OnBytes<'_>,
     ) -> Result<LocalFile, String> {
-        let path = self.a.cache_path(hash);
+        let path = self.a.cache_path(hash)?;
         if let Ok(m) = std::fs::metadata(&path) {
             on_bytes(m.len());
             return Ok(LocalFile {
@@ -513,7 +513,7 @@ impl Apps {
             });
         }
         // The same bytes already in the Drive tree's cache.
-        let tree = self.a.cache_path(&hash);
+        let tree = self.a.cache_path(&hash)?;
         if tree.is_file() {
             on_bytes(ans.size);
             return Ok(LocalFile {

@@ -32,7 +32,7 @@ static DDC_VERSION: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const
 impl Blobs for Agent {
     async fn get(&self, hash: &str) -> Result<Vec<u8>, String> {
         if self.is_cached(hash) {
-            return tokio::fs::read(self.cache_path(hash))
+            return tokio::fs::read(self.cache_path(hash)?)
                 .await
                 .map_err(|e| e.to_string());
         }
@@ -199,7 +199,7 @@ impl Agent {
             return Ok(Outcome::Unchanged);
         }
 
-        let work = work_dir(&self.dir, id);
+        let work = work_dir(&self.dir, id)?;
         let result = drive_sites::build(&work, &site, "/", &inputs, self, &bin).await;
         let mut record = Build {
             at: drive_files::now_ms(),
@@ -356,6 +356,6 @@ pub fn addresses(node_http: &str, b: &Build) -> Vec<String> {
 }
 
 /// A site's work folder (its dodeca project).
-pub fn work_dir(agent_dir: &std::path::Path, id: &str) -> PathBuf {
-    agent_dir.join("sites").join(id)
+pub fn work_dir(agent_dir: &std::path::Path, id: &str) -> Result<PathBuf, String> {
+    Ok(agent_dir.join("sites").join(crate::synced::id(id)?))
 }

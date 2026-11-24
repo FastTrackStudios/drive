@@ -329,7 +329,7 @@ async fn open_resolves_each_kind_of_source() {
             .await
             .unwrap();
     assert_eq!(t.how, How::Fetched);
-    assert_eq!(t.path, w.b.a.cache_path(&lh));
+    assert_eq!(t.path, w.b.a.cache_path(&lh).unwrap());
     assert_eq!(std::fs::read(&t.path).unwrap(), lyrics);
     assert_eq!(
         w.b.apps
@@ -343,7 +343,7 @@ async fn open_resolves_each_kind_of_source() {
     // A tree file only another device keeps (not on the node): from it.
     let only = pattern(700_000, 9);
     let oh = blake3::hash(&only).to_hex().to_string();
-    std::fs::write(w.v.a.cache_path(&oh), &only).unwrap();
+    std::fs::write(w.v.a.cache_path(&oh).unwrap(), &only).unwrap();
     space::set_held(&w.v.a.space, "voyager", &oh, Some("local")).unwrap();
     w.v.a.commit_space();
     let bs = w.b.a.clone();
@@ -391,7 +391,7 @@ async fn a_complete_partial_ignores_the_range_error_body() {
     let device = device(&url, "range-test", "Range test").await;
     let bytes = b"already downloaded";
     let hash = blake3::hash(bytes).to_hex().to_string();
-    let path = device.a.cache_path(&hash);
+    let path = device.a.cache_path(&hash).unwrap();
     let partial = path.with_extension("part");
     std::fs::write(&partial, bytes).unwrap();
 
@@ -1024,7 +1024,7 @@ async fn unpinning_keeps_bytes_other_files_and_apps_still_need() {
         7,
         leases::Item {
             target: "drive:b.wav".into(),
-            path: d.a.cache_path(&h),
+            path: d.a.cache_path(&h).unwrap(),
             hash: Some(h.clone()),
             size: 4096,
             how: How::Cached,

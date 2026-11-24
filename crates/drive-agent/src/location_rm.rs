@@ -149,7 +149,9 @@ impl Agent {
     pub(crate) fn forget_index(&self, location: &str) {
         self.indexes.lock().expect("indexes").remove(location);
         self.fetched.lock().expect("fetched").remove(location);
-        let _ = std::fs::remove_file(self.index_cache(location));
+        if let Ok(p) = self.index_cache(location) {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     /// Whether the registry still has a location (it may have been removed
