@@ -118,6 +118,43 @@ async fn a_changed_file_is_hashed_again() {
     p.shutdown().await;
 }
 
+/// A file let go and written again at the same size and time (a kache
+/// object replaced within a millisecond) is hashed again, not answered
+/// with the hash it had before, now or after a restart.
+#[tokio::test]
+async fn a_forgotten_file_is_hashed_again() {
+    let t = tempfile::tempdir().unwrap();
+    let (p, _f) = pair(&t).await;
+    let file = t.path().join("obj");
+    std::fs::write(&file, noise(50_000, 1)).unwrap();
+    let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+    let first = p.provide(&file).await.unwrap();
+    p.forget(&file).await;
+    std::fs::write(&file, noise(50_000, 2)).unwrap();
+    std::fs::File::open(&file)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    let want = hash_of(&noise(50_000, 2));
+    let second = p.provide(&file).await.unwrap();
+    assert_ne!(second.hash, first.hash);
+    assert_eq!(second.hash, want);
+    p.forget(&file).await;
+    p.shutdown().await;
+    let p = provider(t.path(), allow_only(Vec::new())).await;
+    std::fs::write(&file, noise(50_000, 3)).unwrap();
+    std::fs::File::open(&file)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    assert_eq!(p.provide(&file).await.unwrap().hash, hash_of(&noise(50_000, 3)));
+    p.shutdown().await;
+}
+
+fn hash_of(b: &[u8]) -> String {
+    iroh_blobs::Hash::new(b).to_hex().to_string()
+}
+
 #[tokio::test]
 async fn strangers_are_refused() {
     let t = tempfile::tempdir().unwrap();

@@ -195,6 +195,7 @@ impl Provider {
         // Changed while it was read: its hash is of no one version.
         let after = std::fs::metadata(&file).map_err(|e| e.to_string())?;
         if after.len() != size || mtime_ms(&after) != mtime {
+            let _ = self.store.tags().delete(format!("path:{key}")).await;
             return Err("the file changed while it was hashed".into());
         }
         let hash = tag.hash.to_hex().to_string();
@@ -213,9 +214,11 @@ impl Provider {
     }
 
     /// Stop serving a file this device no longer has (a cache object let
-    /// go): its entry in the blob store goes; the file is not touched.
+    /// go): its entry in the blob store and its remembered hash go; the
+    /// file is not touched.
     pub async fn forget(&self, file: &Path) {
         let key = file.to_string_lossy().into_owned();
+        self.served.remove(&key);
         let _ = self.store.tags().delete(format!("path:{key}")).await;
     }
 

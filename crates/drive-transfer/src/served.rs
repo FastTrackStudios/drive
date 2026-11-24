@@ -1,6 +1,7 @@
 //! What this device has hashed for serving: (path, size, mtime) → full
 //! BLAKE3 hash, one JSON line per file appended to `served.jsonl` in the
-//! agent's own folder (the last line for a path wins). This file is the
+//! agent's own folder (the last line for a path wins; one with no hash
+//! says the path was let go). This file is the
 //! only thing the provider writes, and only there.
 
 use std::collections::HashMap;
@@ -30,7 +31,11 @@ impl Served {
         if let Ok(text) = std::fs::read_to_string(&file) {
             for l in text.lines() {
                 if let Ok(line) = serde_json::from_str::<Line>(l) {
-                    map.insert(line.path.clone(), line);
+                    if line.hash.is_empty() {
+                        map.remove(&line.path);
+                    } else {
+                        map.insert(line.path.clone(), line);
+                    }
                 }
             }
         }
@@ -50,9 +55,28 @@ impl Served {
             .map(|l| l.hash.clone())
     }
 
+    /// Let `path` go: it is hashed again the next time it is served.
+    pub fn remove(&self, path: &str) {
+        let mut map = self.map.lock().expect("served");
+        if map.remove(path).is_some() {
+            self.append(&Line {
+                path: path.to_string(),
+                size: 0,
+                mtime: 0,
+                hash: String::new(),
+            });
+        }
+    }
+
     pub fn put(&self, line: Line) {
         let mut map = self.map.lock().expect("served");
-        let text = serde_json::to_string(&line).expect("a line serializes");
+        self.append(&line);
+        map.insert(line.path.clone(), line);
+    }
+
+    /// One more line in the file (the caller holds the map's lock).
+    fn append(&self, line: &Line) {
+        let text = serde_json::to_string(line).expect("a line serializes");
         let wrote = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -61,6 +85,5 @@ impl Served {
         if let Err(e) = wrote {
             tracing::warn!(error = %e, "the served-files list could not be saved; the file is hashed again next time");
         }
-        map.insert(line.path.clone(), line);
     }
 }
