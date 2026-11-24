@@ -11,7 +11,7 @@ level = "z"
 
 # The desktop app's bundle (`dx bundle`, feature `desktop`): Drive.app on
 # macOS (macos/bundle-app.sh adds the File Provider extension and signs it),
-# the Nix package on Linux (flake.nix, drive-desktop). The icons are
+# a .deb on Linux, which the Nix package (flake.nix, drive-desktop) unpacks. The icons are
 # assets/icons/Drive.webp, resized (it is 128 px; the larger ones are
 # scaled up).
 [bundle]
@@ -24,3 +24,7 @@ icon = ["icons/32x32.png", "icons/128x128.png", "icons/256x256.png", "icons/512x
 [bundle.macos]
 bundle_name = "Drive"
 minimum_system_version = "12.0"
+
+# The launcher entry: "Drive", and the window class the tray app sets.
+[bundle.deb]
+desktop_template = "linux/drive.desktop"
