@@ -325,30 +325,36 @@ impl Drive {
         }
     }
 
-    /// Commit the edits made to a document and send them.
+    /// Commit the edits made to a document and send them. What the socket
+    /// does not take stays queued for the next commit (a reconnect's join
+    /// sends whatever the node lacks either way).
     pub fn commit(&self, id: &str) {
         let author = self.author();
-        let pending = {
+        let outbox = {
             let docs = lock(&self.0.docs);
             let Some(d) = docs.get(id) else { return };
             drive_spine::history::commit(&d.doc, &author);
-            let mut o = d
-                .outbox
-                .lock()
-                .map(|mut o| std::mem::take(&mut *o))
-                .unwrap_or_default();
-            o.retain(|u| !u.is_empty());
-            o
+            d.outbox.clone()
         };
-        if !pending.is_empty() {
-            if self.status() == Status::Online {
-                for bytes in pending {
-                    self.send(&ToNode::Update {
-                        doc: id.to_string(),
-                        bytes,
-                    });
-                }
+        let pending = {
+            let mut o = lock(&outbox);
+            o.retain(|u| !u.is_empty());
+            let any = !o.is_empty();
+            if any && self.status() == Status::Online {
+                let sent = o
+                    .iter()
+                    .take_while(|bytes| {
+                        self.send(&ToNode::Update {
+                            doc: id.to_string(),
+                            bytes: bytes.to_vec(),
+                        })
+                    })
+                    .count();
+                o.drain(..sent);
             }
+            any
+        };
+        if pending {
             self.changed(id);
         }
     }
@@ -422,11 +428,11 @@ impl Drive {
         }
     }
 
-    fn send(&self, msg: &ToNode) {
-        if let Some(ws) = lock(&self.0.ws).as_ref()
-            && ws.is_open()
-        {
-            ws.send(drive_proto::encode(msg));
+    /// Send a message; `false` when the socket is not open or refused it.
+    fn send(&self, msg: &ToNode) -> bool {
+        match lock(&self.0.ws).as_ref() {
+            Some(ws) if ws.is_open() => ws.send(drive_proto::encode(msg)),
+            _ => false,
         }
     }
 
@@ -600,4 +606,33 @@ fn guest_name() -> String {
     ];
     let i = (platform::random() * N.len() as f64) as usize % N.len();
     format!("Guest {}", N[i])
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    fn pending(drive: &Drive, id: &str) -> usize {
+        lock(&drive.0.docs)
+            .get(id)
+            .map_or(0, |d| lock(&d.outbox).len())
+    }
+
+    #[test]
+    fn an_edit_made_offline_stays_queued() {
+        let copies = tempfile::tempdir().unwrap();
+        set_data_dir(copies.path());
+        // Nothing listens here, so the client stays offline.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (drive, _events) = Drive::connect(Some(format!("ws://127.0.0.1:{port}/sync")));
+        let id = "home/test:doc";
+        let doc = drive.open(id);
+        doc.get_map("song").insert("title", "Know Me").unwrap();
+        drive.commit(id);
+        assert_eq!(pending(&drive, id), 1, "the update waits to be sent");
+    }
 }

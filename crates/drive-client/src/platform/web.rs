@@ -107,8 +107,8 @@ impl Socket {
         self.0.ready_state() == WebSocket::OPEN
     }
 
-    pub(crate) fn send(&self, bytes: Vec<u8>) {
-        let _ = self.0.send_with_u8_array(&bytes);
+    pub(crate) fn send(&self, bytes: Vec<u8>) -> bool {
+        self.0.send_with_u8_array(&bytes).is_ok()
     }
 
     pub(crate) fn close(&self) {
