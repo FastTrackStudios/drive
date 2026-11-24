@@ -135,11 +135,11 @@ fn place(tmp: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
         if is_dir {
             // A folder: renamed only while the name is free (rename over a
             // non-empty folder fails; over nothing it is the placement).
-            if exists(&fin) {
-                continue;
+            match rename_noreplace(tmp, &fin) {
+                Ok(()) => return Ok(fin),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
             }
-            std::fs::rename(tmp, &fin)?;
-            return Ok(fin);
         }
         match std::fs::hard_link(tmp, &fin) {
             Ok(()) => {
@@ -149,14 +149,58 @@ fn place(tmp: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(_) => {
                 // A file system without hard links: rename while free.
-                if exists(&fin) {
-                    continue;
+                match rename_noreplace(tmp, &fin) {
+                    Ok(()) => return Ok(fin),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => return Err(e),
                 }
-                std::fs::rename(tmp, &fin)?;
-                return Ok(fin);
             }
         }
     }
+}
+
+/// Rename `from` to `to` only if nothing is at `to`: `AlreadyExists`
+/// otherwise. A plain rename replaces an empty folder (or, for a file, any
+/// file) that appeared at `to` after it was checked (drive#63). Where the
+/// system cannot refuse atomically, it checks first.
+fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a NUL in a path"))
+        };
+        let (a, b) = (c(from)?, c(to)?);
+        // SAFETY: both are NUL-terminated paths that outlive the call.
+        #[cfg(target_os = "linux")]
+        let r = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        // SAFETY: as above.
+        #[cfg(target_os = "macos")]
+        let r = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_EXCL) };
+        if r == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            // A file system (or kernel) that cannot: check, then rename.
+            Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::ENOTSUP) => {}
+            _ => return Err(e),
+        }
+    }
+    if exists(to) {
+        return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    std::fs::rename(from, to)
 }
 
 /// Copy `src` (a file or a bundle folder) into `dir` as `name` (or a free
@@ -396,4 +440,27 @@ mod tests {
             assert!(contents.iter().any(|x| x == c), "{c} is gone: {contents:?}");
         }
     }
+
+    #[test]
+    fn rename_noreplace_keeps_a_folder_that_appeared_at_the_name() {
+        let d = tempfile::tempdir().unwrap();
+        let (from, to) = (d.path().join("tmp"), d.path().join("Song.logicx"));
+        std::fs::create_dir(&from).unwrap();
+        std::fs::write(from.join("a"), b"new").unwrap();
+        // Another writer made the bundle (still empty) after the check: a
+        // plain rename would replace it.
+        std::fs::create_dir(&to).unwrap();
+        let e = rename_noreplace(&from, &to).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert!(from.join("a").exists() && std::fs::read_dir(&to).unwrap().next().is_none());
+
+        let file = d.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::write(d.path().join("g"), b"keep").unwrap();
+        assert!(rename_noreplace(&file, &d.path().join("g")).is_err());
+        assert_eq!(std::fs::read(d.path().join("g")).unwrap(), b"keep");
+        rename_noreplace(&file, &d.path().join("h")).unwrap();
+        assert!(!file.exists());
+    }
+
 }
