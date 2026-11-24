@@ -85,13 +85,24 @@ macos/
 
 ### How the pieces connect
 
-- **The socket:** the agent serves its app API on a second socket inside the
-  app group's container, `~/Library/Group Containers/28C2G63DA7.app.fasttrackstudio.drive/app.sock`.
-  That folder is the only one the sandboxed extension can reach, so it needs
-  no network entitlement and no absolute-path exception.
-- **Staging:** fetched bytes are copied into `staging/` there, and outgoing
-  edits are staged there too. The agent may not read the extension's own
-  container, and the extension may not read the agent's cache.
+- **Reaching the agent:** the extension comes to the agent's own folder,
+  `~/.local/share/drive-agent`, through a home-relative sandbox exception
+  (`DriveFileProvider.entitlements`). Its sandbox refuses `connect()` to the
+  Unix socket there (EPERM), so it dials the agent's loopback port, which
+  the agent always serves on macOS: `app.port` holds the port and a token
+  (mode 600). `com.apple.security.network.client` allows that connection.
+- **Why not the app group's container:** macOS 15 refuses that folder to
+  the agent (TCC's App Data protection, `kTCCServiceSystemPolicyAppDataDetailed`,
+  which records a denial and never asks). On airlock it refused the
+  release binary as a LaunchDaemon or LaunchAgent, signed ad hoc or with
+  the Developer ID and the group entitlement, and even the agent run from
+  inside the notarized Drive.app. Checks over SSH pass anyway, because
+  sshd's sessions have Full Disk Access: test this as a launchd job.
+- **Staging:** the agent writes fetched bytes to `fp-staging/` in its
+  folder. The extension moves them into the domain's temporary folder
+  before handing them over, because the system will not take a file from
+  the agent's folder. Outgoing edits are staged in `fp-staging/` too, where
+  the agent reads them.
 - **Ids:** Drive uses tree ids, which survive renames and moves. (Task uses
   paths, because its tree is files on disk.)
 - **Signing:** a Developer ID identity (team `28C2G63DA7`, in
@@ -105,13 +116,13 @@ KEYCHAIN_PW=… bash macos/try-fileprovider.sh          # build, sign, register 
 cargo build --release -p drive-node -p drive-agent --no-default-features
 drive-node --listen 127.0.0.1:18150 --data /tmp/dfp/node --org dev --iroh-local &
 drive --dir /tmp/dfp/agent init --node ws://127.0.0.1:18150/sync --space dev --name Mac
-drive --dir /tmp/dfp/agent serve &                    # also serves the socket in the group container
+drive --dir /tmp/dfp/agent serve &                    # its socket and, on macOS, a loopback port
 target/fileprovider/Drive.app/Contents/MacOS/Drive watch &   # signals Finder when the tree changes
 ls ~/Library/CloudStorage/Drive-Drive                  # Finder's "Drive"
 ```
 
-Order matters: register first, so macOS makes the group container itself
-when the signed app launches. Then start the agent.
+The extension finds the agent at `~/.local/share/drive-agent`, so for
+this throwaway setup run the agent there (or link it), not in `/tmp/dfp`.
 
 ### Checked on airlock (macOS 27.2, M4), 2026-11-24
 

@@ -63,9 +63,9 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     /// Folders to put another `app.sock` in, for programs that cannot
-    /// reach the agent's folder: a sandboxed macOS extension reaches only
-    /// its app group's container ([`group_container`] is added there by
-    /// itself).
+    /// reach the agent's folder. (Drive's File Provider extension reaches
+    /// the agent's own folder through a home-relative sandbox exception:
+    /// macOS 15 refuses the app group's container to the agent.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sockets_in: Vec<std::path::PathBuf>,
 }
@@ -80,31 +80,9 @@ impl Settings {
     /// Every folder an `app.sock` goes in besides the agent's own.
     pub fn socket_dirs(&self) -> Vec<std::path::PathBuf> {
         let mut dirs = self.sockets_in.clone();
-        if let Some(g) = group_container() {
-            dirs.push(g);
-        }
         dirs.dedup();
         dirs
     }
-}
-
-/// The app group Drive's macOS app and its File Provider extension share
-/// (docs/fileprovider.md): team-prefixed, the form a Developer ID build
-/// uses without a provisioning profile.
-pub const APP_GROUP: &str = "28C2G63DA7.app.fasttrackstudio.drive";
-
-/// That group's container, where the sandboxed extension finds the
-/// agent: on macOS only.
-pub fn group_container() -> Option<std::path::PathBuf> {
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(
-        std::path::PathBuf::from(home)
-            .join("Library/Group Containers")
-            .join(APP_GROUP),
-    )
 }
 
 /// The app API's state in the running agent.
@@ -204,6 +182,14 @@ pub async fn serve(apps: Arc<Apps>) -> Result<(), String> {
     let dir = apps.a.dir.clone();
     #[allow(unused_mut)]
     let mut port = apps.a.cfg.lock().expect("cfg").apps.port;
+    // On macOS also a loopback port: Drive's File Provider extension is
+    // sandboxed, and its sandbox refuses connect() to a Unix socket outside
+    // its app group's container (EPERM), which macOS 15 in turn refuses to
+    // the agent. It reads app.port (port and token) through its
+    // home-relative exception and dials the port instead.
+    if cfg!(target_os = "macos") {
+        port = port.or(Some(0));
+    }
     #[cfg(unix)]
     {
         let sock = dir.join(drive_local::SOCKET);

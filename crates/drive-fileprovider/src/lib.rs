@@ -78,9 +78,19 @@ fn out(s: String) -> *mut c_char {
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// The agent at its socket, else at the loopback port its folder names
+/// (`app.port`): the extension's sandbox may not connect() to a Unix socket.
+fn dial(socket: &Path) -> Result<Client, String> {
+    match socket.parent() {
+        Some(dir) => Client::connect_in(dir, APP),
+        None => Client::connect_socket(socket, APP),
+    }
+    .map_err(|e| e.to_string())
+}
+
 /// Where the agent is; connect now.
 pub fn connect(socket: &Path) -> Result<(), String> {
-    let c = Client::connect_socket(socket, APP).map_err(|e| e.to_string())?;
+    let c = dial(socket)?;
     *AGENT.lock().expect("agent") = (Some(socket.to_path_buf()), Some(c));
     Ok(())
 }
@@ -93,7 +103,7 @@ pub fn call(request: &str) -> Result<String, String> {
     let path = agent.0.clone().ok_or("dfp_connect was not called")?;
     for attempt in 0..2 {
         if agent.1.is_none() {
-            agent.1 = Some(Client::connect_socket(&path, APP).map_err(|e| e.to_string())?);
+            agent.1 = Some(dial(&path)?);
         }
         let c = agent.1.as_ref().expect("connected");
         match c.call_op(op.clone()) {

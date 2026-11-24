@@ -522,13 +522,17 @@ fn dial(dir: &Path) -> Result<(Conn, Option<String>)> {
     let sock = dir.join(SOCKET);
     #[allow(unused_mut)]
     let mut why = format!("nothing answers at {}", sock.display());
+    #[allow(unused_mut)]
+    let mut refused = false;
     #[cfg(unix)]
     match std::os::unix::net::UnixStream::connect(&sock) {
         Ok(s) => return Ok((Conn::Unix(s), None)),
         // Not there, or a path too long for a socket (the agent then
-        // serves on a loopback port): try the port.
+        // serves on a loopback port), or a sandbox that may not connect()
+        // to a Unix socket (macOS's File Provider extension): try the port.
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Err(Error::Refused(format!("{}: {e}", sock.display())));
+            why = format!("{}: {e}", sock.display());
+            refused = true;
         }
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             why = format!("{}: {e}", sock.display());
@@ -547,6 +551,9 @@ fn dial(dir: &Path) -> Result<(Conn, Option<String>)> {
             Err(e) => why = format!("{why}; loopback port {}: {e}", p.port),
         }
     }
+    if refused {
+        return Err(Error::Refused(why));
+    }
     Err(Error::NotRunning(format!(
         "{why} (start it with `drive serve`)"
     )))
@@ -555,6 +562,45 @@ fn dial(dir: &Path) -> Result<(Conn, Option<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sandbox that may not connect() to the socket (macOS's File
+    /// Provider extension) still reaches the agent on its loopback port.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_socket_falls_back_to_the_loopback_port() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join(SOCKET);
+        let _unix = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+            return; // root ignores the mode: nothing to show here
+        }
+        let tcp = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        std::fs::write(
+            dir.path().join(PORT_FILE),
+            serde_json::json!({ "port": port, "token": "t" }).to_string(),
+        )
+        .unwrap();
+        let (conn, token) = dial(dir.path()).unwrap();
+        assert!(matches!(conn, Conn::Tcp(_)));
+        assert_eq!(token.as_deref(), Some("t"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_socket_without_a_port_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join(SOCKET);
+        let _unix = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+            return;
+        }
+        assert!(matches!(dial(dir.path()), Err(Error::Refused(_))));
+    }
 
     #[cfg(unix)]
     #[test]

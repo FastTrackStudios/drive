@@ -6,13 +6,23 @@
          load one that is not. -->
     <key>com.apple.security.app-sandbox</key>
     <true/>
-    <!-- The group the agent shares: its app socket is in this group's
-         container, and fetched bytes and outgoing edits are staged there.
-         That is all the extension touches. No absolute-path exception, no
-         network: an App Store build stays possible (unlike Task's). -->
+    <!-- Drive.app's group (the registrar's domain work). -->
     <key>com.apple.security.application-groups</key>
     <array>
         <string>28C2G63DA7.app.fasttrackstudio.drive</string>
+    </array>
+    <!-- The agent's folder: its app socket, and where fetched bytes and
+         outgoing edits are staged. macOS 15 refuses the app group's
+         container to the agent (TCC's App Data protection), so the
+         extension comes to the agent instead. A temporary exception, which
+         a Developer ID build may carry (no App Store build is planned). -->
+    <!-- connect() to that socket: the sandbox counts a Unix socket as the
+         network (outbound), not as a file. Nothing else is dialled. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/.local/share/drive-agent/</string>
     </array>
 </dict>
 </plist>
