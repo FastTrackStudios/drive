@@ -49,6 +49,30 @@ impl UploadState {
     pub fn busy(&self) -> bool {
         self.done < self.total
     }
+
+    /// `n` more files: a new batch, or added to the one going (a second
+    /// pick while the first uploads must not reset its count, drive#64).
+    fn add(&mut self, n: usize) {
+        if !self.busy() {
+            *self = UploadState::default();
+        }
+        self.total += n;
+    }
+
+    /// One file through; the summary once the batch is.
+    fn finish_one(&mut self, ok: bool) {
+        self.done += 1;
+        if !ok {
+            self.failed += 1;
+        }
+        if !self.busy() {
+            self.current.clear();
+            self.said = match (self.total, self.failed) {
+                (n, 0) => format!("Uploaded {n} file{}", if n == 1 { "" } else { "s" }),
+                (n, f) => format!("Uploaded {} of {n}; {f} refused", n - f),
+            };
+        }
+    }
 }
 
 /// The uploads, in context for the whole app.
@@ -73,11 +97,7 @@ pub async fn upload_files(
     uploads: Uploads,
 ) {
     let mut state = uploads.0;
-    state.set(UploadState {
-        total: picked.len(),
-        ..UploadState::default()
-    });
-    let mut failed = 0;
+    state.with_mut(|s| s.add(picked.len()));
     for file in picked {
         let name = file.name();
         state.with_mut(|s| s.current = name.clone());
@@ -85,21 +105,8 @@ pub async fn upload_files(
             Ok(bytes) => send(&files, &reg, cur, &name, &bytes).await,
             Err(_) => false,
         };
-        if !ok {
-            failed += 1;
-        }
-        state.with_mut(|s| {
-            s.done += 1;
-            s.failed = failed;
-        });
+        state.with_mut(|s| s.finish_one(ok));
     }
-    state.with_mut(|s| {
-        s.current.clear();
-        s.said = match (s.total, failed) {
-            (n, 0) => format!("Uploaded {n} file{}", if n == 1 { "" } else { "s" }),
-            (n, f) => format!("Uploaded {} of {n}; {f} refused", n - f),
-        };
-    });
 }
 
 /// One file to the node and into the tree; whether it went.
@@ -110,10 +117,12 @@ async fn send(files: &Doc, reg: &Doc, cur: Option<TreeID>, name: &str, bytes: &[
     match sent {
         Some((status, _)) if (200..300).contains(&status) => {
             files.edit(|d| {
+                // A file of that name gets the new bytes; a folder of that
+                // name keeps its own, and the file goes beside it (listed
+                // as `name (2)`) rather than nowhere (drive#64).
                 let id = match tree::lookup(d, cur, name) {
                     Some(x) if !x.dir => Some(x.id),
-                    Some(_) => None,
-                    None => tree::create_file(d, cur, name).ok(),
+                    _ => tree::create_file(d, cur, name).ok(),
                 };
                 if let Some(id) = id {
                     let _ = tree::set_content(d, id, bytes.len() as u64, &hash);
@@ -550,5 +559,22 @@ mod tests {
         s.done = 2;
         assert!(!s.busy());
         assert!(!UploadState::default().busy());
+    }
+
+    #[test]
+    fn a_second_pick_joins_the_batch_going() {
+        let mut s = UploadState::default();
+        s.add(2);
+        s.finish_one(true);
+        s.add(3);
+        assert_eq!((s.done, s.total), (1, 5), "the first batch's count is kept");
+        for ok in [true, false, true, true] {
+            s.finish_one(ok);
+        }
+        assert!(!s.busy());
+        assert_eq!(s.said, "Uploaded 4 of 5; 1 refused");
+        // The next pick starts afresh.
+        s.add(1);
+        assert_eq!((s.done, s.total, s.failed), (0, 1, 0));
     }
 }
