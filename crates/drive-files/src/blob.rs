@@ -128,6 +128,9 @@ impl BlobStore {
     }
 
     pub async fn delete(&self, hash: &str) -> Result<(), Error> {
+        if !valid_hash(hash) {
+            return Err(Error::BadHash(hash.into()));
+        }
         Ok(self.op.delete(&key(hash)).await?)
     }
 
@@ -246,5 +249,25 @@ mod tests {
         assert_eq!(s.size(&h).await.unwrap(), Some(10));
         assert_eq!(s.size(&"a".repeat(64)).await.unwrap(), None);
         assert_eq!(&s.read_range(&h, 2, 5).await.unwrap()[..], b"234");
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_what_is_not_a_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let op =
+            Operator::new(opendal::services::Fs::default().root(&dir.path().to_string_lossy()))
+                .unwrap();
+        let s = BlobStore::new(op.clone());
+        op.write("config.json", b"keep".to_vec()).await.unwrap();
+        for bad in ["", "ab", "é", "../../config.json", &"../".repeat(16)] {
+            assert!(
+                matches!(s.delete(bad).await, Err(Error::BadHash(_))),
+                "{bad}"
+            );
+        }
+        assert!(op.exists("config.json").await.unwrap());
+        let h = s.put(b"gone".to_vec()).await.unwrap();
+        s.delete(&h).await.unwrap();
+        assert!(!s.has(&h).await.unwrap());
     }
 }
