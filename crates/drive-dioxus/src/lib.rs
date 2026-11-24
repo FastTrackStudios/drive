@@ -581,14 +581,39 @@ impl Doc {
     }
 }
 
-/// Open a document for this component (and keep it open). When `id`
-/// changes between renders the component gets the new document; edits
-/// never go on into the one it was first given.
+/// Open a document for this component, and keep it open while the
+/// component shows it. When `id` changes between renders the component
+/// gets the new document; edits never go on into the one it was first
+/// given. Once no component shows a document it closes, a while later
+/// (drive#62).
 pub fn use_doc(id: impl Into<String>) -> Doc {
     let ctx = use_drive();
     let id: String = ctx.qualify(&id.into());
     let slot = use_hook(|| Rc::new(keyed::Keyed::default()));
-    slot.get(&id, || open_doc(&ctx, &id))
+    slot.get(&id, || {
+        let doc = open_doc(&ctx, &id);
+        ctx.drive.hold(&id);
+        let held = Rc::new(Held {
+            drive: ctx.drive.clone(),
+            id: id.clone(),
+        });
+        (doc, held)
+    })
+    .0
+}
+
+/// A component's hold on a document: let go when the component goes or
+/// moves on to another document (the slot keeping it is dropped or
+/// replaced).
+struct Held {
+    drive: Drive,
+    id: String,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.drive.let_go(&self.id);
+    }
 }
 
 fn open_doc(ctx: &DriveCtx, id: &str) -> Doc {
