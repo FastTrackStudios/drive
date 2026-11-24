@@ -239,3 +239,20 @@ async fn only_the_asked_agent_answers_a_fetch() {
     });
     assert_eq!(fetch.await.unwrap().unwrap(), "real");
 }
+
+#[tokio::test]
+async fn a_second_sign_in_on_one_connection_ends_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let rooms = rooms(dir.path(), refusing_issuer().await).await;
+    rooms.auth.remember("t", person("alice", &["a"])).await;
+    rooms.auth.remember("u", person("bob", &["b"])).await;
+    let mut c = Client::connect(&rooms, "t", Duration::from_secs(600)).await;
+    c.join("a/notes").await;
+    c.send(ToNode::Hello {
+        version: drive_proto::VERSION,
+        name: "t".into(),
+        token: Some("u".into()),
+    });
+    c.ended("already signed in: reconnect").await;
+    assert_eq!(peers_of(&rooms, "a/notes").await, 0);
+}
