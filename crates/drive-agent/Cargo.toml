@@ -42,7 +42,9 @@ drive-proto = { path = "../drive-proto" }
 drive-transfer = { path = "../drive-transfer" }
 drive-kache = { path = "../drive-kache" }
 drive-local = { path = "../drive-local" }
-iroh = "1"
+# No metrics (unused) and one TLS backend, aws-lc-rs, as rustls uses here
+# elsewhere: the default ring would be a second (drive#36).
+iroh = { version = "1.5", default-features = false, features = ["portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 futures = "0.3"
 
 [dev-dependencies]
