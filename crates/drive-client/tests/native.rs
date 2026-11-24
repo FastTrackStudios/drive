@@ -137,3 +137,30 @@ async fn an_edit_made_offline_is_sent_when_the_node_comes() {
     .unwrap_or(false);
     assert!(arrived, "b sees the edit a made offline");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn save_now_keeps_the_copy_at_once() {
+    let copies = copies();
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (a, _a_events) = Drive::connect(Some(format!("ws://{addr}/sync")));
+    let id = "home/test:save-now";
+    let doc = a.open(id);
+    doc.get_map("song").insert("title", "Quick").unwrap();
+    a.commit(id);
+    a.save_now();
+
+    // Well before the usual save a moment later.
+    let file = copies.join("docs").join(drive_native::file_name(id));
+    let mut kept = false;
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        if file.exists() {
+            kept = true;
+            break;
+        }
+    }
+    assert!(kept, "{} is kept at once", file.display());
+}

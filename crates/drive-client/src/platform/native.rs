@@ -174,6 +174,9 @@ async fn write_whole(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()
     written
 }
 
+/// Nothing hides natively (an app calls `Drive::save_now` before it quits).
+pub(crate) fn on_hide(_f: impl Fn()) {}
+
 /// Nothing older to drop natively.
 pub(crate) fn drop_old_copies() {}
 

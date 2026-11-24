@@ -60,6 +60,37 @@ pub(crate) fn save_doc(id: &str, bytes: Vec<u8>) {
     spawn(async move { idb::save(&id, &bytes).await });
 }
 
+/// Call `f` whenever the page is hidden or put away (`visibilitychange` to
+/// hidden, `pagehide`): it may not come back.
+pub(crate) fn on_hide(f: impl Fn() + 'static) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let document = window.document();
+    let f = std::rc::Rc::new(f);
+    let hidden = {
+        let f = f.clone();
+        let document = document.clone();
+        Closure::<dyn FnMut()>::new(move || {
+            if document
+                .as_ref()
+                .is_some_and(|d| d.visibility_state() == web_sys::VisibilityState::Hidden)
+            {
+                f();
+            }
+        })
+    };
+    if let Some(d) = &document {
+        let _ =
+            d.add_event_listener_with_callback("visibilitychange", hidden.as_ref().unchecked_ref());
+    }
+    // Once per connection, kept for the page's life.
+    hidden.forget();
+    let pagehide = Closure::<dyn FnMut()>::new(move || f());
+    let _ = window.add_event_listener_with_callback("pagehide", pagehide.as_ref().unchecked_ref());
+    pagehide.forget();
+}
+
 /// Copies kept in `localStorage` before IndexedDB: dropped (they were
 /// under ids from before orgs, and the node has every one of them).
 pub(crate) fn drop_old_copies() {
