@@ -129,19 +129,20 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
     assert!(tree::resolve(&a.files, "Studio/Songs").is_none());
     assert!(
         a.logical_list("")
+            .await
             .unwrap()
             .contains(&("Studio".into(), true))
     );
     assert_eq!(
-        a.logical_list("Studio").unwrap(),
+        a.logical_list("Studio").await.unwrap(),
         vec![("Songs".to_string(), true)]
     );
     assert_eq!(
-        a.logical_list("Studio/Songs").unwrap(),
+        a.logical_list("Studio/Songs").await.unwrap(),
         vec![("Song A".to_string(), true), ("Song B".to_string(), true)]
     );
     assert_eq!(
-        a.logical_list("Studio/Songs/Song A").unwrap(),
+        a.logical_list("Studio/Songs/Song A").await.unwrap(),
         vec![
             ("Audio".to_string(), true),
             ("Song A.rpp".to_string(), false)
@@ -193,7 +194,7 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
     assert_eq!(r2.location.id, r.location.id);
     assert_eq!(r2.adoption.sub, "Song A");
     assert_eq!(
-        a.logical_list("Live/Tonight").unwrap(),
+        a.logical_list("Live/Tonight").await.unwrap(),
         vec![
             ("Audio".to_string(), true),
             ("Song A.rpp".to_string(), false)
@@ -219,7 +220,7 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
     }
     b.refresh_indexes().await;
     assert_eq!(
-        b.logical_list("Studio/Songs/Song B").unwrap(),
+        b.logical_list("Studio/Songs/Song B").await.unwrap(),
         vec![("notes.txt".to_string(), false)]
     );
 
@@ -238,7 +239,7 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
     a.drive.online().await;
     wait_until("the adoptions are back", || a.adoptions().len() == 2).await;
     assert_eq!(
-        a.logical_list("Studio").unwrap(),
+        a.logical_list("Studio").await.unwrap(),
         vec![("Songs".to_string(), true)]
     );
 
@@ -247,7 +248,7 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
     assert_eq!(gone.location, loc_id);
     assert!(a.unadopt("Studio/Songs").is_err());
     assert_eq!(a.spot("Studio/Songs/Song A"), None);
-    assert!(a.logical_list("Studio").unwrap().is_empty());
+    assert!(a.logical_list("Studio").await.unwrap().is_empty());
     assert_eq!(a.adoptions().len(), 1);
     a.unadopt("Live/Tonight").unwrap();
     assert!(a.adoptions().is_empty());

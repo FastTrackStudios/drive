@@ -118,16 +118,12 @@ impl Tags {
                 .into_iter()
                 .find(|l| l.name == lname || l.id == lname)
         {
-            let idx = self
+            self.a.sync_indexes().await;
+            let e = self
                 .a
-                .refresh_indexes()
+                .index_entry(&loc.id, path)
                 .await
-                .remove(&loc.id)
-                .ok_or(format!("{lname} has no index yet"))?;
-            let e = drive_files::index::Tree::new(idx)
-                .get(path)
-                .cloned()
-                .ok_or(format!("{path} is not in {lname}"))?;
+                .ok_or(format!("{path} is not in {lname} (or it has no index yet)"))?;
             if e.dir || e.sampled.is_empty() {
                 return Err(format!(
                     "{path} has no content hash (a folder, or unreadable): only files can be tagged on a computer"

@@ -561,7 +561,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     adoption.at,
                     a.whereabouts(adoption)
                 ));
-                for (name, dir) in a.logical_list(p)? {
+                for (name, dir) in a.logical_list(p).await? {
                     out(format!(
                         "  {:<11} {:>9}  {name}{}",
                         "adopted",
@@ -1012,15 +1012,11 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 .into_iter()
                 .find(|l| l.name == *lname)
                 .ok_or(format!("no location {lname}"))?;
-            let idx = a
-                .refresh_indexes()
+            a.sync_indexes().await;
+            let e = a
+                .index_entry(&loc.id, path)
                 .await
-                .remove(&loc.id)
-                .ok_or("that location has no index yet")?;
-            let e = drive_files::index::Tree::new(idx)
-                .get(path)
-                .cloned()
-                .ok_or(format!("{path} is not in {lname}"))?;
+                .ok_or(format!("{path} is not in {lname} (or it has no index yet)"))?;
             let cfg = a.cfg.lock().expect("cfg").clone();
             let size = e.size.to_string();
             let v = node_get(

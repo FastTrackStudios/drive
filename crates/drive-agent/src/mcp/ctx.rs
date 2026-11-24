@@ -32,6 +32,8 @@ pub struct Ctx {
     writes: AtomicUsize,
     pub(super) plans: std::sync::Mutex<HashMap<String, Plan>>,
     indexes: tokio::sync::Mutex<Option<(Instant, HashMap<String, std::sync::Arc<LocationIndex>>)>>,
+    /// When other devices' indexes were last downloaded for a lookup.
+    synced: tokio::sync::Mutex<Option<Instant>>,
 }
 
 /// A thing an agent names: a Drive file, a computer's file, a project, a
@@ -136,6 +138,7 @@ impl Ctx {
             writes: AtomicUsize::new(0),
             plans: std::sync::Mutex::new(HashMap::new()),
             indexes: tokio::sync::Mutex::new(None),
+            synced: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -310,6 +313,34 @@ impl Ctx {
         idx
     }
 
+    /// That a location's index is here (other devices' downloaded at most
+    /// once a minute), in the index database.
+    pub async fn has_index(&self, loc: &Location) -> Result<(), String> {
+        {
+            let mut at = self.synced.lock().await;
+            if at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                self.a.sync_indexes().await;
+                *at = Some(Instant::now());
+            }
+        }
+        match self.a.index_db.meta(&loc.id).await {
+            Ok(Some(_)) => Ok(()),
+            _ => Err(format!(
+                "{} has no index yet (its device has not walked it)",
+                loc.name
+            )),
+        }
+    }
+
+    /// One entry of a location's index: an error says why there is none.
+    pub async fn entry_of(&self, loc: &Location, path: &str) -> Result<IndexEntry, String> {
+        self.has_index(loc).await?;
+        self.a
+            .index_entry(&loc.id, path)
+            .await
+            .ok_or_else(|| format!("{path} is not in {} (as of its last index)", loc.name))
+    }
+
     pub async fn index_of(&self, loc: &Location) -> Result<std::sync::Arc<LocationIndex>, String> {
         self.indexes().await.remove(&loc.id).ok_or_else(|| {
             format!(
@@ -342,13 +373,9 @@ impl Ctx {
                         sampled: String::new(),
                     }
                 } else {
-                    let idx = self.index_of(&loc).await?;
-                    drive_files::index::Tree::new(idx)
-                        .get(&lp)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!("no {path} in the Drive (as of {}'s last index)", loc.name)
-                        })?
+                    self.entry_of(&loc, &lp).await.map_err(|_| {
+                        format!("no {path} in the Drive (as of {}'s last index)", loc.name)
+                    })?
                 };
                 return Ok(Thing::Located { loc, entry });
             }
@@ -397,11 +424,7 @@ impl Ctx {
             && let Ok(loc) = self.location(lname)
         {
             let path = path.trim_matches('/');
-            let idx = self.index_of(&loc).await?;
-            let entry = drive_files::index::Tree::new(idx)
-                .get(path)
-                .cloned()
-                .ok_or_else(|| format!("{path} is not in {} (as of its last index)", loc.name))?;
+            let entry = self.entry_of(&loc, path).await?;
             return Ok(Thing::Located { loc, entry });
         }
         Err(format!(

@@ -85,7 +85,7 @@ impl Apps {
     }
 
     /// A location's file, from wherever that location is.
-    pub fn location_source(&self, loc: &Location, path: &str) -> Result<Source, String> {
+    pub async fn location_source(&self, loc: &Location, path: &str) -> Result<Source, String> {
         let path = path.trim_matches('/').to_string();
         if !loc.storage.is_empty() {
             return Err(format!(
@@ -107,8 +107,9 @@ impl Apps {
         }
         let size = self
             .a
-            .cached_index(&loc.id)
-            .and_then(|i| i.entries.iter().find(|e| e.path == path && !e.dir).cloned())
+            .index_entry(&loc.id, &path)
+            .await
+            .filter(|e| !e.dir)
             .map(|e| e.size);
         Ok(Source::Remote {
             device: loc.device.clone(),
@@ -157,7 +158,7 @@ impl Apps {
         }
         if let Some((name, rest)) = t.split_once(':') {
             if let Some(loc) = self.location(name) {
-                return self.location_source(&loc, rest);
+                return self.location_source(&loc, rest).await;
             }
             if rest.starts_with('/')
                 && let Some((dev, dev_name)) = self.device(name)
@@ -189,21 +190,20 @@ impl Apps {
                 hash: h.to_string(),
             });
         }
-        let indexes = self.a.refresh_indexes().await;
+        self.a.sync_indexes().await;
         let me = self.a.device_id();
         let online = crate::daemon::online_devices(&self.a);
+        let locations = space::locations(&self.a.space);
         let mut found: Vec<(Location, String)> = Vec::new();
-        for loc in space::locations(&self.a.space) {
-            if let Some(idx) = indexes.get(&loc.id) {
-                for e in idx.entries.iter().filter(|e| !e.dir && e.sampled == h) {
-                    found.push((loc.clone(), e.path.clone()));
-                }
+        for (location, e) in self.a.index_db.copies(h, None).await.unwrap_or_default() {
+            if let Some(loc) = locations.iter().find(|l| l.id == location) {
+                found.push((loc.clone(), e.path));
             }
         }
         // Here first, then a computer that is on.
         found.sort_by_key(|(l, _)| (l.device != me, !online.contains(&l.device)));
         if let Some((loc, path)) = found.into_iter().next() {
-            return self.location_source(&loc, &path);
+            return self.location_source(&loc, &path).await;
         }
         if !space::holders(&self.a.space, h).is_empty() {
             return Ok(Source::Content {

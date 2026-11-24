@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use drive_files::index::{IndexEntry, Tree};
+use drive_files::index::IndexEntry;
 use drive_files::{adopt, projects, space, tree};
 use drive_rules::{doc, eval, journal};
 use drive_spine::kinds::Kinds;
@@ -84,19 +84,15 @@ pub async fn browse(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     }
     if let Some(l) = opt_str(args, "location") {
         let loc = ctx.location(l)?;
-        let t = Tree::new(ctx.index_of(&loc).await?);
-        if !path.is_empty() && t.get(&path).is_none_or(|e| !e.dir) {
+        ctx.has_index(&loc).await?;
+        if !path.is_empty() && ctx.a.index_entry(&loc.id, &path).await.is_none_or(|e| !e.dir) {
             return Err(format!(
                 "{path} is not a folder of {} (as of its last index)",
                 loc.name
             ));
         }
-        let mut entries: Vec<&IndexEntry> = t.list(&path);
-        entries.sort_by(|a, b| {
-            b.dir
-                .cmp(&a.dir)
-                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-        });
+        // Folders first, by name: as the database lists them.
+        let entries: Vec<IndexEntry> = ctx.a.index_list(&loc.id, &path).await;
         let rows: Vec<Value> = entries
             .into_iter()
             .map(|e| json!({ "name": e.name(), "dir": e.dir, "size": e.size, "mtime": e.mtime }))
@@ -158,19 +154,14 @@ async fn browse_drive(ctx: &Ctx, raw: &str, offset: usize, limit: usize) -> Resu
     if let adopt::Place::Inside { adoption, rel } = adopt::place(&all, path) {
         let loc = ctx.location(&adoption.location)?;
         let lp = adopt::join(&adoption.sub, &rel);
-        let t = Tree::new(ctx.index_of(&loc).await?);
-        if !lp.is_empty() && t.get(&lp).is_none_or(|e| !e.dir) {
+        ctx.has_index(&loc).await?;
+        if !lp.is_empty() && ctx.a.index_entry(&loc.id, &lp).await.is_none_or(|e| !e.dir) {
             return Err(format!(
                 "drive:{path} is not a folder (as of {}'s last index)",
                 loc.name
             ));
         }
-        let mut entries: Vec<&IndexEntry> = t.list(&lp);
-        entries.sort_by(|a, b| {
-            b.dir
-                .cmp(&a.dir)
-                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-        });
+        let entries: Vec<IndexEntry> = ctx.a.index_list(&loc.id, &lp).await;
         let rows: Vec<Value> = entries
             .into_iter()
             .map(|e| {

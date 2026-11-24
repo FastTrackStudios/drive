@@ -299,6 +299,38 @@ impl IndexDb {
         Ok(out)
     }
 
+    /// [`IndexDb::page`] of only what is under `dir` (`""`: everything).
+    pub async fn page_under(
+        &self,
+        location: &str,
+        dir: &str,
+        after: &str,
+        limit: usize,
+    ) -> turso::Result<Vec<IndexEntry>> {
+        if dir.is_empty() {
+            return self.page(location, after, limit).await;
+        }
+        // Everything under `dir/` sorts at or after `dir/` and before
+        // `dir0` ('0' is the byte after '/').
+        let low = format!("{dir}/");
+        let after = if after < low.as_str() { low.as_str() } else { after };
+        let r = self.reader().await;
+        let mut rows = r
+            .query(
+                &format!(
+                    "SELECT {ENTRY} FROM entries WHERE location = ?1 AND path > ?2 AND path < ?3 \
+                     ORDER BY path LIMIT ?4"
+                ),
+                vec![t(location), t(after), t(&format!("{dir}0")), Value::Integer(limit as i64)],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(entry(&row, 0)?);
+        }
+        Ok(out)
+    }
+
     /// Where a content is (a file's sampled hash, and its size if known):
     /// (location, entry), in every location.
     pub async fn copies(

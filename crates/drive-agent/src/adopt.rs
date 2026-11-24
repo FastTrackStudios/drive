@@ -275,15 +275,18 @@ impl Agent {
     /// another device's); elsewhere the Drive tree's entries with the
     /// adopted folders (and folders on the way to them) added. An adopted
     /// folder hides a tree entry of the same name.
-    pub fn logical_list(&self, dir: &str) -> Result<Vec<Row>, String> {
+    pub async fn logical_list(&self, dir: &str) -> Result<Vec<Row>, String> {
         let dir = dir.trim_matches('/');
         match self.spot(dir) {
             Some(Spot::Here { path, .. }) => list_disk(&path),
             Some(Spot::Elsewhere { location, path, .. }) => {
-                let idx = self
-                    .cached_index(&location.id)
-                    .ok_or("that folder's index is not here yet")?;
-                Ok(index_children(&idx.entries, &path)
+                if self.index_db.meta(&location.id).await.ok().flatten().is_none() {
+                    return Err("that folder's index is not here yet".into());
+                }
+                Ok(self
+                    .index_list(&location.id, &path)
+                    .await
+                    .iter()
                     .map(|e| (e.name().to_string(), e.dir))
                     .collect())
             }
@@ -376,15 +379,6 @@ pub fn list_disk(path: &Path) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
-/// The entries of an index directly in `dir` (`""`: the location's root).
-pub fn index_children<'a>(
-    entries: &'a [IndexEntry],
-    dir: &'a str,
-) -> impl Iterator<Item = &'a IndexEntry> + 'a {
-    entries
-        .iter()
-        .filter(move |e| e.parent() == dir && !e.path.is_empty())
-}
 
 /// Whether a path is inside one of Drive's own mounts (adopting from
 /// there would map Drive into itself).

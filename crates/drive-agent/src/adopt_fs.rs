@@ -171,12 +171,9 @@ impl<F: Filesystem + TreeSide> AdoptFs<F> {
                     };
                     return Ok(Node::Elsewhere(location, root));
                 }
-                let idx = self.agent.cached_index(&location.id).ok_or(Errno::ENOENT)?;
-                let e = idx
-                    .entries
-                    .iter()
-                    .find(|e| e.path == path)
-                    .cloned()
+                let e = self
+                    .rt
+                    .block_on(self.agent.index_entry(&location.id, &path))
                     .ok_or(Errno::ENOENT)?;
                 Ok(Node::Elsewhere(location, e))
             }
@@ -312,7 +309,10 @@ impl<F: Filesystem + TreeSide> AdoptFs<F> {
 
     fn rows_mine(&self, ino: INodeNo) -> Result<Rows, Errno> {
         let path = self.path(ino)?;
-        let list = self.agent.logical_list(&path).map_err(|_| Errno::ENOENT)?;
+        let list = self
+            .rt
+            .block_on(self.agent.logical_list(&path))
+            .map_err(|_| Errno::ENOENT)?;
         let mut rows = vec![
             (ino, FileType::Directory, ".".to_string()),
             (ino, FileType::Directory, "..".to_string()),

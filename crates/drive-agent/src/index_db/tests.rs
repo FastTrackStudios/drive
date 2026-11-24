@@ -62,6 +62,11 @@ async fn an_index_is_kept_and_read_back_by_folder_path_and_page() {
     assert_eq!(names(first), ["Album", "Album/A.wav"]);
     assert_eq!(names(rest), ["Album/Stems", "Album/b.wav", "notes.txt"]);
 
+    let under = db.page_under("loc", "Album", "", 10).await.unwrap();
+    assert_eq!(names(under), ["Album/A.wav", "Album/Stems", "Album/b.wav"]);
+    let more = db.page_under("loc", "Album", "Album/A.wav", 1).await.unwrap();
+    assert_eq!(names(more), ["Album/Stems"]);
+
     let back = db.load("loc").await.unwrap().unwrap();
     let mut want = songs();
     want.entries.sort_by(|a, b| a.path.cmp(&b.path));
