@@ -301,87 +301,86 @@ impl Agent {
             if !loc.storage.is_empty() && !force {
                 continue;
             }
-            let Some(index) = self.cached_index(&loc.id) else {
-                continue;
-            };
-            let files: Vec<_> = index
-                .entries
-                .iter()
-                .filter(|e| !e.dir && !e.sampled.is_empty())
-                .filter_map(|e| {
-                    let kinds: Vec<Kind> = kinds_for(&e.path)
-                        .into_iter()
-                        .filter(|k| only.is_empty() || only.contains(k))
-                        .collect();
-                    (!kinds.is_empty()).then_some((e, kinds))
-                })
-                .collect();
-            for chunk in files.chunks(500) {
-                let wanted: Vec<(String, Vec<Kind>)> = if force {
-                    chunk
-                        .iter()
-                        .map(|(e, k)| (sampled_key(&e.sampled), k.clone()))
-                        .collect()
-                } else {
-                    let keys: Vec<String> =
-                        chunk.iter().map(|(e, _)| sampled_key(&e.sampled)).collect();
-                    let kinds: Vec<Kind> = if only.is_empty() {
-                        Kind::ALL.to_vec()
+            let mut pages = self.index_pages(&loc.id, "");
+            while let Some(page) = pages.next().await {
+                let files: Vec<_> = page
+                    .iter()
+                    .filter(|e| !e.dir && !e.sampled.is_empty())
+                    .filter_map(|e| {
+                        let kinds: Vec<Kind> = kinds_for(&e.path)
+                            .into_iter()
+                            .filter(|k| only.is_empty() || only.contains(k))
+                            .collect();
+                        (!kinds.is_empty()).then_some((e, kinds))
+                    })
+                    .collect();
+                for chunk in files.chunks(500) {
+                    let wanted: Vec<(String, Vec<Kind>)> = if force {
+                        chunk
+                            .iter()
+                            .map(|(e, k)| (sampled_key(&e.sampled), k.clone()))
+                            .collect()
                     } else {
-                        only.to_vec()
+                        let keys: Vec<String> =
+                            chunk.iter().map(|(e, _)| sampled_key(&e.sampled)).collect();
+                        let kinds: Vec<Kind> = if only.is_empty() {
+                            Kind::ALL.to_vec()
+                        } else {
+                            only.to_vec()
+                        };
+                        let Ok(missing) = self.missing(&keys, &kinds).await else {
+                            return pass;
+                        };
+                        chunk
+                            .iter()
+                            .filter_map(|(e, k)| {
+                                let key = sampled_key(&e.sampled);
+                                let need: Vec<Kind> = k
+                                    .iter()
+                                    .copied()
+                                    .filter(|kind| {
+                                        missing
+                                            .iter()
+                                            .any(|(mk, mn)| *mk == key && mn == kind.as_str())
+                                    })
+                                    .collect();
+                                (!need.is_empty()).then_some((key, need))
+                            })
+                            .collect()
                     };
-                    let Ok(missing) = self.missing(&keys, &kinds).await else {
-                        return pass;
-                    };
-                    chunk
-                        .iter()
-                        .filter_map(|(e, k)| {
-                            let key = sampled_key(&e.sampled);
-                            let need: Vec<Kind> = k
-                                .iter()
-                                .copied()
-                                .filter(|kind| {
-                                    missing
-                                        .iter()
-                                        .any(|(mk, mn)| *mk == key && mn == kind.as_str())
-                                })
-                                .collect();
-                            (!need.is_empty()).then_some((key, need))
-                        })
-                        .collect()
-                };
-                for (key, kinds) in wanted {
-                    if pass.files >= max_files {
-                        return pass;
-                    }
-                    let Some((e, _)) = chunk.iter().find(|(e, _)| sampled_key(&e.sampled) == key)
-                    else {
-                        continue;
-                    };
-                    pass.files += 1;
-                    let job = match self.job_for(&loc, &e.path, kinds).await {
-                        Ok(j) => j,
-                        Err(w) if w.starts_with("no generator") => {
-                            pass.no_generator += 1;
+                    for (key, kinds) in wanted {
+                        if pass.files >= max_files {
+                            return pass;
+                        }
+                        let Some((e, _)) = chunk.iter().find(|(e, _)| sampled_key(&e.sampled) == key)
+                        else {
                             continue;
-                        }
-                        Err(w) => {
-                            tracing::debug!(sidecar.path_len = e.path.len(), error = %w, "a file could not be read for its sidecars");
-                            pass.failed += 1;
-                            continue;
-                        }
-                    };
-                    pass.bytes += job.size;
-                    match self.run_job(job).await {
-                        Ok(k) => pass.made += k.len(),
-                        Err(w) if w.starts_with("no generator") => {
-                            // Tell the node, so it does not ask again.
-                            pass.no_generator += 1;
-                            self.report_miss(&key, &w).await;
-                        }
-                        Err(w) => {
-                            tracing::debug!(error = %w, "a sidecar could not be made");
-                            pass.failed += 1;
+                        };
+                        pass.files += 1;
+                        let job = match self.job_for(&loc, &e.path, kinds).await {
+                            Ok(j) => j,
+                            Err(w) if w.starts_with("no generator") => {
+                                pass.no_generator += 1;
+                                continue;
+                            }
+                            Err(w) => {
+                                tracing::debug!(sidecar.path_len = e.path.len(), error = %w, "a file could not be read for its sidecars");
+                                pass.failed += 1;
+                                continue;
+                            }
+                        };
+                        pass.bytes += job.size;
+                        match self.run_job(job).await {
+                            Ok(k) => pass.made += k.len(),
+                            Err(w) if w.starts_with("no generator") => {
+                                // Tell the node, so it does not ask again.
+                                pass.no_generator += 1;
+                                self.report_miss(&key, &w).await;
+                            }
+                            Err(w) => {
+                                tracing::debug!(error = %w, "a sidecar could not be made");
+                                pass.failed += 1;
+                            }
                         }
                     }
                 }

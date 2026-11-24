@@ -179,7 +179,7 @@ impl Agent {
     async fn mirror(&self, no_room: &mut u64) -> usize {
         let me = self.device_id();
         let online = crate::daemon::online_devices(self);
-        let indexes = self.refresh_indexes().await;
+        self.sync_indexes().await;
         let (node, space_name) = {
             let c = self.cfg.lock().expect("cfg");
             (c.node_http(), c.space.clone())
@@ -190,9 +190,9 @@ impl Agent {
             .iter()
             .filter(|l| l.device != me && l.mirror_of.is_empty() && online.contains(&l.device))
         {
-            let Some(idx) = indexes.get(&src.id) else {
+            if self.index_db.meta(&src.id).await.ok().flatten().is_none() {
                 continue;
-            };
+            }
             let Ok(id) = crate::synced::id(&src.id) else {
                 tracing::warn!(location = %src.id, "not mirrored: its id is not a plain name");
                 continue;
@@ -200,47 +200,50 @@ impl Agent {
             let root = self.dir.join("mirror").join(id);
             let mut room_left = room(&self.dir);
             let mut changed = false;
-            for e in idx.entries.iter().filter(|e| !e.dir) {
-                let Some(dest) = crate::places::inside(&root, &e.path) else {
-                    continue;
-                };
-                if std::fs::metadata(&dest).is_ok_and(|m| m.len() == e.size) {
-                    continue;
-                }
-                if e.size > room_left {
-                    *no_room += e.size;
-                    continue;
-                }
-                let got = async {
-                    let r = self
-                        .http
-                        .get(format!("{node}/fetch/{space_name}/{}", src.id))
-                        .query(&[("path", e.path.as_str())])
-                        .send()
-                        .await
-                        .map_err(|x| x.to_string())?;
-                    if !r.status().is_success() {
-                        return Err(r.status().to_string());
+            let mut pages = self.index_pages(&src.id, "");
+            'pages: while let Some(page) = pages.next().await {
+                for e in page.iter().filter(|e| !e.dir) {
+                    let Some(dest) = crate::places::inside(&root, &e.path) else {
+                        continue;
+                    };
+                    if std::fs::metadata(&dest).is_ok_and(|m| m.len() == e.size) {
+                        continue;
                     }
-                    r.bytes().await.map_err(|x| x.to_string())
-                }
-                .await;
-                match got {
-                    Ok(bytes) => {
-                        let _ = std::fs::create_dir_all(dest.parent().expect("a parent"));
-                        let tmp = dest.with_extension("drive-part");
-                        if std::fs::write(&tmp, &bytes)
-                            .and_then(|_| std::fs::rename(&tmp, &dest))
-                            .is_ok()
-                        {
-                            room_left = room_left.saturating_sub(e.size);
-                            copied += 1;
-                            changed = true;
+                    if e.size > room_left {
+                        *no_room += e.size;
+                        continue;
+                    }
+                    let got = async {
+                        let r = self
+                            .http
+                            .get(format!("{node}/fetch/{space_name}/{}", src.id))
+                            .query(&[("path", e.path.as_str())])
+                            .send()
+                            .await
+                            .map_err(|x| x.to_string())?;
+                        if !r.status().is_success() {
+                            return Err(r.status().to_string());
                         }
+                        r.bytes().await.map_err(|x| x.to_string())
                     }
-                    Err(why) => {
-                        tracing::debug!(location.name = %src.name, why = %why, "a mirror copy failed; next pass");
-                        break;
+                    .await;
+                    match got {
+                        Ok(bytes) => {
+                            let _ = std::fs::create_dir_all(dest.parent().expect("a parent"));
+                            let tmp = dest.with_extension("drive-part");
+                            if std::fs::write(&tmp, &bytes)
+                                .and_then(|_| std::fs::rename(&tmp, &dest))
+                                .is_ok()
+                            {
+                                room_left = room_left.saturating_sub(e.size);
+                                copied += 1;
+                                changed = true;
+                            }
+                        }
+                        Err(why) => {
+                            tracing::debug!(location.name = %src.name, why = %why, "a mirror copy failed; next pass");
+                            break 'pages;
+                        }
                     }
                 }
             }

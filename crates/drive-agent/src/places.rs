@@ -342,6 +342,11 @@ impl Agent {
         Ok(stats)
     }
 
+    /// A location's entries (under `dir`; `""`: all), a page at a time.
+    pub fn index_pages(&self, location: &str, dir: &str) -> crate::index_db::Pages {
+        crate::index_db::Pages::new(self.index_db.clone(), location, dir)
+    }
+
     /// One entry of a location's index, from the index database.
     pub async fn index_entry(&self, location: &str, path: &str) -> Option<IndexEntry> {
         self.index_db.get(location, path).await.ok().flatten()

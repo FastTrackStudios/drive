@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use drive_files::index::{IndexEntry, LocationIndex};
+use drive_files::index::IndexEntry;
 use drive_files::projects::{self, Project};
 use drive_files::space::{self, Location};
 use drive_files::tree::{self, Entry};
@@ -31,7 +31,6 @@ pub struct Ctx {
     pub opts: Options,
     writes: AtomicUsize,
     pub(super) plans: std::sync::Mutex<HashMap<String, Plan>>,
-    indexes: tokio::sync::Mutex<Option<(Instant, HashMap<String, std::sync::Arc<LocationIndex>>)>>,
     /// When other devices' indexes were last downloaded for a lookup.
     synced: tokio::sync::Mutex<Option<Instant>>,
 }
@@ -137,7 +136,6 @@ impl Ctx {
             opts,
             writes: AtomicUsize::new(0),
             plans: std::sync::Mutex::new(HashMap::new()),
-            indexes: tokio::sync::Mutex::new(None),
             synced: tokio::sync::Mutex::new(None),
         }
     }
@@ -300,35 +298,26 @@ impl Ctx {
         }
     }
 
-    /// Every location's index (cached for a minute).
-    pub async fn indexes(&self) -> HashMap<String, std::sync::Arc<LocationIndex>> {
-        let mut c = self.indexes.lock().await;
-        if let Some((at, idx)) = c.as_ref()
-            && at.elapsed() < Duration::from_secs(60)
-        {
-            return idx.clone();
-        }
-        let idx = self.a.refresh_indexes().await;
-        *c = Some((Instant::now(), idx.clone()));
-        idx
-    }
-
     /// That a location's index is here (other devices' downloaded at most
     /// once a minute), in the index database.
     pub async fn has_index(&self, loc: &Location) -> Result<(), String> {
-        {
-            let mut at = self.synced.lock().await;
-            if at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-                self.a.sync_indexes().await;
-                *at = Some(Instant::now());
-            }
-        }
+        self.sync_indexes().await;
         match self.a.index_db.meta(&loc.id).await {
             Ok(Some(_)) => Ok(()),
             _ => Err(format!(
                 "{} has no index yet (its device has not walked it)",
                 loc.name
             )),
+        }
+    }
+
+    /// Download other devices' newer indexes into the database, at most
+    /// once a minute.
+    pub async fn sync_indexes(&self) {
+        let mut at = self.synced.lock().await;
+        if at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+            self.a.sync_indexes().await;
+            *at = Some(Instant::now());
         }
     }
 
@@ -341,14 +330,6 @@ impl Ctx {
             .ok_or_else(|| format!("{path} is not in {} (as of its last index)", loc.name))
     }
 
-    pub async fn index_of(&self, loc: &Location) -> Result<std::sync::Arc<LocationIndex>, String> {
-        self.indexes().await.remove(&loc.id).ok_or_else(|| {
-            format!(
-                "{} has no index yet (its device has not walked it)",
-                loc.name
-            )
-        })
-    }
 
     /// A thing by how an agent names it: `drive:PATH`, `LOCATION:PATH`,
     /// `project:NAME`, `doc:ID`, `content:HASH`, `file:<tree id>`, or a

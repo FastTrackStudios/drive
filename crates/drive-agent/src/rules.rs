@@ -17,11 +17,11 @@
 //! drive rules rm NAME
 //! ```
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use drive_files::index::{IndexEntry, LocationIndex};
+use drive_files::index::IndexEntry;
 use drive_files::{projects, space, tree as ftree};
 use drive_rules::eval::{self, Effect, Facts, Item, Spot};
 use drive_rules::guard::Guard;
@@ -87,11 +87,11 @@ struct Candidate {
     sampled: String,
 }
 
-/// A location's files and bundles (never what is inside a bundle, never
-/// temporary or partial files, never plain folders).
-fn candidates(idx: &LocationIndex) -> Vec<Candidate> {
-    let mut bundles: HashMap<String, (u64, i64)> = HashMap::new();
-    for e in &idx.entries {
+/// The bundles among a page of a location's entries: each one's size
+/// (what is inside it, summed) and newest change, added to `bundles`. Every
+/// page of the location goes through this before [`candidates`].
+fn bundle_sizes(entries: &[IndexEntry], bundles: &mut HashMap<String, (u64, i64)>) {
+    for e in entries {
         if let Some(b) = bundle_of(&e.path)
             && b != e.path
         {
@@ -100,8 +100,14 @@ fn candidates(idx: &LocationIndex) -> Vec<Candidate> {
             s.1 = s.1.max(e.mtime);
         }
     }
+}
+
+/// A page of a location's files and bundles (never what is inside a
+/// bundle, never temporary or partial files, never plain folders), with
+/// the location's `bundles` from [`bundle_sizes`].
+fn candidates(entries: &[IndexEntry], bundles: &HashMap<String, (u64, i64)>) -> Vec<Candidate> {
     let skip = |e: &IndexEntry| e.path.split('/').any(|p| is_temporary(p) || p == TRASH_DIR);
-    idx.entries
+    entries
         .iter()
         .filter(|e| !skip(e))
         .filter_map(|e| {
@@ -316,25 +322,13 @@ impl Engine {
             })
             .collect();
         let projs = projects::projects(&a.space);
-        // Copies: every location's index, by content.
-        let indexes = a.refresh_indexes().await;
-        let mut copies: HashMap<String, (u32, HashSet<String>)> = HashMap::new();
-        for (loc, idx) in &indexes {
-            let dev = all_locations
-                .iter()
-                .find(|l| l.id == *loc)
-                .map(|l| l.device.clone())
-                .unwrap_or_default();
-            for e in idx
-                .entries
-                .iter()
-                .filter(|e| !e.dir && !e.sampled.is_empty())
-            {
-                let c = copies.entry(e.sampled.clone()).or_default();
-                c.0 += 1;
-                c.1.insert(dev.clone());
-            }
-        }
+        // Copies, by content, from every location's index: looked up a
+        // page of candidates at a time, never gathered for every file.
+        a.sync_indexes().await;
+        let device_of: HashMap<&str, &str> = all_locations
+            .iter()
+            .map(|l| (l.id.as_str(), l.device.as_str()))
+            .collect();
         let world = World {
             now,
             kinds: &kinds,
@@ -355,87 +349,110 @@ impl Engine {
             {
                 continue;
             }
-            let Some(idx) = a.cached_index(&loc.id) else {
+            if a.index_db.meta(&loc.id).await.ok().flatten().is_none() {
                 continue;
-            };
+            }
             let root = PathBuf::from(&loc.path);
-            for c in candidates(&idx) {
-                let abs = root.join(&c.path);
-                let meta = match std::fs::symlink_metadata(&abs) {
-                    Ok(m) if !m.file_type().is_symlink() => m,
-                    _ => continue,
-                };
-                let item = Item::Location {
-                    device: me.id.clone(),
-                    location: loc.id.clone(),
-                    path: c.path.clone(),
-                };
-                let (n, holders) = copies
-                    .get(&c.sampled)
-                    .map(|(n, h)| (*n, h.iter().cloned().collect()))
-                    .unwrap_or((1, vec![me.id.clone()]));
-                let facts = Facts {
-                    item: Some(item.clone()),
-                    bundle: c.bundle,
-                    size: c.size,
-                    modified: c.mtime,
-                    created: file_ms(meta.created()),
-                    added: None,
-                    content: c.sampled.clone(),
-                    copies: n,
-                    holders,
-                };
-                if !matcher.matches(&facts, &world) {
-                    continue;
-                }
-                if now - c.mtime < SETTLE_MS {
-                    // Still being written, perhaps: the next pass sees it.
-                    o.run.skipped += 1;
-                    continue;
-                }
-                if let Some(why) =
+            let mut bundles = HashMap::new();
+            let mut pages = a.index_pages(&loc.id, "");
+            while let Some(page) = pages.next().await {
+                bundle_sizes(&page, &mut bundles);
+            }
+            let mut pages = a.index_pages(&loc.id, "");
+            while let Some(page) = pages.next().await {
+                let cands = candidates(&page, &bundles);
+                let hashes: Vec<String> = cands
+                    .iter()
+                    .filter(|c| !c.sampled.is_empty())
+                    .map(|c| c.sampled.clone())
+                    .collect();
+                let held = a.index_db.locations_of(&hashes).await.unwrap_or_default();
+                for c in cands {
+                    let abs = root.join(&c.path);
+                    let meta = match std::fs::symlink_metadata(&abs) {
+                        Ok(m) if !m.file_type().is_symlink() => m,
+                        _ => continue,
+                    };
+                    let item = Item::Location {
+                        device: me.id.clone(),
+                        location: loc.id.clone(),
+                        path: c.path.clone(),
+                    };
+                    let (n, holders) = held
+                        .get(&c.sampled)
+                        .map(|locs| {
+                            let mut devs: Vec<String> = locs
+                                .iter()
+                                .filter_map(|l| device_of.get(l.as_str()).map(|d| d.to_string()))
+                                .collect();
+                            devs.sort();
+                            devs.dedup();
+                            (locs.len() as u32, devs)
+                        })
+                        .unwrap_or((1, vec![me.id.clone()]));
+                    let facts = Facts {
+                        item: Some(item.clone()),
+                        bundle: c.bundle,
+                        size: c.size,
+                        modified: c.mtime,
+                        created: file_ms(meta.created()),
+                        added: None,
+                        content: c.sampled.clone(),
+                        copies: n,
+                        holders,
+                    };
+                    if !matcher.matches(&facts, &world) {
+                        continue;
+                    }
+                    if now - c.mtime < SETTLE_MS {
+                        // Still being written, perhaps: the next pass sees it.
+                        o.run.skipped += 1;
+                        continue;
+                    }
+                    if let Some(why) =
+                        self.state
+                            .lock()
+                            .await
+                            .guard
+                            .holds_off(&rule.id, &item.key(), &c.sampled, now)
+                    {
+                        tracing::debug!(rule.name = %rule.name, rules.held = %why, "a rule left a file alone");
+                        o.run.skipped += 1;
+                        continue;
+                    }
+                    let fp = drive_rules::guard::fingerprint(&c.sampled, c.size, c.mtime);
+                    if self
+                        .state
+                        .lock()
+                        .await
+                        .guard
+                        .handled(&rule.id, &item.key(), &fp)
+                    {
+                        // Done before, unchanged since: nothing to do.
+                        continue;
+                    }
+                    let plan = matcher.plan(&facts, &world);
+                    o.run.matched += 1;
+                    o.rows.push(Row::of(&plan));
+                    if !live || !plan.does_something() {
+                        continue;
+                    }
+                    // Unchanged since it was indexed, or not now.
+                    let changed = !c.bundle
+                        && (meta.len() != c.size
+                            || file_ms(meta.modified()).is_some_and(|m| (m - c.mtime).abs() > 2_000));
+                    if changed {
+                        o.run.skipped += 1;
+                        continue;
+                    }
+                    self.carry_out(a, rule, &run_id, &facts, &plan, &root, &mut o.run)
+                        .await;
                     self.state
                         .lock()
                         .await
                         .guard
-                        .holds_off(&rule.id, &item.key(), &c.sampled, now)
-                {
-                    tracing::debug!(rule.name = %rule.name, rules.held = %why, "a rule left a file alone");
-                    o.run.skipped += 1;
-                    continue;
+                        .did(&rule.id, &item.key(), &fp);
                 }
-                let fp = drive_rules::guard::fingerprint(&c.sampled, c.size, c.mtime);
-                if self
-                    .state
-                    .lock()
-                    .await
-                    .guard
-                    .handled(&rule.id, &item.key(), &fp)
-                {
-                    // Done before, unchanged since: nothing to do.
-                    continue;
-                }
-                let plan = matcher.plan(&facts, &world);
-                o.run.matched += 1;
-                o.rows.push(Row::of(&plan));
-                if !live || !plan.does_something() {
-                    continue;
-                }
-                // Unchanged since it was indexed, or not now.
-                let changed = !c.bundle
-                    && (meta.len() != c.size
-                        || file_ms(meta.modified()).is_some_and(|m| (m - c.mtime).abs() > 2_000));
-                if changed {
-                    o.run.skipped += 1;
-                    continue;
-                }
-                self.carry_out(a, rule, &run_id, &facts, &plan, &root, &mut o.run)
-                    .await;
-                self.state
-                    .lock()
-                    .await
-                    .guard
-                    .did(&rule.id, &item.key(), &fp);
             }
         }
         let _ = journal::put_preview(
@@ -1319,4 +1336,70 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
         _ => return Err("rules ls|show NAME|run NAME [--live]|journal [NAME]|undo ID|add FILE|on|off|live|dry-run|rm NAME".into()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use drive_rules::{Cmp, Condition, Group, Mode, Rule, Test, When};
+
+    use super::*;
+    use crate::adopt::tests::{device, node};
+
+    fn aged(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+        // Older than the settle time, so a rule considers it.
+        let then = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(then)
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rule_reads_the_index_database_page_by_page() {
+        let (url, _node_dir) = node().await;
+        let (dir, disk) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&url, dir.path(), "studio", "Studio PC").await;
+        let (songs, backup) = (disk.path().join("songs"), disk.path().join("backup"));
+        aged(&songs.join("a.wav"), b"the same take");
+        aged(&songs.join("b.wav"), b"only here");
+        aged(&songs.join("Song.logicx/Alternatives/inside.wav"), b"the same take");
+        aged(&backup.join("old/a.wav"), b"the same take");
+        let loc = a.add_location("Songs", &songs).unwrap();
+        let other = a.add_location("Backup", &backup).unwrap();
+        a.index_location(&loc).await.unwrap();
+        a.index_location(&other).await.unwrap();
+
+        let engine = Engine::open(&a).await;
+        let rule = Rule {
+            id: "r1".into(),
+            name: "Copied elsewhere".into(),
+            enabled: true,
+            mode: Mode::DryRun,
+            when: When {
+                all: true,
+                groups: vec![Group {
+                    all: true,
+                    conditions: vec![Condition::is(Test::Copies { cmp: Cmp::More, n: 1 })],
+                }],
+            },
+            ..Rule::default()
+        };
+        let out = engine.run(&a, &rule, false, Some(&loc.id)).await;
+        assert_eq!(out.run.error, "");
+        // a.wav (also in Backup, and inside the bundle) matches; b.wav has
+        // one copy; the bundle's inside is never a candidate of its own.
+        let paths: Vec<String> = out
+            .rows
+            .iter()
+            .filter_map(|r| match &r.item {
+                Item::Location { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths, ["a.wav"], "{:?}", out.rows);
+    }
 }

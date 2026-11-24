@@ -331,6 +331,49 @@ impl IndexDb {
         Ok(out)
     }
 
+    /// Which locations hold each of `sampled` (one per file holding it, so
+    /// a location twice when it has two copies), in as few queries as the
+    /// list's length allows.
+    pub async fn locations_of(&self, sampled: &[String]) -> turso::Result<HashMap<String, Vec<String>>> {
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        let r = self.reader().await;
+        for chunk in sampled.chunks(500) {
+            let marks = (1..=chunk.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ");
+            let mut rows = r
+                .query(
+                    &format!("SELECT sampled, location FROM entries WHERE dir = 0 AND sampled IN ({marks})"),
+                    chunk.iter().map(|h| t(h)).collect::<Vec<_>>(),
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                out.entry(text(row.get_value(0)?)).or_default().push(text(row.get_value(1)?));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Contents found more than once (by sampled hash and size), files of at
+    /// least `min_size` bytes: (sampled, size, how many).
+    pub async fn duplicates(&self, min_size: u64) -> turso::Result<Vec<(String, u64, u64)>> {
+        let r = self.reader().await;
+        let mut rows = r
+            .query(
+                "SELECT sampled, size, count(*) FROM entries WHERE dir = 0 AND sampled != '' \
+                 AND size >= ?1 GROUP BY sampled, size HAVING count(*) > 1",
+                vec![Value::Integer(min_size as i64)],
+            )
+            .await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push((
+                text(row.get_value(0)?),
+                int(row.get_value(1)?).max(0) as u64,
+                int(row.get_value(2)?).max(0) as u64,
+            ));
+        }
+        Ok(out)
+    }
+
     /// Where a content is (a file's sampled hash, and its size if known):
     /// (location, entry), in every location.
     pub async fn copies(
@@ -387,6 +430,61 @@ impl IndexDb {
             built: meta.built,
             entries,
         }))
+    }
+}
+
+/// A location's entries a page at a time (in path order, under a folder
+/// or all of it): `while let Some(page) = pages.next().await { .. }`.
+pub struct Pages {
+    db: std::sync::Arc<IndexDb>,
+    location: String,
+    under: String,
+    after: String,
+    done: bool,
+}
+
+/// Entries a page holds.
+const PAGE: usize = 2000;
+
+impl Pages {
+    pub fn new(db: std::sync::Arc<IndexDb>, location: &str, under: &str) -> Pages {
+        Pages {
+            db,
+            location: location.to_string(),
+            under: under.trim_matches('/').to_string(),
+            after: String::new(),
+            done: false,
+        }
+    }
+
+    /// The next page; `None` once there are no more (or the database
+    /// cannot be read: a scan then sees what it got so far).
+    pub async fn next(&mut self) -> Option<Vec<IndexEntry>> {
+        if self.done {
+            return None;
+        }
+        let page = match self
+            .db
+            .page_under(&self.location, &self.under, &self.after, PAGE)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(location.id = %self.location, error = %e, "an index page could not be read");
+                Vec::new()
+            }
+        };
+        match page.last() {
+            Some(last) => self.after = last.path.clone(),
+            None => {
+                self.done = true;
+                return None;
+            }
+        }
+        if page.len() < PAGE {
+            self.done = true;
+        }
+        Some(page)
     }
 }
 
