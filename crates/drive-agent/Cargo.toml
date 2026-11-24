@@ -51,6 +51,8 @@ turso = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+# The macOS extension's bridge, driven against this agent end to end.
+drive-fileprovider = { path = "../drive-fileprovider" }
 # The MCP server's tests run a node in the same process.
 drive-node = { path = "../drive-node" }
 axum = "0.8"

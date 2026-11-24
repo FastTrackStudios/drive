@@ -151,6 +151,9 @@ type Answer = std::result::Result<serde_json::Value, String>;
 
 struct Inner {
     write: Mutex<Conn>,
+    /// The agent closed the connection (the reader stopped): nothing
+    /// sent now would be answered.
+    closed: std::sync::atomic::AtomicBool,
     next: AtomicU64,
     waiting: Mutex<HashMap<u64, Sender<Answer>>>,
     subs: Mutex<HashMap<u64, Sender<Event>>>,
@@ -176,6 +179,12 @@ impl Inner {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.waiting.lock().expect("waiting").insert(id, tx);
+        // Checked after the waiter is in: a reader that stopped before it
+        // is seen here; one that stops after drops it, ending the wait.
+        if self.closed.load(Ordering::SeqCst) {
+            self.waiting.lock().expect("waiting").remove(&id);
+            return Err(Error::Closed);
+        }
         if let Err(e) = self.send_as(id, op) {
             self.waiting.lock().expect("waiting").remove(&id);
             return Err(e);
@@ -205,6 +214,11 @@ impl Inner {
         self.subs.lock().expect("subs").insert(id, etx);
         let (tx, rx) = mpsc::channel();
         self.waiting.lock().expect("waiting").insert(id, tx);
+        if self.closed.load(Ordering::SeqCst) {
+            self.waiting.lock().expect("waiting").remove(&id);
+            self.subs.lock().expect("subs").remove(&id);
+            return Err(Error::Closed);
+        }
         if let Err(e) = self.send_as(id, op(id)) {
             self.waiting.lock().expect("waiting").remove(&id);
             self.subs.lock().expect("subs").remove(&id);
@@ -252,7 +266,9 @@ fn read_loop(inner: Arc<Inner>, conn: Conn) {
             }
         }
     }
-    // The agent went away: everyone waiting learns it.
+    // The agent went away: everyone waiting learns it, and later calls
+    // fail at once instead of waiting for an answer that cannot come.
+    inner.closed.store(true, Ordering::SeqCst);
     inner.waiting.lock().expect("waiting").clear();
     inner.subs.lock().expect("subs").clear();
 }
@@ -273,9 +289,31 @@ impl Client {
     /// Connect to the agent whose folder is `dir`.
     pub fn connect_in(dir: &Path, app: &str) -> Result<Client> {
         let (conn, token) = dial(dir)?;
+        Client::over(conn, token, app)
+    }
+
+    /// Connect to an agent's socket at `path` (one it also serves outside
+    /// its folder, such as in a macOS app group's container for a
+    /// sandboxed extension).
+    #[cfg(unix)]
+    pub fn connect_socket(path: &Path, app: &str) -> Result<Client> {
+        let s = std::os::unix::net::UnixStream::connect(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound
+                || e.kind() == std::io::ErrorKind::ConnectionRefused
+            {
+                Error::NotRunning(path.display().to_string())
+            } else {
+                Error::Io(e)
+            }
+        })?;
+        Client::over(Conn::Unix(s), None, app)
+    }
+
+    fn over(conn: Conn, token: Option<String>, app: &str) -> Result<Client> {
         let read = conn.try_clone()?;
         let inner = Arc::new(Inner {
             write: Mutex::new(conn),
+            closed: std::sync::atomic::AtomicBool::new(false),
             next: AtomicU64::new(1),
             waiting: Mutex::new(HashMap::new()),
             subs: Mutex::new(HashMap::new()),
@@ -301,6 +339,12 @@ impl Client {
             Err(Error::Closed) => Err(Error::Refused("the agent closed the connection".into())),
             Err(e) => Err(e),
         }
+    }
+
+    /// Any request, its answer as JSON (a bridge to another language
+    /// passes ops through without a type for each).
+    pub fn call_op(&self, op: Op) -> Result<serde_json::Value> {
+        self.inner.call_value(op, self.timeout)
     }
 
     /// Give up on any one answer after `t` (none: wait as long as it takes;
@@ -511,6 +555,34 @@ fn dial(dir: &Path) -> Result<(Conn, Option<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_request_after_the_agent_closed_fails_at_once() {
+        use std::io::{BufRead, BufReader};
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("app.sock");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut w = s.try_clone().unwrap();
+            let mut lines = BufReader::new(s).lines();
+            let hello: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            writeln!(w, "{}", serde_json::json!({ "id": hello["id"], "ok": null })).unwrap();
+            // Then the agent goes away.
+        });
+        let c = Client::connect_socket(&path, "test").unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = tx.send(c.call_op(Op::Status).map(|_| ()));
+        });
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Err(Error::Closed | Error::Io(_))) => {}
+            Ok(other) => panic!("{other:?}"),
+            Err(_) => panic!("a request to a closed connection waited forever"),
+        }
+    }
 
     #[test]
     fn no_agent_is_a_clear_error() {

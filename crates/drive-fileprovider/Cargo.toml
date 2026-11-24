@@ -1,0 +1,19 @@
+[package]
+name = "drive-fileprovider"
+description = "The C ABI Drive's macOS File Provider extension links: one call that passes a request to the running agent and returns its answer (docs/fileprovider.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# A static library, because that is what an appex links: the extension is
+# loaded into a host process the system provides, and a dylib beside it
+# would be one more thing to sign, embed and find (as Task's does).
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+drive-local = { path = "../drive-local" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
