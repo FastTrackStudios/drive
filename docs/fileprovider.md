@@ -66,3 +66,75 @@ An anchor naming changes the document doesn't have (another device's tree,
 a reset) is *expired*, and the system then enumerates again. It is only
 expired when that is true: a provider that always says "expired" makes the
 system enumerate forever, as Task's first extension found.
+
+## The macOS side (`macos/`)
+
+```text
+macos/
+  FileProvider/
+    Bridge.swift                   the agent through drive-fileprovider; errors mapped to the domains the system accepts
+    Item.swift                     NSFileProviderItem from FpItem (ids are tree ids)
+    Enumerator.swift               folders a page at a time; changes since an anchor
+    FileProviderExtension.swift    the replicated extension: lookups, fetch, create, modify, delete
+    Domains.swift                  the registrar tool: sync | list | clear | signal | watch | evict PATH | ping
+    Info.plist, DriveFileProvider.entitlements
+  Drive.entitlements               the containing app's
+  build-fileprovider.sh            the Rust bridge, the .appex and the registrar, signed
+  try-fileprovider.sh              a throwaway Drive.app around them, registered with the system
+```
+
+### How the pieces connect
+
+- **The socket:** the agent serves its app API on a second socket inside the
+  app group's container, `~/Library/Group Containers/28C2G63DA7.app.fasttrackstudio.drive/app.sock`.
+  That folder is the only one the sandboxed extension can reach, so it needs
+  no network entitlement and no absolute-path exception.
+- **Staging:** fetched bytes are copied into `staging/` there, and outgoing
+  edits are staged there too. The agent may not read the extension's own
+  container, and the extension may not read the agent's cache.
+- **Ids:** Drive uses tree ids, which survive renames and moves. (Task uses
+  paths, because its tree is files on disk.)
+- **Signing:** a Developer ID identity (team `28C2G63DA7`, in
+  `fts-build.keychain` on airlock). The app group is team-prefixed, the form
+  Developer ID builds use without a provisioning profile.
+
+### Trying it on a Mac
+
+```sh
+KEYCHAIN_PW=… bash macos/try-fileprovider.sh          # build, sign, register "Drive"
+cargo build --release -p drive-node -p drive-agent --no-default-features
+drive-node --listen 127.0.0.1:18150 --data /tmp/dfp/node --org dev --iroh-local &
+drive --dir /tmp/dfp/agent init --node ws://127.0.0.1:18150/sync --space dev --name Mac
+drive --dir /tmp/dfp/agent serve &                    # also serves the socket in the group container
+target/fileprovider/Drive.app/Contents/MacOS/Drive watch &   # signals Finder when the tree changes
+ls ~/Library/CloudStorage/Drive-Drive                  # Finder's "Drive"
+```
+
+Order matters: register first, so macOS makes the group container itself
+when the signed app launches. Then start the agent.
+
+### Checked on airlock (macOS 27.2, M4), 2026-11-24
+
+- **Writes through the folder** (`mkdir`, write a file, `mv` to rename or
+  move, `rm`) land in the tree as the same edits the mount makes. A deleted
+  file goes to Drive's Trash.
+- **A file put into the tree elsewhere** (`drive put`) appears in the
+  folder within about 2 s with `watch` running, and reading it downloads it
+  through `fetchContents`.
+- **`evict`** (Remove Download) leaves a placeholder: 0 KB on disk, at its
+  real size. Reading it brings the bytes back. A 50 MB file wrote in about
+  3 s and read back after eviction in about 1 s, with the same SHA-256.
+
+### Found on the way
+
+- **Errors must be in `NSFileProviderErrorDomain` or `NSCocoaErrorDomain`.**
+  The system refuses any other domain ("unsupported error") and the call
+  fails silently. `providerError` maps every error.
+- **Files need `.allowsEvicting`,** or eviction is refused with -2008
+  (`nonEvictable`).
+- **The system keeps what an item last said until its metadata version
+  changes.** `itemSchema` is part of every metadata version: bump it when
+  capabilities or types change.
+- **The extension is relaunched every minute or so,** so a poll inside it
+  misses changes. Keeping Finder current needs a long-running process
+  (`Domains watch` now; the menu-bar app later).

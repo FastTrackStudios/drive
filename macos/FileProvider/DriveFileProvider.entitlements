@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- A File Provider extension is always sandboxed: the system will not
+         load one that is not. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- The group the agent shares: its app socket is in this group's
+         container, and fetched bytes and outgoing edits are staged there.
+         That is all the extension touches. No absolute-path exception, no
+         network: an App Store build stays possible (unlike Task's). -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>28C2G63DA7.app.fasttrackstudio.drive</string>
+    </array>
+</dict>
+</plist>
