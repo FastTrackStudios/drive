@@ -36,6 +36,7 @@ pub mod auth;
 pub mod comments;
 pub mod env;
 mod keyed;
+mod nesting;
 pub mod mount;
 pub mod text;
 pub mod ui;
@@ -532,9 +533,13 @@ impl Doc {
 
     /// Edit, then commit and send. Editing another document inside `f`
     /// (its own `edit`) is fine: each commits and sends its own changes.
+    /// Editing this same document inside `f` joins this edit: it commits
+    /// once, when the outermost `edit` returns.
     pub fn edit<R>(&self, f: impl FnOnce(&drive_client::loro::LoroDoc) -> R) -> R {
-        let r = f(&self.doc);
-        self.drive.commit(&self.id);
+        let (r, outermost) = nesting::edit(&self.id, || f(&self.doc));
+        if outermost {
+            self.drive.commit(&self.id);
+        }
         r
     }
 
