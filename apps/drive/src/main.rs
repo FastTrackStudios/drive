@@ -214,8 +214,8 @@ fn Inbox() -> Element {
                                 if !t.by.is_empty() {
                                     span { class: "by", "{t.by}" }
                                 }
-                                if !t.link.is_empty() {
-                                    a { class: "open", href: "{t.link}", "Open" }
+                                if let Some(link) = browser::safe_href(t.link.clone()) {
+                                    a { class: "open", href: "{link}", "Open" }
                                 }
                                 span { class: "acts",
                                     button {
@@ -367,8 +367,8 @@ fn Calendar() -> Element {
                                 span { class: "place", "{e.place}" }
                             }
                             span { class: "app", "{app_label(&e.app)}" }
-                            if !e.link.is_empty() {
-                                a { class: "open", href: "{e.link}", "Open" }
+                            if let Some(link) = browser::safe_href(e.link.clone()) {
+                                a { class: "open", href: "{link}", "Open" }
                             }
                             button {
                                 class: "x",

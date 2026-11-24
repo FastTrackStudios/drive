@@ -966,7 +966,9 @@ fn AppDocs(app: String) -> Element {
 
 // ── the inspector ───────────────────────────────────────────────────────
 
-fn safe_href(url: String) -> Option<String> {
+/// `url` when it is safe to put in an `href`: http(s) or a same-origin
+/// path, never `javascript:`, `data:` or a protocol-relative URL.
+pub(crate) fn safe_href(url: String) -> Option<String> {
     let t = url.trim();
     if t.starts_with("https://")
         || t.starts_with("http://")
@@ -1666,6 +1668,28 @@ fn ItemComments(item: Item, download: Option<String>) -> Element {
                 }
             }
             drive_dioxus::comments::CommentsPanel { key: "{item.key()}", target, version, player }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_href;
+
+    #[test]
+    fn safe_href_keeps_web_and_local_links_only() {
+        for ok in ["https://a.example/x", "http://a.example", "/notes/1", " /x "] {
+            assert_eq!(safe_href(ok.into()).as_deref(), Some(ok.trim()));
+        }
+        for bad in [
+            "javascript:alert(1)",
+            " JavaScript:alert(1)",
+            "data:text/html,<script>",
+            "//evil.example",
+            "vbscript:x",
+            "",
+        ] {
+            assert_eq!(safe_href(bad.into()), None, "{bad}");
         }
     }
 }
