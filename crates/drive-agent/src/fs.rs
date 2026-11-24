@@ -44,6 +44,8 @@ pub struct DriveFs {
     inodes: Mutex<Inodes>,
     open: Mutex<HashMap<u64, Open>>,
     next_fh: AtomicU64,
+    /// Each scratch file's own number (never shared by two writers).
+    next_scratch: AtomicU64,
     uid: u32,
     gid: u32,
 }
@@ -78,6 +80,7 @@ impl DriveFs {
             inodes: Mutex::new(Inodes::default()),
             open: Mutex::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
+            next_scratch: AtomicU64::new(1),
             uid,
             gid,
         }
@@ -203,15 +206,20 @@ impl DriveFs {
             .ok_or(Errno::EINVAL)
     }
 
-    /// A scratch copy of a file, holding its current bytes, for writing.
-    fn scratch_for(&self, e: &Entry, truncate: bool) -> Result<(PathBuf, File), Errno> {
+    /// A new scratch file's path, for `id`: never one another writer has.
+    fn scratch_path(&self, id: TreeID) -> Result<PathBuf, Errno> {
         let dir = self.agent.dir.join("scratch");
         std::fs::create_dir_all(&dir).map_err(|_| Errno::EIO)?;
-        let path = dir.join(format!(
+        Ok(dir.join(format!(
             "{}-{}",
-            tree::id_string(e.id).replace('@', "_"),
-            self.next_fh.load(Ordering::Relaxed)
-        ));
+            tree::id_string(id).replace('@', "_"),
+            self.next_scratch.fetch_add(1, Ordering::Relaxed)
+        )))
+    }
+
+    /// A scratch copy of a file, holding its current bytes, for writing.
+    fn scratch_for(&self, e: &Entry, truncate: bool) -> Result<(PathBuf, File), Errno> {
+        let path = self.scratch_path(e.id)?;
         if !truncate && !e.hash.is_empty() {
             let src = self
                 .rt
@@ -345,14 +353,11 @@ impl Filesystem for DriveFs {
                     }
                 } else if size == 0 {
                     drop(open);
-                    let (hash, _) = self
-                        .rt
-                        .block_on(async {
-                            let tmp = self.agent.dir.join("scratch-empty");
-                            let _ = std::fs::write(&tmp, b"");
-                            self.agent.upload(e.id, &tmp).await
-                        })
-                        .map_err(|_| Errno::EIO)?;
+                    let tmp = self.scratch_path(e.id)?;
+                    std::fs::write(&tmp, b"").map_err(|_| Errno::EIO)?;
+                    let uploaded = self.rt.block_on(self.agent.upload(e.id, &tmp));
+                    let _ = std::fs::remove_file(&tmp);
+                    let (hash, _) = uploaded.map_err(|_| Errno::EIO)?;
                     tree::set_content(&self.agent.files, e.id, 0, &hash)
                         .map_err(|_| Errno::EIO)?;
                     self.agent.commit_files();
@@ -726,5 +731,51 @@ impl Filesystem for DriveFs {
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
         // Generous numbers: the space is as big as its storage.
         reply.statfs(1 << 30, 1 << 29, 1 << 29, 1 << 20, 1 << 19, 4096, 255, 4096);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Config;
+
+    #[test]
+    fn writers_of_one_file_get_scratch_files_of_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cfg = Config {
+            node: "ws://127.0.0.1:1/sync".into(),
+            space: "home".into(),
+            device_id: "dev-1".into(),
+            device_name: "Voyager".into(),
+            storages: Vec::new(),
+            pins: Vec::new(),
+            token: None,
+            token_expires: None,
+            signed_in_as: None,
+            allow_evict: false,
+            relay: None,
+            allow_rule_moves: false,
+            kache: Default::default(),
+            apps: Default::default(),
+        };
+        let a = rt.block_on(Agent::start_with(
+            dir.path(),
+            cfg,
+            "Voyager",
+            dir.path().join("state"),
+        ));
+        let id = tree::create_file(&a.files, None, "take.wav").unwrap();
+        let e = tree::entry(&a.files, id).unwrap();
+        let fs = DriveFs::new(Arc::new(a), rt.handle().clone());
+        // Two opens take their handles before either makes its scratch copy.
+        fs.next_fh.fetch_add(1, Ordering::Relaxed);
+        fs.next_fh.fetch_add(1, Ordering::Relaxed);
+        let (one, mut f1) = fs.scratch_for(&e, true).unwrap();
+        let (two, _) = fs.scratch_for(&e, true).unwrap();
+        assert_ne!(one, two, "each writer has its own scratch file");
+        use std::io::Write;
+        f1.write_all(b"first writer").unwrap();
+        assert_eq!(std::fs::read(&one).unwrap(), b"first writer");
     }
 }
