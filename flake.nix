@@ -173,14 +173,15 @@
         }
         // lib.optionalAttrs isLinux {
           # The desktop app (apps/drive, feature `desktop`): Drive in the
-          # system tray, its window a click away, built by dx (`dx build
-          # --platform linux --renderer native`): dx fills in the asset!()
-          # table the binary looks its CSS and icons up in, which a plain
-          # cargo build leaves as placeholders. Its own source and lockfile
-          # (the whole workspace, app-shell included: public since
-          # 2026-11-24), so the agent's and the node's store paths do not
-          # move with it. macOS gets Drive.app from the release instead
-          # (macos/bundle-app.sh: dx bundle plus the File Provider extension).
+          # system tray, its window a click away. dx makes it (`dx bundle
+          # --package-types deb`): the binary with its asset!() table filled
+          # in (a plain cargo build leaves placeholders), its assets, the
+          # launcher entry and the icons; the package is that .deb unpacked.
+          # Its own source and lockfile (the whole workspace, app-shell
+          # included: public since 2026-11-24), so the agent's and the
+          # node's store paths do not move with it. macOS gets Drive.app
+          # from the release (macos/bundle-app.sh: dx bundle plus the File
+          # Provider extension).
           drive-desktop =
             let
               desktopSrc = lib.fileset.toSource {
@@ -246,44 +247,37 @@
               args
               // {
                 cargoArtifacts = craneLib.buildDepsOnly args;
-                nativeBuildInputs = args.nativeBuildInputs ++ [ dx ];
+                # The package is the app, not the build's target/.
+                doInstallCargoArtifacts = false;
+                nativeBuildInputs = args.nativeBuildInputs ++ [
+                  dx
+                  pkgs.dpkg
+                  # What buildPackage does after its install: no store paths
+                  # of the vendored sources or the toolchain in the binary
+                  # (they would be its runtime closure, about 4 GB).
+                  craneLib.removeReferencesToVendoredSourcesHook
+                  craneLib.removeReferencesToRustToolchainHook
+                ];
                 dontWrapGApps = true;
                 # dx keeps its own state under HOME.
                 buildPhaseCargoCommand = ''
                   export HOME=$(mktemp -d)
-                  (cd apps/drive && dx build --release --locked --platform linux --renderer native \
-                    --no-default-features --features desktop)
+                  (cd apps/drive && dx bundle --release --locked --platform linux --renderer native \
+                    --no-default-features --features desktop --package-types deb --out-dir "$PWD/../../deb")
                 '';
-                # dx's app folder: the program and assets/ beside it, where
-                # the resolver looks (the program's own folder).
                 installPhaseCommand = ''
-                  app=target/dx/drive-app/release/linux/app
-                  test -x $app/drive-app
-                  mkdir -p $out/lib
-                  cp -r $app $out/lib/drive-desktop
-                  install -Dm444 /dev/stdin $out/share/applications/app.fasttrackstudio.drive.desktop <<DESKTOP
-                  [Desktop Entry]
-                  Type=Application
-                  Name=Drive
-                  Comment=Your files on every computer
-                  Exec=drive-desktop
-                  Icon=app.fasttrackstudio.drive
-                  Categories=Utility;FileTools;
-                  StartupWMClass=app.fasttrackstudio.drive
-                  DESKTOP
-                  sed -i 's/^[[:space:]]*//' $out/share/applications/app.fasttrackstudio.drive.desktop
-                  for n in 32 128 256 512; do
-                    install -Dm444 apps/drive/icons/''${n}x''${n}.png \
-                      $out/share/icons/hicolor/''${n}x''${n}/apps/app.fasttrackstudio.drive.png
-                  done
+                  dpkg-deb -x deb/*.deb unpacked
+                  mkdir -p $out
+                  cp -r unpacked/usr/. $out/
                 '';
-                # gappsWrapperArgs is filled in at fixup: wrap after it.
+                # GTK's and the GPU's libraries; gappsWrapperArgs is filled
+                # in at fixup, so wrap after it.
                 postFixup = ''
-                  makeWrapper $out/lib/drive-desktop/drive-app $out/bin/drive-desktop \
+                  wrapProgram $out/bin/drive-app \
                     "''${gappsWrapperArgs[@]}" \
                     --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
                 '';
-                meta.mainProgram = "drive-desktop";
+                meta.mainProgram = "drive-app";
               }
             );
         };
