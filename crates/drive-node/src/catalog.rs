@@ -200,23 +200,26 @@ pub(crate) async fn names(c: &Catalog, space_id: &str) -> Names {
 #[tracing::instrument(name = "drive.hits", skip_all, fields(hits.count = found.len()))]
 pub(crate) async fn hits(c: &Catalog, space_id: &str, found: Vec<Found>) -> Vec<Hit> {
     let n = names(c, space_id).await;
+    let keys: Vec<(String, i64)> = found
+        .iter()
+        .filter(|f| !f.dir && !f.sampled.is_empty())
+        .map(|f| (f.sampled.clone(), f.size))
+        .collect();
+    let counts = c
+        .rooms
+        .store
+        .copy_counts(space_id, &keys)
+        .await
+        .unwrap_or_default();
     let mut out = Vec::with_capacity(found.len());
     for f in found {
         let copies = if f.dir || f.sampled.is_empty() {
             1
         } else {
-            let mut locs: Vec<String> = c
-                .rooms
-                .store
-                .copies(space_id, &f.sampled, f.size)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|x| x.location)
-                .collect();
-            locs.sort();
-            locs.dedup();
-            locs.len()
+            counts
+                .get(&(f.sampled.clone(), f.size))
+                .copied()
+                .unwrap_or(0)
         };
         let loc = n.doc.locations.get(&f.location);
         let device = loc.map(|l| l.device.clone()).unwrap_or_default();
@@ -672,6 +675,56 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&*cached).unwrap(),
             slow(c, space_id, 50).await
+        );
+    }
+
+    #[tokio::test]
+    async fn each_hit_counts_the_locations_holding_its_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("drive.db"))
+            .await
+            .unwrap();
+        let rooms = Arc::new(Rooms::new(store, crate::auth::Auth::new(None)));
+        let c = Catalog {
+            rooms: rooms.clone(),
+            blobs: drive_files::storage::StorageConfig::Fs {
+                root: dir.path().join("blobs").to_string_lossy().into_owned(),
+            }
+            .blobs()
+            .unwrap(),
+            names: Default::default(),
+            reports: Default::default(),
+        };
+        let store = &rooms.store;
+        store
+            .put_index(
+                "home",
+                &index("a", &[("x.wav", "hx"), ("y.wav", "hy"), ("n.wav", "")]),
+            )
+            .await
+            .unwrap();
+        store
+            .put_index("home", &index("b", &[("x.wav", "hx"), ("x2.wav", "hx")]))
+            .await
+            .unwrap();
+        store
+            .put_index("other", &index("c", &[("y.wav", "hy")]))
+            .await
+            .unwrap();
+        let found = store.search("home", "wav", &[], 100).await.unwrap();
+        let copies: HashMap<(String, String), usize> = hits(&c, "home", found)
+            .await
+            .into_iter()
+            .map(|h| ((h.found.location.clone(), h.found.path.clone()), h.copies))
+            .collect();
+        let at = |l: &str, p: &str| copies[&(l.to_string(), p.to_string())];
+        assert_eq!(at("a", "x.wav"), 2);
+        assert_eq!(at("b", "x2.wav"), 2);
+        assert_eq!(at("a", "y.wav"), 1, "another space's copy does not count");
+        assert_eq!(
+            at("a", "n.wav"),
+            1,
+            "a file with no content hash is its own copy"
         );
     }
 
