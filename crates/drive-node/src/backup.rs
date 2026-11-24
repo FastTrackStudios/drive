@@ -97,7 +97,7 @@ pub async fn write(
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let name = format!("drive-{}.drvbk", now_secs());
     let path = dir.join(&name);
-    std::fs::write(&path, &packed).map_err(|e| e.to_string())?;
+    crate::write_atomic(&path, &packed).map_err(|e| e.to_string())?;
     let mut all: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))

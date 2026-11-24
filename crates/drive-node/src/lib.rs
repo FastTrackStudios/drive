@@ -67,6 +67,32 @@ pub struct Options {
 
 type Remote = Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>;
 
+/// Write a file whole or not at all: into a temporary file beside it,
+/// synced, then renamed over it, so a crash or a reader never sees it
+/// truncated or half-written.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return written;
+    }
+    // The rename itself survives a crash once the folder is synced.
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
 fn peer_addr(p: &Remote) -> Option<std::net::SocketAddr> {
     p.as_ref().map(|e| e.0.0)
 }
