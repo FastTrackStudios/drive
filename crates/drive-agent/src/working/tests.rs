@@ -231,3 +231,83 @@ async fn owning_is_refused_off_the_device_that_has_the_folder() {
     assert!(e.contains("run `drive own` there"), "{e}");
     assert!(e.contains("Studio PC"), "{e}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pass_that_would_trash_many_files_is_refused() {
+    let (a, _b, folder, _keep) = owned().await;
+    for i in 0..30 {
+        std::fs::write(
+            folder.join(format!("Song B/take-{i:02}.wav")),
+            format!("take {i}"),
+        )
+        .unwrap();
+    }
+    let (w, done) = a.own("Studio/Songs").await.unwrap();
+    assert_eq!(done.up, 33, "{done:?}");
+    // The folder's files all gone at once (a disk unmounted, a bad copy):
+    // nothing goes to the Trash, and it says so.
+    for i in 0..30 {
+        std::fs::remove_file(folder.join(format!("Song B/take-{i:02}.wav"))).unwrap();
+    }
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.trashed, 0, "{done:?}");
+    assert!(
+        done.errors
+            .iter()
+            .any(|e| e.contains("would go to a trash")),
+        "{done:?}"
+    );
+    assert!(tree::resolve(&a.files, "Studio/Songs/Song B/take-07.wav").is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_of_the_tree_behind_the_last_sync_does_nothing() {
+    let (a, _b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+    let before = snapshot(&folder);
+    // The last sync names a file this copy of the tree does not have (it
+    // was made by another process whose change has not arrived yet).
+    let state = a
+        .dir
+        .join("working")
+        .join(format!("{}.json", w.root.replace(['@', '/'], "_")));
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+    v["Song B/from-elsewhere.txt"] =
+        serde_json::json!({ "id": "999@424242", "hash": "x", "size": 1, "mtime": 1 });
+    std::fs::write(&state, v.to_string()).unwrap();
+    let e = a.reconcile(&w).await.unwrap_err();
+    assert!(e.contains("behind the last sync"), "{e}");
+    assert_eq!(snapshot(&folder), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_replaced_by_the_drives_version_is_kept_in_the_folders_trash() {
+    let (a, b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+    wait_until("the laptop sees the tree", || {
+        !tree_hash(&b, "Studio/Songs/Song B/notes.txt").is_empty()
+    })
+    .await;
+    let song_b = tree::resolve(&b.files, "Studio/Songs/Song B")
+        .unwrap()
+        .unwrap();
+    let src = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(src.path(), b"newer, from the laptop").unwrap();
+    b.put(src.path(), Some(song_b.id), "notes.txt")
+        .await
+        .unwrap();
+    wait_until("the studio sees it", || {
+        tree_hash(&a, "Studio/Songs/Song B/notes.txt")
+            == drive_files::hash::of_bytes(b"newer, from the laptop")
+    })
+    .await;
+    assert_eq!(a.reconcile(&w).await.unwrap().down, 1);
+    assert_eq!(
+        read(&folder.join("Song B/notes.txt")),
+        b"newer, from the laptop"
+    );
+    assert_eq!(
+        read(&folder.join(".drive-trash/Song B/notes.txt")),
+        b"bridge twice"
+    );
+}

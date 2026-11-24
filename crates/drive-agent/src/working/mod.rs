@@ -111,7 +111,8 @@ impl Agent {
             Some(None) => None,
             _ => ensure_top_dir(&self.files, dir)?,
         };
-        drive_files::adopt::unadopt(&self.space, &at).map_err(|e| e.to_string())?;
+        // The tree folder and the binding first, the adoption last: a step
+        // that fails leaves the folder adopted as it was.
         let root = match tree::lookup(&self.files, parent, name) {
             Some(e) if e.dir => e.id,
             Some(_) => return Err(format!("{at} is a file in the Drive")),
@@ -125,14 +126,33 @@ impl Agent {
             added: drive_files::now_ms(),
         };
         working::bind(&self.space, &w).map_err(|e| e.to_string())?;
+        drive_files::adopt::unadopt(&self.space, &at).map_err(|e| e.to_string())?;
         self.commit_files();
         self.commit_space();
-        let done = self.reconcile(&w).await?;
+        // Owned from here on. The first sync may run in the agent instead
+        // (it took the lock first, or this copy of the tree is behind it).
+        let done = match self.reconcile(&w).await {
+            Ok(d) => d,
+            Err(e) => Reconciled {
+                errors: vec![format!(
+                    "the first sync did not run here ({e}); the agent does it"
+                )],
+                ..Default::default()
+            },
+        };
         Ok((w, done))
     }
 
     /// Bring a working copy's folder and its tree folder level: what
     /// changed on one side since the last sync goes to the other.
+    ///
+    /// Safety, in order: one reconcile per working copy (in this process,
+    /// and across processes by a lock taken before anything is read); none
+    /// at all while this process's copy of the tree lacks a file the last
+    /// sync recorded (it is behind, and would read those files as gone);
+    /// every file checked again right before it is acted on; a file
+    /// replaced on disk kept in `.drive-trash`; and no pass that would send
+    /// more than a few files to a trash.
     pub async fn reconcile(&self, w: &WorkingCopy) -> Result<Reconciled, String> {
         let _one = RECONCILING.lock().await;
         let root_id =
@@ -144,29 +164,43 @@ impl Agent {
         if !folder.is_dir() {
             return Err(format!("{} is not there", folder.display()));
         }
+        let state_file = self
+            .dir
+            .join(STATE_DIR)
+            .join(format!("{}.json", w.root.replace(['@', '/'], "_")));
+        let _held = lock_file(state_file.with_extension("lock")).await?;
+        let mut last = load_state(&state_file);
+        let unknown = last
+            .values()
+            .filter(|s| {
+                tree::parse_id(&s.id)
+                    .and_then(|t| tree::entry(&self.files, t))
+                    .is_none()
+            })
+            .count();
+        if unknown > 0 {
+            return Err(format!(
+                "this copy of the Drive tree is behind the last sync ({unknown} files it does not have yet); later"
+            ));
+        }
         let walk = folder.clone();
         let disk = tokio::task::spawn_blocking(move || walk_disk(&walk))
             .await
             .map_err(|e| e.to_string())??;
         let in_tree = walk_tree(&self.files, root_id);
-        let state_file = self
-            .dir
-            .join(STATE_DIR)
-            .join(format!("{}.json", w.root.replace(['@', '/'], "_")));
-        // One reconcile of a working copy across processes too (the daemon,
-        // and `drive own` run beside it): a lock on a file of its own.
-        let _held = lock_file(state_file.with_extension("lock")).await?;
-        let mut last = load_state(&state_file);
         let actions = plan::plan(&disk.files, &in_tree.files, &last);
 
         // A file new on disk with the bytes of one gone from it: renamed or
         // moved here, so the tree file moves rather than going to the Trash.
-        let mut vanished: HashMap<String, (String, String)> = HashMap::new();
+        let mut vanished: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for a in &actions {
             if let Action::TrashInTree { rel, id } = a
                 && let Some(s) = last.get(rel)
             {
-                vanished.insert(s.hash.clone(), (rel.clone(), id.clone()));
+                vanished
+                    .entry(s.hash.clone())
+                    .or_default()
+                    .push((rel.clone(), id.clone()));
             }
         }
 
@@ -181,49 +215,115 @@ impl Agent {
                 done.errors.push(format!("{dir}: {e}"));
             }
         }
-        // What goes to the Trash goes last, once every new file has had the
-        // chance to claim it as moved.
-        let (trash, rest): (Vec<Action>, Vec<Action>) = actions
-            .into_iter()
-            .partition(|a| matches!(a, Action::TrashInTree { .. }));
-        for (n, a) in rest.iter().chain(trash.iter()).enumerate() {
+        let views = Views {
+            disk: &disk.files,
+            tree: &in_tree.files,
+        };
+        let is_trash =
+            |a: &Action| matches!(a, Action::TrashInTree { .. } | Action::TrashOnDisk { .. });
+        let (trash, rest): (Vec<Action>, Vec<Action>) = actions.into_iter().partition(is_trash);
+        let mut n = 0usize;
+        let checkpoint = |last: &BTreeMap<String, Synced>| {
+            // The tree first, then the state that refers to it: a crash in
+            // between leaves the state behind the tree (redone next time),
+            // never ahead of it.
+            self.commit_files();
+            self.commit_space();
+            save_state(&state_file, last);
+        };
+        for a in &rest {
             if let Err(e) = self
-                .act(a, root_id, &folder, &mut last, &mut vanished, &mut done)
+                .act(
+                    a,
+                    root_id,
+                    &folder,
+                    &views,
+                    &mut last,
+                    &mut vanished,
+                    &mut done,
+                )
                 .await
             {
                 done.errors.push(e);
             }
-            if n % 50 == 49 {
-                save_state(&state_file, &last);
+            n += 1;
+            if n.is_multiple_of(50) {
+                checkpoint(&last);
             }
         }
-        save_state(&state_file, &last);
-        self.commit_files();
-        self.commit_space();
+        // What goes to a trash goes last, once every new file has had the
+        // chance to claim it as moved; and not at all if it is more than a
+        // few files (a folder that went missing, a copy of the tree behind).
+        let claimed = |a: &Action| match a {
+            Action::TrashInTree { rel, .. } => !vanished.values().flatten().any(|(r, _)| r == rel),
+            _ => false,
+        };
+        let trash: Vec<Action> = trash.into_iter().filter(|a| !claimed(a)).collect();
+        let limit = (disk.files.len().max(in_tree.files.len()) / 20).max(20);
+        if trash.len() > limit {
+            done.errors.push(format!(
+                "{} files would go to a trash in one pass (more than {limit}): left alone; check the folder and the Drive",
+                trash.len()
+            ));
+        } else {
+            for a in &trash {
+                if let Err(e) = self
+                    .act(
+                        a,
+                        root_id,
+                        &folder,
+                        &views,
+                        &mut last,
+                        &mut vanished,
+                        &mut done,
+                    )
+                    .await
+                {
+                    done.errors.push(e);
+                }
+            }
+        }
+        checkpoint(&last);
         Ok(done)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn act(
         &self,
         a: &Action,
         root: TreeID,
         folder: &Path,
+        views: &Views<'_>,
         last: &mut BTreeMap<String, Synced>,
-        vanished: &mut HashMap<String, (String, String)>,
+        vanished: &mut HashMap<String, Vec<(String, String)>>,
         done: &mut Reconciled,
     ) -> Result<(), String> {
         match a {
             Action::Up { rel, id } => {
+                if let Some(id) = id {
+                    let planned = views.tree.get(rel).map(|t| t.hash.as_str()).unwrap_or("");
+                    if tree_hash(&self.files, id) != planned {
+                        return Err(format!(
+                            "{rel}: changed in the Drive during the pass; next time"
+                        ));
+                    }
+                }
                 self.up(rel, id.as_deref(), root, folder, last, vanished)
                     .await?;
                 done.up += 1;
             }
             Action::Down { rel, id, hash } => {
-                self.down(rel, id, hash, folder, last).await?;
+                self.down(rel, id, hash, folder, last, views.disk.get(rel))
+                    .await?;
                 done.down += 1;
             }
             Action::Move { from, to, id } => {
                 let (src, dst) = (folder.join(from), folder.join(to));
+                if disk_now(&src).as_ref() != views.disk.get(from) || dst.exists() {
+                    return Err(format!(
+                        "{from}: changed on disk during the pass; next time"
+                    ));
+                }
                 if let Some(p) = dst.parent() {
                     std::fs::create_dir_all(p).map_err(|e| format!("{to}: {e}"))?;
                 }
@@ -235,28 +335,47 @@ impl Agent {
                 done.moved += 1;
             }
             Action::TrashInTree { rel, id } => {
-                // Moved on disk instead (its bytes reappeared elsewhere): done
-                // by the Up that found them.
-                let still = vanished.values().any(|(r, _)| r == rel);
-                if still {
-                    let tid = tree::parse_id(id).ok_or("a bad tree id")?;
-                    tree::trash(&self.files, tid).map_err(|e| format!("{rel}: {e}"))?;
-                    done.trashed += 1;
+                let synced_hash = last.get(rel).map(|s| s.hash.clone()).unwrap_or_default();
+                if tree_hash(&self.files, id) != synced_hash {
+                    return Err(format!("{rel}: changed in the Drive during the pass; kept"));
                 }
+                let tid = tree::parse_id(id).ok_or("a bad tree id")?;
+                tree::trash(&self.files, tid).map_err(|e| format!("{rel}: {e}"))?;
                 last.remove(rel);
+                done.trashed += 1;
             }
             Action::TrashOnDisk { rel } => {
+                if disk_now(&folder.join(rel)).as_ref() != views.disk.get(rel) {
+                    return Err(format!("{rel}: changed on disk during the pass; kept"));
+                }
                 crate::rules_fs::to_trash(folder, rel)?;
                 last.remove(rel);
                 done.trashed += 1;
             }
             Action::Conflict { rel, id, hash } => {
                 let path = folder.join(rel);
+                let before = disk_now(&path);
+                if before.as_ref() != views.disk.get(rel) {
+                    return Err(format!("{rel}: changed on disk during the pass; next time"));
+                }
                 let bytes = tokio::fs::read(&path)
                     .await
                     .map_err(|e| format!("{rel}: {e}"))?;
+                if disk_now(&path) != before {
+                    return Err(format!("{rel}: being written; next time"));
+                }
                 if hash::of_bytes(&bytes) == *hash {
-                    last.insert(rel.clone(), synced(id, hash, &path)?);
+                    if let Some(d) = before {
+                        last.insert(
+                            rel.clone(),
+                            Synced {
+                                id: id.clone(),
+                                hash: hash.clone(),
+                                size: d.size,
+                                mtime: d.mtime,
+                            },
+                        );
+                    }
                     return Ok(());
                 }
                 // Both kept: the disk's version under a conflict name (and up
@@ -267,9 +386,12 @@ impl Agent {
                     .map_or_else(|| self.device_id(), |d| d.name);
                 let date = chrono_date(drive_files::now_ms());
                 let aside = plan::conflict_name(rel, &device, &date);
+                if folder.join(&aside).exists() {
+                    return Err(format!("{rel}: {aside} is already there; next time"));
+                }
                 std::fs::rename(&path, folder.join(&aside)).map_err(|e| format!("{rel}: {e}"))?;
                 self.up(&aside, None, root, folder, last, vanished).await?;
-                self.down(rel, id, hash, folder, last).await?;
+                self.down(rel, id, hash, folder, last, None).await?;
                 done.conflicts += 1;
             }
             Action::Forget { rel } => {
@@ -279,7 +401,8 @@ impl Agent {
         Ok(())
     }
 
-    /// `rel` on disk into the tree (`id`: the file to update).
+    /// `rel` on disk into the tree (`id`: the file to update). A file that
+    /// changes while it is read is left for the next pass.
     async fn up(
         &self,
         rel: &str,
@@ -287,24 +410,35 @@ impl Agent {
         root: TreeID,
         folder: &Path,
         last: &mut BTreeMap<String, Synced>,
-        vanished: &mut HashMap<String, (String, String)>,
+        vanished: &mut HashMap<String, Vec<(String, String)>>,
     ) -> Result<(), String> {
         let path = folder.join(rel);
+        let before = disk_now(&path).ok_or_else(|| format!("{rel}: gone"))?;
         let bytes = tokio::fs::read(&path)
             .await
             .map_err(|e| format!("{rel}: {e}"))?;
+        if disk_now(&path).as_ref() != Some(&before) || bytes.len() as u64 != before.size {
+            return Err(format!("{rel}: being written; next time"));
+        }
         let h = hash::of_bytes(&bytes);
         let size = bytes.len() as u64;
+        let record = |id: &str| Synced {
+            id: id.to_string(),
+            hash: h.clone(),
+            size: before.size,
+            mtime: before.mtime,
+        };
         let (dir, name) = split(rel);
         let parent = ensure_tree_dir(&self.files, root, dir)?;
         let tid = match id.and_then(tree::parse_id) {
             Some(t) => t,
-            None => match vanished.remove(&h) {
+            None => match vanished.get_mut(&h).and_then(Vec::pop) {
                 // The same bytes left another path here: that tree file moves.
-                Some((_, old)) => {
+                Some((old_rel, old)) => {
                     let t = tree::parse_id(&old).ok_or("a bad tree id")?;
                     tree::rename(&self.files, t, Some(parent), name).map_err(|e| e.to_string())?;
-                    last.insert(rel.to_string(), synced(&old, &h, &path)?);
+                    last.remove(&old_rel);
+                    last.insert(rel.to_string(), record(&old));
                     return Ok(());
                 }
                 None => match tree::lookup(&self.files, Some(parent), name) {
@@ -322,11 +456,13 @@ impl Agent {
             self.keep_blob(&h, bytes).await;
             tree::set_content(&self.files, tid, size, &h).map_err(|e| e.to_string())?;
         }
-        last.insert(rel.to_string(), synced(&tree::id_string(tid), &h, &path)?);
+        last.insert(rel.to_string(), record(&tree::id_string(tid)));
         Ok(())
     }
 
-    /// The tree file's bytes onto disk at `rel`.
+    /// The tree file's bytes onto disk at `rel`, where the walk saw
+    /// `expected` (`None`: nothing). A file that changed since is left
+    /// alone; the one replaced goes to `.drive-trash`.
     async fn down(
         &self,
         rel: &str,
@@ -334,8 +470,13 @@ impl Agent {
         h: &str,
         folder: &Path,
         last: &mut BTreeMap<String, Synced>,
+        expected: Option<&OnDisk>,
     ) -> Result<(), String> {
         let path = folder.join(rel);
+        let changed = || disk_now(&path).as_ref() != expected;
+        if changed() {
+            return Err(format!("{rel}: changed on disk during the pass; next time"));
+        }
         let bytes = if h.is_empty() {
             Vec::new()
         } else {
@@ -344,27 +485,65 @@ impl Agent {
         if !h.is_empty() && hash::of_bytes(&bytes) != h {
             return Err(format!("{rel}: the bytes came back changed"));
         }
+        // The fetch may have taken a while: check again just before.
+        if changed() {
+            return Err(format!("{rel}: changed on disk during the pass; next time"));
+        }
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p).map_err(|e| format!("{rel}: {e}"))?;
         }
+        if expected.is_some() {
+            crate::rules_fs::to_trash(folder, rel)?;
+        }
+        let len = bytes.len() as u64;
         write_atomic_async(path.clone(), bytes).await?;
         if !h.is_empty() {
             let _ = space::set_held(&self.space, &self.device_id(), h, Some("local"));
         }
-        last.insert(rel.to_string(), synced(id, h, &path)?);
+        match disk_now(&path) {
+            // Written and not touched since: synced.
+            Some(d) if d.size == len => {
+                last.insert(
+                    rel.to_string(),
+                    Synced {
+                        id: id.to_string(),
+                        hash: h.to_string(),
+                        size: d.size,
+                        mtime: d.mtime,
+                    },
+                );
+            }
+            // Edited at once: not recorded, so the next pass compares hashes.
+            _ => {
+                last.remove(rel);
+            }
+        }
         Ok(())
     }
 }
 
-/// The view of a file now on disk, as synced at `id` and `hash`.
-fn synced(id: &str, hash: &str, path: &Path) -> Result<Synced, String> {
-    let md = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Synced {
-        id: id.to_string(),
-        hash: hash.to_string(),
+/// The disk's and the tree's views a pass planned from.
+struct Views<'a> {
+    disk: &'a BTreeMap<String, OnDisk>,
+    tree: &'a BTreeMap<String, InTree>,
+}
+
+/// A file's size and modified time now (`None`: not a file there).
+fn disk_now(path: &Path) -> Option<OnDisk> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    md.is_file().then(|| OnDisk {
         size: md.len(),
         mtime: mtime_ms(&md),
     })
+}
+
+/// A tree file's hash now ("" if it is not a file).
+fn tree_hash(doc: &LoroDoc, id: &str) -> String {
+    tree::parse_id(id)
+        .and_then(|t| tree::entry(doc, t))
+        .filter(|e| !e.dir && !tree::in_trash(doc, e.id))
+        .map(|e| e.hash)
+        .unwrap_or_default()
 }
 
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
@@ -453,7 +632,9 @@ fn walk_disk(root: &Path) -> Result<Walked<OnDisk>, String> {
             if name.starts_with('.') && name.ends_with(".tmp") {
                 continue;
             }
-            let Ok(ft) = ent.file_type() else { continue };
+            let ft = ent
+                .file_type()
+                .map_err(|e| format!("{}: {e}", ent.path().display()))?;
             let sub = if rel.is_empty() {
                 name.clone()
             } else {
@@ -463,7 +644,9 @@ fn walk_disk(root: &Path) -> Result<Walked<OnDisk>, String> {
                 out.dirs.insert(sub.clone());
                 todo.push((ent.path(), sub));
             } else if ft.is_file() {
-                let Ok(md) = ent.metadata() else { continue };
+                let md = ent
+                    .metadata()
+                    .map_err(|e| format!("{}: {e}", ent.path().display()))?;
                 out.files.insert(
                     sub,
                     OnDisk {
