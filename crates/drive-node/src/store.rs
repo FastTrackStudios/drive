@@ -480,7 +480,7 @@ impl Store {
     }
 
     /// Replace a location's rows with a new index.
-    #[tracing::instrument(name = "drive.store.put_index", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
+    #[tracing::instrument(name = "drive.store.put_index", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty, index.written = Empty))]
     pub async fn put_index(&self, space: &str, index: &LocationIndex) -> turso::Result<usize> {
         let conn = self.writer().await;
         // Defensive rollback in case a raw transaction was left open on the write connection.
@@ -489,29 +489,101 @@ impl Store {
         self.tx_open.store(true, Ordering::Release);
         let result = async {
             conn.execute(
-                "DELETE FROM entries WHERE space = ?1 AND location = ?2",
-                vec![Value::Text(space.into()), Value::Text(index.location.clone())],
-            )
-            .await?;
-            conn.execute(
                 "DELETE FROM entry_stats WHERE space = ?1 AND location = ?2",
                 vec![Value::Text(space.into()), Value::Text(index.location.clone())],
             )
             .await?;
             let mut totals: HashMap<String, (u64, u64)> = HashMap::new();
+            for e in index.entries.iter().filter(|e| !e.dir) {
+                let t = totals.entry(ext_of(e.name())).or_default();
+                t.0 += 1;
+                t.1 += e.size;
+            }
+            // Only what changed is written: the rows already there are read
+            // in path order beside the new entries, and each difference
+            // becomes one delete, update or insert. A reindex that found
+            // one new file wrote every row of the location again before
+            // (millions, drive#47).
+            let mut order: Vec<u32> = (0..index.entries.len() as u32).collect();
+            order.sort_by(|a, b| {
+                index.entries[*a as usize]
+                    .path
+                    .cmp(&index.entries[*b as usize].path)
+            });
+            let mut gone: Vec<i64> = Vec::new();
+            let mut changed: Vec<(i64, u32)> = Vec::new();
+            let mut added: Vec<u32> = Vec::new();
+            {
+                let mut rows = conn
+                    .query(
+                        "SELECT rowid, path, dir, size, mtime, sampled FROM entries \
+                         WHERE space = ?1 AND location = ?2 ORDER BY path",
+                        vec![Value::Text(space.into()), Value::Text(index.location.clone())],
+                    )
+                    .await?;
+                let mut next = order.iter().copied().peekable();
+                while let Some(row) = rows.next().await? {
+                    let rowid = int(row.get_value(0)?);
+                    let path = text(row.get_value(1)?);
+                    while let Some(&i) = next.peek() {
+                        if index.entries[i as usize].path.as_str() < path.as_str() {
+                            added.push(i);
+                            next.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    match next.peek() {
+                        Some(&i) if index.entries[i as usize].path == path => {
+                            next.next();
+                            let e = &index.entries[i as usize];
+                            let same = int(row.get_value(2)?) == e.dir as i64
+                                && int(row.get_value(3)?) == e.size as i64
+                                && int(row.get_value(4)?) == e.mtime
+                                && text(row.get_value(5)?) == e.sampled;
+                            if !same {
+                                changed.push((rowid, i));
+                            }
+                        }
+                        // In the table, no longer in the index (or a second
+                        // row for one path: only the first is kept).
+                        _ => gone.push(rowid),
+                    }
+                }
+                added.extend(next);
+            }
+            for rowid in &gone {
+                conn.execute("DELETE FROM entries WHERE rowid = ?1", vec![Value::Integer(*rowid)])
+                    .await?;
+            }
+            let mut update = conn
+                .prepare(
+                    "UPDATE entries SET dir = ?2, size = ?3, mtime = ?4, sampled = ?5, ext = ?6 WHERE rowid = ?1",
+                )
+                .await?;
+            for (rowid, i) in &changed {
+                let e = &index.entries[*i as usize];
+                let ext = if e.dir { String::new() } else { ext_of(e.name()) };
+                update
+                    .execute(vec![
+                        Value::Integer(*rowid),
+                        Value::Integer(e.dir as i64),
+                        Value::Integer(e.size as i64),
+                        Value::Integer(e.mtime),
+                        Value::Text(e.sampled.clone()),
+                        Value::Text(ext),
+                    ])
+                    .await?;
+            }
             let mut stmt = conn
                 .prepare(
                     "INSERT INTO entries (space, location, parent, path, name, lname, dir, size, mtime, sampled, ext) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )
                 .await?;
-            for e in &index.entries {
+            for i in &added {
+                let e = &index.entries[*i as usize];
                 let ext = if e.dir { String::new() } else { ext_of(e.name()) };
-                if !e.dir {
-                    let t = totals.entry(ext.clone()).or_default();
-                    t.0 += 1;
-                    t.1 += e.size;
-                }
                 stmt.execute(vec![
                     Value::Text(space.into()),
                     Value::Text(index.location.clone()),
@@ -527,6 +599,7 @@ impl Store {
                 ])
                 .await?;
             }
+            tracing::Span::current().record("index.written", gone.len() + changed.len() + added.len());
             let mut stmt = conn
                 .prepare(
                     "INSERT INTO entry_stats (space, location, ext, files, bytes) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1426,6 +1499,85 @@ mod tests {
         assert_eq!(after_rename, ["me/b", "me/c"]);
         store.delete("me/b").await.unwrap();
         assert_eq!(ids(&store.list().await.unwrap()), ["me/c"]);
+    }
+
+
+    async fn location_rows(store: &Store) -> Vec<(i64, String, i64, String)> {
+        let conn = store.reader().await;
+        let mut r = conn
+            .query(
+                "SELECT rowid, path, size, ext FROM entries WHERE space = 'me' AND location = 'l' ORDER BY path",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        while let Some(row) = r.next().await.unwrap() {
+            out.push((
+                int(row.get_value(0).unwrap()),
+                text(row.get_value(1).unwrap()),
+                int(row.get_value(2).unwrap()),
+                text(row.get_value(3).unwrap()),
+            ));
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_new_index_writes_only_what_changed() {
+        use drive_files::index::{IndexEntry, LocationIndex};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("drive.db")).await.unwrap();
+        let e = |path: &str, size: u64| IndexEntry {
+            path: path.into(),
+            dir: false,
+            size,
+            mtime: 1,
+            sampled: format!("{size:064x}"),
+        };
+        let idx = |entries| LocationIndex { location: "l".into(), root: "/".into(), built: 0, entries };
+        store.put_index("me", &idx(vec![e("a.wav", 1), e("b.wav", 2), e("c.wav", 3)])).await.unwrap();
+        let before = location_rows(&store).await;
+        // b changes, c goes, d comes; out of order on purpose.
+        store.put_index("me", &idx(vec![e("d.mp3", 4), e("b.wav", 20), e("a.wav", 1)])).await.unwrap();
+        let after = location_rows(&store).await;
+        let paths: Vec<(&str, i64, &str)> = after.iter().map(|r| (r.1.as_str(), r.2, r.3.as_str())).collect();
+        assert_eq!(paths, [("a.wav", 1, "wav"), ("b.wav", 20, "wav"), ("d.mp3", 4, "mp3")]);
+        assert_eq!(after[0].0, before[0].0, "an unchanged row is left as it was");
+        assert_eq!(after[1].0, before[1].0, "a changed row is updated in place");
+        // The totals follow the new index.
+        let conn = store.reader().await;
+        let mut r = conn
+            .query("SELECT ext, files, bytes FROM entry_stats WHERE space = 'me' AND location = 'l' ORDER BY ext", ())
+            .await
+            .unwrap();
+        let mut stats = Vec::new();
+        while let Some(row) = r.next().await.unwrap() {
+            stats.push((text(row.get_value(0).unwrap()), int(row.get_value(1).unwrap()), int(row.get_value(2).unwrap())));
+        }
+        assert_eq!(stats, [("mp3".to_string(), 1, 4), ("wav".to_string(), 2, 21)]);
+    }
+
+
+    #[tokio::test]
+    #[ignore = "timing, by hand"]
+    async fn timing_a_big_reindex() {
+        use drive_files::index::{IndexEntry, LocationIndex};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("drive.db")).await.unwrap();
+        let n = 300_000;
+        let mut entries: Vec<IndexEntry> = (0..n)
+            .map(|i| IndexEntry { path: format!("Pack {:04}/Sample {i:07}.wav", i / 40), dir: false, size: i as u64, mtime: 1, sampled: format!("{i:064x}") })
+            .collect();
+        let idx = |entries: Vec<IndexEntry>| LocationIndex { location: "l".into(), root: "/".into(), built: 0, entries };
+        let t = std::time::Instant::now();
+        store.put_index("me", &idx(entries.clone())).await.unwrap();
+        eprintln!("first: {:?}", t.elapsed());
+        entries[1234].size += 1;
+        entries.push(IndexEntry { path: "Pack 9999/new.wav".into(), dir: false, size: 1, mtime: 1, sampled: "a".repeat(64) });
+        let t = std::time::Instant::now();
+        store.put_index("me", &idx(entries)).await.unwrap();
+        eprintln!("one change: {:?}", t.elapsed());
     }
 
 }
