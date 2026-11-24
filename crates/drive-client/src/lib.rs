@@ -126,7 +126,16 @@ struct OpenDoc {
     save_pending: bool,
     /// The node has answered this document's join at least once.
     synced: bool,
+    /// How many [`Drive::hold`]s are on it, and how often the count has
+    /// fallen to none (a close waiting to happen checks it is still the
+    /// latest).
+    holders: u32,
+    released: u64,
 }
+
+/// How long a document nobody holds stays open: moving between views
+/// that show it should not leave and join it again.
+const LINGER_MS: u32 = 30_000;
 
 struct Inner {
     url: String,
@@ -316,6 +325,8 @@ impl Drive {
                 my_presence: None,
                 save_pending: false,
                 synced: false,
+                holders: 0,
+                released: 0,
             },
         );
         if self.status() == Status::Online {
@@ -324,8 +335,47 @@ impl Drive {
         doc
     }
 
-    /// Close a document (it stays saved here).
+    /// Say something shows `id` ([`Drive::open`] it first). Once every
+    /// hold is let go ([`Drive::let_go`]) and a while has passed, the
+    /// document closes; without holds it stays open, as before.
+    pub fn hold(&self, id: &str) {
+        if let Some(d) = lock(&self.0.docs).get_mut(id) {
+            d.holders += 1;
+        }
+    }
+
+    /// One [`Drive::hold`] of `id` is over.
+    pub fn let_go(&self, id: &str) {
+        self.let_go_after(id, LINGER_MS);
+    }
+
+    fn let_go_after(&self, id: &str, ms: u32) {
+        let stamp = {
+            let mut docs = lock(&self.0.docs);
+            let Some(d) = docs.get_mut(id) else { return };
+            d.holders = d.holders.saturating_sub(1);
+            if d.holders > 0 {
+                return;
+            }
+            d.released += 1;
+            d.released
+        };
+        let me = self.clone();
+        let id = id.to_string();
+        platform::after(ms, move || {
+            let idle = lock(&me.0.docs)
+                .get(&id)
+                .is_some_and(|d| d.holders == 0 && d.released == stamp);
+            if idle {
+                me.close(&id);
+            }
+        });
+    }
+
+    /// Close a document (it stays saved here: a save still waiting is
+    /// written first).
     pub fn close(&self, id: &str) {
+        self.save_local(id);
         let gone = lock(&self.0.docs).remove(id).is_some();
         if gone {
             self.send(&ToNode::Leave {
@@ -821,4 +871,43 @@ mod tests {
             "logged: {logged:?}"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_document_nobody_holds_closes_after_a_while_and_is_saved() {
+        let copies = copies();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (drive, _events) = Drive::connect(Some(format!("ws://127.0.0.1:{port}/sync")));
+        let open = |id: &str| lock(&drive.0.docs).contains_key(id);
+
+        let id = "home/test:held";
+        let doc = drive.open(id);
+        drive.hold(id);
+        drive.hold(id);
+        doc.get_map("song").insert("title", "Kept").unwrap();
+        drive.commit(id);
+        drive.let_go_after(id, 20);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(open(id), "still held once");
+
+        drive.let_go_after(id, 20);
+        // Held again before the linger ends: stays open.
+        drive.hold(id);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(open(id), "held again in time");
+
+        drive.let_go_after(id, 20);
+        let file = copies.join("docs").join(drive_native::file_name(id));
+        for _ in 0..50 {
+            if !open(id) && file.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("closed: {}, copy saved: {}", !open(id), file.exists());
+    }
+
 }
