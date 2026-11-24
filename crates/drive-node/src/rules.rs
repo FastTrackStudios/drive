@@ -81,9 +81,16 @@ pub async fn run_loop(rooms: Arc<Rooms>, data: PathBuf) {
             pass(&rooms, &org, &mut st).await;
         }
         st.guard.prune(drive_files::now_ms());
-        if let Ok(b) = serde_json::to_vec(&st) {
-            let _ = std::fs::write(&path, b);
-        }
+        save_state(&path, &st);
+    }
+}
+
+/// Keep the runner's state for the next start.
+fn save_state(path: &std::path::Path, st: &State) {
+    if let Ok(b) = serde_json::to_vec(st)
+        && let Err(e) = crate::write_atomic(path, &b)
+    {
+        tracing::warn!(error = %e, "the rules' state was not saved");
     }
 }
 
@@ -467,6 +474,29 @@ async fn undos(rooms: &Rooms, org: &str, st: &mut State) {
 mod tests {
     use super::*;
     use drive_rules::{Action, Condition, Dest, Group, Test, Text, TextOp, When};
+
+    #[test]
+    fn saving_the_state_replaces_the_file_whole() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules-state.json");
+        let mut st = State::default();
+        st.handled.insert("old".into(), 1);
+        save_state(&path, &st);
+        let before = std::fs::read(&path).unwrap();
+        // Someone reading the state (or a crash mid-write) must never see a
+        // truncated or half-written file: the new state replaces it whole.
+        let mut reader = std::fs::File::open(&path).unwrap();
+        st.handled.insert("new".into(), 2);
+        save_state(&path, &st);
+        let mut seen = Vec::new();
+        reader.read_to_end(&mut seen).unwrap();
+        assert_eq!(seen, before, "the old file was written over in place");
+        let now: State = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(now.handled.get("new"), Some(&2));
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file is left behind");
+    }
 
     async fn rooms(dir: &std::path::Path) -> Rooms {
         let store = crate::store::Store::open(&dir.join("drive.db"))
