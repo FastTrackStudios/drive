@@ -106,6 +106,15 @@ async fn copies_are_found_across_locations_and_a_removed_location_is_gone() {
     assert_eq!(at(db.copies("ha", None).await.unwrap()).len(), 3);
     assert!(db.copies("", None).await.unwrap().is_empty());
 
+    let held = db.locations_of(&["ha".into(), "hb".into(), "none".into()]).await.unwrap();
+    let mut ha = held["ha"].clone();
+    ha.sort();
+    assert_eq!(ha, ["backup", "backup", "loc"], "one per file holding it");
+    assert_eq!(held["hb"], ["loc"]);
+    assert!(!held.contains_key("none"));
+    assert_eq!(db.duplicates(1).await.unwrap(), [("ha".to_string(), 10, 2)]);
+    assert!(db.duplicates(11).await.unwrap().is_empty());
+
     db.remove("backup").await.unwrap();
     assert_eq!(at(db.copies("ha", None).await.unwrap()), ["loc:Album/A.wav"]);
     assert!(db.meta("backup").await.unwrap().is_none());

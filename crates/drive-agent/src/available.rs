@@ -20,55 +20,53 @@ impl Agent {
         let wished = self.rule_wishes().await;
         let mut put = 0;
         for loc in self.my_locations() {
-            let Some(index) = self.cached_index(&loc.id) else {
+            if self.index_db.meta(&loc.id).await.ok().flatten().is_none() {
                 continue;
-            };
+            }
             let have = projects::available(&self.space, &loc.id);
             let mut changed = false;
-            for e in index
-                .entries
-                .iter()
-                .filter(|e| !e.dir && !e.sampled.is_empty())
-            {
-                let name = e.path.rsplit('/').next().unwrap_or_default();
-                let wanted = projects::in_available_part(&all, &loc.id, &e.path)
-                    || kinds.of_file(name, false).keeps_available(e.size)
-                    || wished.contains(&(loc.id.clone(), e.path.clone()));
-                let rec = have.get(&e.path);
-                if !wanted {
-                    if rec.is_some() {
-                        let _ = projects::set_available(&self.space, &loc.id, &e.path, None);
-                        changed = true;
+            let mut pages = self.index_pages(&loc.id, "");
+            while let Some(page) = pages.next().await {
+                for e in page.iter().filter(|e| !e.dir && !e.sampled.is_empty()) {
+                    let name = e.path.rsplit('/').next().unwrap_or_default();
+                    let wanted = projects::in_available_part(&all, &loc.id, &e.path)
+                        || kinds.of_file(name, false).keeps_available(e.size)
+                        || wished.contains(&(loc.id.clone(), e.path.clone()));
+                    let rec = have.get(&e.path);
+                    if !wanted {
+                        if rec.is_some() {
+                            let _ = projects::set_available(&self.space, &loc.id, &e.path, None);
+                            changed = true;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                if rec.is_some_and(|r| r.size == e.size as i64 && r.mtime == e.mtime) {
-                    continue;
-                }
-                match self.answer_fetch(&loc.id, &e.path).await {
-                    Ok(hash) => {
-                        let a = Available {
-                            hash: hash.clone(),
-                            size: e.size as i64,
-                            mtime: e.mtime,
-                        };
-                        let _ = projects::set_available(&self.space, &loc.id, &e.path, Some(&a));
-                        let _ = space::set_held(&self.space, "node", &hash, Some("stored"));
-                        changed = true;
-                        put += 1;
+                    if rec.is_some_and(|r| r.size == e.size as i64 && r.mtime == e.mtime) {
+                        continue;
                     }
-                    Err(err) => {
-                        tracing::warn!(location.name = %loc.name, error = %err, "a file could not be made available")
+                    match self.answer_fetch(&loc.id, &e.path).await {
+                        Ok(hash) => {
+                            let a = Available {
+                                hash: hash.clone(),
+                                size: e.size as i64,
+                                mtime: e.mtime,
+                            };
+                            let _ = projects::set_available(&self.space, &loc.id, &e.path, Some(&a));
+                            let _ = space::set_held(&self.space, "node", &hash, Some("stored"));
+                            changed = true;
+                            put += 1;
+                        }
+                        Err(err) => {
+                            tracing::warn!(location.name = %loc.name, error = %err, "a file could not be made available")
+                        }
                     }
                 }
             }
             // Files gone from the location are no longer available from it.
-            for path in have
-                .keys()
-                .filter(|p| !index.entries.iter().any(|e| &e.path == *p))
-            {
-                let _ = projects::set_available(&self.space, &loc.id, path, None);
-                changed = true;
+            for path in have.keys() {
+                if self.index_entry(&loc.id, path).await.is_none() {
+                    let _ = projects::set_available(&self.space, &loc.id, path, None);
+                    changed = true;
+                }
             }
             if changed {
                 self.commit_space();

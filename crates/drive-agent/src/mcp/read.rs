@@ -489,21 +489,18 @@ pub async fn folder_summary(ctx: &Ctx, args: &Value) -> Result<Value, String> {
             .unwrap_or("")
             .trim_matches('/')
             .to_string();
-        let idx = ctx.index_of(&loc).await?;
-        let prefix = format!("{path}/");
-        let rows = idx
-            .entries
-            .iter()
-            .cloned()
-            .filter(|e| path.is_empty() || e.path.starts_with(&prefix))
-            .map(|e| Row {
+        ctx.has_index(&loc).await?;
+        let mut rows = Vec::new();
+        let mut pages = ctx.a.index_pages(&loc.id, &path);
+        while let Some(page) = pages.next().await {
+            rows.extend(page.into_iter().map(|e| Row {
                 path: e.path,
                 dir: e.dir,
                 size: e.size,
                 mtime: e.mtime,
                 content: e.sampled,
-            })
-            .collect();
+            }));
+        }
         (format!("{}:{path}", loc.name), rows)
     } else if let Some(dp) = args.get("drive_path").and_then(Value::as_str) {
         let dp = dp.trim_matches('/');
@@ -615,17 +612,21 @@ pub async fn duplicates(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         .collect();
     let names = ctx.device_names();
     let on = ctx.online();
+    // Found by the index database (grouped there), then each group's
+    // copies: no location is read whole.
+    ctx.sync_indexes().await;
     let mut groups: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
-    for (lid, idx) in ctx.indexes().await {
-        for e in idx.entries.iter().cloned() {
-            if e.dir || e.sampled.is_empty() || e.size < min {
-                continue;
-            }
-            groups
-                .entry((e.sampled, e.size))
-                .or_default()
-                .push((lid.clone(), e.path));
-        }
+    for (sampled, size, _) in ctx.a.index_db.duplicates(min).await.map_err(|e| e.to_string())? {
+        let copies = ctx
+            .a
+            .index_db
+            .copies(&sampled, Some(size))
+            .await
+            .map_err(|e| e.to_string())?;
+        groups.insert(
+            (sampled, size),
+            copies.into_iter().map(|(l, e)| (l, e.path)).collect(),
+        );
     }
     let in_scope = |lid: &str, path: &str| {
         scope.as_ref().is_none_or(|l| {

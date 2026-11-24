@@ -1277,26 +1277,31 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             let own = own.ok_or(format!("this device runs no storage {sname}"))?;
             let op = own.config.operator().map_err(|e| e.to_string())?;
             let base = format!("backups/{}", src.name);
-            let idx = a.cached_index(&src.id).ok_or("index the location first")?;
+            if a.index_db.meta(&src.id).await.ok().flatten().is_none() {
+                return Err("index the location first".into());
+            }
             let (mut sent, mut kept, mut bytes) = (0usize, 0usize, 0u64);
-            for e in idx.entries.iter().filter(|e| !e.dir) {
-                let key = format!("{base}/{}", e.path);
-                if op
-                    .stat(&key)
-                    .await
-                    .is_ok_and(|m| m.content_length() == e.size)
-                {
-                    kept += 1;
-                    continue;
+            let mut pages = a.index_pages(&src.id, "");
+            while let Some(page) = pages.next().await {
+                for e in page.iter().filter(|e| !e.dir) {
+                    let key = format!("{base}/{}", e.path);
+                    if op
+                        .stat(&key)
+                        .await
+                        .is_ok_and(|m| m.content_length() == e.size)
+                    {
+                        kept += 1;
+                        continue;
+                    }
+                    let from = places::confined(Path::new(&src.path), &e.path, &a.dir)
+                        .ok_or("a bad path")?;
+                    let data = tokio::fs::read(&from)
+                        .await
+                        .map_err(|x| format!("{}: {x}", e.path))?;
+                    bytes += data.len() as u64;
+                    op.write(&key, data).await.map_err(|x| x.to_string())?;
+                    sent += 1;
                 }
-                let from = places::confined(Path::new(&src.path), &e.path, &a.dir)
-                    .ok_or("a bad path")?;
-                let data = tokio::fs::read(&from)
-                    .await
-                    .map_err(|x| format!("{}: {x}", e.path))?;
-                bytes += data.len() as u64;
-                op.write(&key, data).await.map_err(|x| x.to_string())?;
-                sent += 1;
             }
             // The copy is a location too: indexed, so it counts as a copy.
             let existing = space::locations(&a.space)
