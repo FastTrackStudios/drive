@@ -1054,9 +1054,9 @@ async fn fetching_a_blob_leaves_an_apps_partial_alone() {
     let src = d.disk.path().join("take.wav");
     std::fs::write(&src, pattern(4096, 9)).unwrap();
     let e = d.a.put(&src, None, "take.wav").await.unwrap();
-    std::fs::remove_file(d.a.cache_path(&e.hash)).unwrap();
+    std::fs::remove_file(d.a.cache_path(&e.hash).unwrap()).unwrap();
     // An app's resumable fetch of the same blob is half done.
-    let part = d.a.cache_path(&e.hash).with_extension("part");
+    let part = d.a.cache_path(&e.hash).unwrap().with_extension("part");
     std::fs::write(&part, b"half").unwrap();
     let got = d.a.fetch(&e.hash).await.unwrap();
     assert_eq!(std::fs::read(got).unwrap(), pattern(4096, 9));
