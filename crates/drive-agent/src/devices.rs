@@ -195,8 +195,10 @@ impl DevicesFs {
                 let Some(lname) = parts.next() else {
                     return Ok(Node::Locations(dev));
                 };
-                let v = self.view.read().expect("view");
-                let loc = v
+                let loc = self
+                    .view
+                    .read()
+                    .expect("view")
                     .locations
                     .iter()
                     .find(|l| l.device == dev && l.name == lname)
@@ -205,11 +207,9 @@ impl DevicesFs {
                 let Some(rel) = parts.next() else {
                     return Ok(Node::Location(loc));
                 };
-                let e = v
-                    .trees
-                    .get(&loc.id)
-                    .and_then(|t| t.get(rel))
-                    .cloned()
+                let e = self
+                    .rt
+                    .block_on(self.agent.index_entry(&loc.id, rel))
                     .ok_or(Errno::ENOENT)?;
                 Ok(Node::Entry(loc, e))
             }
@@ -246,16 +246,11 @@ impl DevicesFs {
 
     fn children(&self, node: &Node) -> Result<Vec<(String, bool)>, Errno> {
         let tree_list = |loc: &Location, at: &str| {
-            let v = self.view.read().expect("view");
-            v.trees
-                .get(&loc.id)
-                .map(|t| {
-                    t.list(at)
-                        .into_iter()
-                        .map(|e| (e.name().to_string(), e.dir))
-                        .collect()
-                })
-                .unwrap_or_default()
+            self.rt
+                .block_on(self.agent.index_list(&loc.id, at))
+                .iter()
+                .map(|e| (e.name().to_string(), e.dir))
+                .collect()
         };
         Ok(match node {
             Node::Root => {
@@ -642,19 +637,18 @@ impl DevicesFs {
                 Ok(self.state(loc, e).as_bytes().to_vec())
             }
             (Node::Entry(_, e), "user.drive.copies") if !e.dir => {
-                let v = self.view.read().expect("view");
-                let list: Vec<String> = v
-                    .copies
-                    .get(&(e.sampled.clone(), e.size))
-                    .map(|c| {
-                        c.iter()
-                            .filter_map(|(lid, p)| {
-                                let l = v.locations.iter().find(|l| &l.id == lid)?;
-                                Some(format!("{}/{}/{p}", v.device_name(&l.device), l.name))
-                            })
-                            .collect()
-                    })
+                let copies = self
+                    .rt
+                    .block_on(self.agent.index_db.copies(&e.sampled, Some(e.size)))
                     .unwrap_or_default();
+                let v = self.view.read().expect("view");
+                let list: Vec<String> = copies
+                    .iter()
+                    .filter_map(|(lid, c)| {
+                        let l = v.locations.iter().find(|l| &l.id == lid)?;
+                        Some(format!("{}/{}/{}", v.device_name(&l.device), l.name, c.path))
+                    })
+                    .collect();
                 Ok(list.join("\n").into_bytes())
             }
             (Node::DiskEntry { device, entry, .. }, "user.drive.state") if !entry.dir => {
