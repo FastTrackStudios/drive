@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The containing app (Developer ID, not sandboxed: it registers the
+         domain and later runs the agent). In the app group so its tools can
+         reach the agent the same way the extension does. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>28C2G63DA7.app.fasttrackstudio.drive</string>
+    </array>
+</dict>
+</plist>

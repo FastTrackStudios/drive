@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Drive</string>
+    <key>CFBundleExecutable</key>
+    <string>DriveFileProvider</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.fasttrackstudio.drive.fileprovider</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>DriveFileProvider</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionFileProviderDocumentGroup</key>
+        <string>28C2G63DA7.app.fasttrackstudio.drive</string>
+        <!-- The replicated (macOS 11+) API: the system keeps the copies and
+             asks for bytes, so a file lists without being held here. -->
+        <key>NSExtensionFileProviderSupportsEnumeration</key>
+        <true/>
+        <!-- On by default: a registered domain the user has not enabled
+             fails every call with "Sync is not enabled" (-2011), which shows
+             as a listing that never finishes rather than as anything to
+             switch on (Task found this). -->
+        <key>NSExtensionFileProviderEnabledByDefault</key>
+        <true/>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.fileprovider-nonui</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>FileProviderExtension</string>
+    </dict>
+</dict>
+</plist>
