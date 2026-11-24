@@ -54,8 +54,10 @@ pub(crate) async fn load_doc(id: &str) -> Option<Vec<u8>> {
     idb::load(id).await
 }
 
-pub(crate) async fn save_doc(id: &str, bytes: &[u8]) {
-    idb::save(id, bytes).await;
+/// Save a document's copy soon (IndexedDB keeps the saves in order).
+pub(crate) fn save_doc(id: &str, bytes: Vec<u8>) {
+    let id = id.to_string();
+    spawn(async move { idb::save(&id, &bytes).await });
 }
 
 /// Copies kept in `localStorage` before IndexedDB: dropped (they were
