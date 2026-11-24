@@ -168,6 +168,116 @@
             meta.mainProgram = "drive";
           };
           drive-node = bin "drive-node" "" { };
+        }
+        // lib.optionalAttrs isLinux {
+          # The desktop app (apps/drive, feature `desktop`): Drive in the
+          # system tray, its window a click away. Its own source and lockfile
+          # (the whole workspace, app-shell included: public since
+          # 2026-11-24), so the agent's and the node's store paths do not
+          # move with it. macOS gets Drive.app from the release instead (it
+          # bundles the File Provider extension, built with Swift).
+          drive-desktop =
+            let
+              desktopSrc = lib.fileset.toSource {
+                root = ./.;
+                fileset = lib.fileset.unions [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                  ./rust-toolchain.toml
+                  ./crates
+                  ./assets
+                  ./apps/drive
+                ];
+              };
+              runtimeLibs = [
+                pkgs.wayland
+                pkgs.libxkbcommon
+                pkgs.vulkan-loader
+                pkgs.libGL
+                pkgs.fontconfig
+                pkgs.freetype
+              ];
+              args = {
+                src = desktopSrc;
+                pname = "drive-desktop";
+                version = common.version;
+                strictDeps = true;
+                cargoVendorDir = craneLib.vendorCargoDeps {
+                  cargoLock = ./Cargo.lock;
+                  overrideVendorGitCheckout =
+                    _: drv:
+                    drv.overrideAttrs (old: {
+                      nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.python3 ];
+                      postPatch = ''
+                        find . -name Cargo.toml.orig -delete
+                        python3 ${./nix/inline-repo-includes.py}
+                      '';
+                    });
+                };
+                cargoExtraArgs = "--locked -p drive-app --features desktop";
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  pkgs.perl
+                  pkgs.makeWrapper
+                  pkgs.wrapGAppsHook3
+                  pkgs.imagemagick
+                  # stylo's build script (Blitz's style engine).
+                  pkgs.python3
+                ];
+                buildInputs = [
+                  pkgs.gtk3
+                  pkgs.webkitgtk_4_1
+                  pkgs.libsoup_3
+                  pkgs.glib
+                  pkgs.openssl
+                  pkgs.fuse3
+                ]
+                ++ runtimeLibs;
+                doCheck = false;
+              };
+              deps = craneLib.buildDepsOnly args;
+            in
+            craneLib.buildPackage (
+              args
+              // {
+                cargoArtifacts = deps;
+                dontWrapGApps = true;
+                postInstall = ''
+                  mv $out/bin/drive-app $out/bin/drive-desktop
+                  # asset!() keeps the build's absolute source path (no dx
+                  # here): the native resolver looks it up again under
+                  # lib/<product>/ beside the binary, so the assets go there
+                  # at that path. assets/ marks the folder for the resolver.
+                  root=$out/lib/drive-desktop
+                  mkdir -p "$root/assets" "$root$PWD/apps/drive"
+                  cp -r apps/drive/assets "$root$PWD/apps/drive/"
+                  cp -r apps/drive/assets/. "$root/assets/"
+                  install -Dm444 /dev/stdin $out/share/applications/app.fasttrackstudio.drive.desktop <<DESKTOP
+                  [Desktop Entry]
+                  Type=Application
+                  Name=Drive
+                  Comment=Your files on every computer
+                  Exec=drive-desktop
+                  Icon=app.fasttrackstudio.drive
+                  Categories=Utility;FileTools;
+                  StartupWMClass=app.fasttrackstudio.drive
+                  DESKTOP
+                  sed -i 's/^[[:space:]]*//' $out/share/applications/app.fasttrackstudio.drive.desktop
+                  for n in 32 64 128 256; do
+                    mkdir -p $out/share/icons/hicolor/''${n}x''${n}/apps
+                    magick apps/drive/assets/icons/Drive.webp -resize ''${n}x''${n} \
+                      $out/share/icons/hicolor/''${n}x''${n}/apps/app.fasttrackstudio.drive.png
+                  done
+                '';
+                postFixup = ''
+                  wrapProgram $out/bin/drive-desktop \
+                    "''${gappsWrapperArgs[@]}" \
+                    --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
+                '';
+                meta.mainProgram = "drive-desktop";
+              }
+            );
         };
     in
     {
