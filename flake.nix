@@ -168,14 +168,19 @@
             meta.mainProgram = "drive";
           };
           drive-node = bin "drive-node" "" { };
+          # dx matching the dioxus crate: builds the desktop app.
+          dx = pkgs.callPackage ./nix/dx.nix { };
         }
         // lib.optionalAttrs isLinux {
           # The desktop app (apps/drive, feature `desktop`): Drive in the
-          # system tray, its window a click away. Its own source and lockfile
+          # system tray, its window a click away, built by dx (`dx build
+          # --platform linux --renderer native`): dx fills in the asset!()
+          # table the binary looks its CSS and icons up in, which a plain
+          # cargo build leaves as placeholders. Its own source and lockfile
           # (the whole workspace, app-shell included: public since
           # 2026-11-24), so the agent's and the node's store paths do not
-          # move with it. macOS gets Drive.app from the release instead (it
-          # bundles the File Provider extension, built with Swift).
+          # move with it. macOS gets Drive.app from the release instead
+          # (macos/bundle-app.sh: dx bundle plus the File Provider extension).
           drive-desktop =
             let
               desktopSrc = lib.fileset.toSource {
@@ -214,14 +219,13 @@
                       '';
                     });
                 };
-                cargoExtraArgs = "--locked -p drive-app --features desktop";
+                cargoExtraArgs = "--locked -p drive-app --no-default-features --features desktop";
                 nativeBuildInputs = [
                   pkgs.pkg-config
                   pkgs.cmake
                   pkgs.perl
                   pkgs.makeWrapper
                   pkgs.wrapGAppsHook3
-                  pkgs.imagemagick
                   # stylo's build script (Blitz's style engine).
                   pkgs.python3
                 ];
@@ -236,23 +240,27 @@
                 ++ runtimeLibs;
                 doCheck = false;
               };
-              deps = craneLib.buildDepsOnly args;
+              dx = pkgs.callPackage ./nix/dx.nix { };
             in
-            craneLib.buildPackage (
+            craneLib.mkCargoDerivation (
               args
               // {
-                cargoArtifacts = deps;
+                cargoArtifacts = craneLib.buildDepsOnly args;
+                nativeBuildInputs = args.nativeBuildInputs ++ [ dx ];
                 dontWrapGApps = true;
-                postInstall = ''
-                  mv $out/bin/drive-app $out/bin/drive-desktop
-                  # asset!() keeps the build's absolute source path (no dx
-                  # here): the native resolver looks it up again under
-                  # lib/<product>/ beside the binary, so the assets go there
-                  # at that path. assets/ marks the folder for the resolver.
-                  root=$out/lib/drive-desktop
-                  mkdir -p "$root/assets" "$root$PWD/apps/drive"
-                  cp -r apps/drive/assets "$root$PWD/apps/drive/"
-                  cp -r apps/drive/assets/. "$root/assets/"
+                # dx keeps its own state under HOME.
+                buildPhaseCargoCommand = ''
+                  export HOME=$(mktemp -d)
+                  (cd apps/drive && dx build --release --locked --platform linux --renderer native \
+                    --no-default-features --features desktop)
+                '';
+                # dx's app folder: the program and assets/ beside it, where
+                # the resolver looks (the program's own folder).
+                installPhaseCommand = ''
+                  app=target/dx/drive-app/release/linux/app
+                  test -x $app/drive-app
+                  mkdir -p $out/lib
+                  cp -r $app $out/lib/drive-desktop
                   install -Dm444 /dev/stdin $out/share/applications/app.fasttrackstudio.drive.desktop <<DESKTOP
                   [Desktop Entry]
                   Type=Application
@@ -264,14 +272,14 @@
                   StartupWMClass=app.fasttrackstudio.drive
                   DESKTOP
                   sed -i 's/^[[:space:]]*//' $out/share/applications/app.fasttrackstudio.drive.desktop
-                  for n in 32 64 128 256; do
-                    mkdir -p $out/share/icons/hicolor/''${n}x''${n}/apps
-                    magick apps/drive/assets/icons/Drive.webp -resize ''${n}x''${n} \
+                  for n in 32 128 256 512; do
+                    install -Dm444 apps/drive/icons/''${n}x''${n}.png \
                       $out/share/icons/hicolor/''${n}x''${n}/apps/app.fasttrackstudio.drive.png
                   done
                 '';
+                # gappsWrapperArgs is filled in at fixup: wrap after it.
                 postFixup = ''
-                  wrapProgram $out/bin/drive-desktop \
+                  makeWrapper $out/lib/drive-desktop/drive-app $out/bin/drive-desktop \
                     "''${gappsWrapperArgs[@]}" \
                     --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
                 '';
