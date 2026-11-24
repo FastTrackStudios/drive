@@ -16,6 +16,17 @@ use super::*;
 use crate::agent::{Agent, Config};
 
 #[test]
+fn port_tokens_are_full_length_and_unpredictable() {
+    // Same process, same thread, same millisecond: still different tokens.
+    let (a, b) = (new_token().unwrap(), new_token().unwrap());
+    assert_ne!(a, b);
+    for t in [&a, &b] {
+        assert_eq!(t.len(), 64);
+        assert!(t.bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
+#[test]
 fn large_app_cache_budgets_do_not_wrap() {
     let budget = Settings {
         budget_gib: Some(1 << 34),

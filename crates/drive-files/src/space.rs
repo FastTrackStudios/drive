@@ -84,17 +84,9 @@ pub fn new_id() -> String {
 }
 
 fn getrandom_fill(buf: &mut [u8]) {
-    // BLAKE3 of the time and a counter: unique enough for ids here.
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let seed = format!(
-        "{}{}{:p}",
-        crate::entropy(),
-        N.fetch_add(1, Ordering::Relaxed),
-        buf
-    );
-    let h = blake3::hash(seed.as_bytes());
-    buf.copy_from_slice(&h.as_bytes()[..buf.len()]);
+    // The OS CSPRNG (the browser's crypto.getRandomValues on the web): ids
+    // and pairing codes must not be guessable.
+    getrandom::fill(buf).expect("the OS random source is available");
 }
 
 // ── devices ─────────────────────────────────────────────────────────────
@@ -698,6 +690,18 @@ mod tests {
             approved_by: String::new(),
             added: crate::now_ms(),
         }
+    }
+
+    #[test]
+    fn pairing_codes_and_ids_are_random() {
+        let d = LoroDoc::new();
+        let codes: std::collections::HashSet<String> =
+            (0..64).map(|_| invite(&d, "first").unwrap()).collect();
+        // 30 bits each: 64 draws colliding would mean a broken source.
+        assert_eq!(codes.len(), 64);
+        let ids: std::collections::HashSet<String> = (0..64).map(|_| new_id()).collect();
+        assert_eq!(ids.len(), 64);
+        assert!(ids.iter().all(|i| i.len() == 16));
     }
 
     #[test]

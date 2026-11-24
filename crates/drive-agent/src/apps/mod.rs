@@ -258,17 +258,7 @@ pub async fn bind_port(dir: &Path, port: u16) -> Result<(tokio::net::TcpListener
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     bind_loopback(addr).await.and_then(|l| {
         let port = l.local_addr().map_err(|e| e.to_string())?.port();
-        let token = blake3::hash(
-            format!(
-                "{}-{}-{:?}",
-                std::process::id(),
-                now_ms(),
-                std::thread::current().id()
-            )
-            .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
+        let token = new_token()?;
         let file = dir.join(drive_local::PORT_FILE);
         std::fs::write(
             &file,
@@ -286,6 +276,14 @@ pub async fn bind_port(dir: &Path, port: u16) -> Result<(tokio::net::TcpListener
         }
         Ok((l, token))
     })
+}
+
+/// A fresh `app.port` token: 32 bytes from the OS CSPRNG, as hex. TCP has
+/// no peer-user check, so this is all that keeps another local user out.
+fn new_token() -> Result<String, String> {
+    let mut b = [0u8; 32];
+    getrandom::fill(&mut b).map_err(|e| format!("random token: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// Only loopback addresses are ever bound.

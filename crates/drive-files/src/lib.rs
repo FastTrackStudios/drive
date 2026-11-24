@@ -62,18 +62,3 @@ pub fn now_ms() -> i64 {
     }
 }
 
-/// Some randomness for ids (the browser's on the web).
-pub(crate) fn entropy() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        (js_sys::Math::random() * u64::MAX as f64) as u64
-            ^ (js_sys::Math::random() * 4_294_967_296.0) as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-    }
-}

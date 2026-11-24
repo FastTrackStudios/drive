@@ -20,6 +20,7 @@ opendal = { version = "0.59", default-features = false }
 drive-spine.workspace = true
 drive-rules.workspace = true
 blake3 = "1"
+getrandom = "0.3"
 loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true
