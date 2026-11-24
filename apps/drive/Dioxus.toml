@@ -8,3 +8,19 @@ title = "Drive"
 # download (served compressed by the node).
 [web.wasm_opt]
 level = "z"
+
+# The desktop app's bundle (`dx bundle`, feature `desktop`): Drive.app on
+# macOS (macos/bundle-app.sh adds the File Provider extension and signs it),
+# the Nix package on Linux (flake.nix, drive-desktop). The icons are
+# assets/icons/Drive.webp, resized (it is 128 px; the larger ones are
+# scaled up).
+[bundle]
+identifier = "app.fasttrackstudio.drive"
+publisher = "FastTrackStudio"
+category = "Utility"
+short_description = "Your files on every computer"
+icon = ["icons/32x32.png", "icons/128x128.png", "icons/256x256.png", "icons/512x512.png"]
+
+[bundle.macos]
+bundle_name = "Drive"
+minimum_system_version = "12.0"

@@ -168,6 +168,124 @@
             meta.mainProgram = "drive";
           };
           drive-node = bin "drive-node" "" { };
+          # dx matching the dioxus crate: builds the desktop app.
+          dx = pkgs.callPackage ./nix/dx.nix { };
+        }
+        // lib.optionalAttrs isLinux {
+          # The desktop app (apps/drive, feature `desktop`): Drive in the
+          # system tray, its window a click away, built by dx (`dx build
+          # --platform linux --renderer native`): dx fills in the asset!()
+          # table the binary looks its CSS and icons up in, which a plain
+          # cargo build leaves as placeholders. Its own source and lockfile
+          # (the whole workspace, app-shell included: public since
+          # 2026-11-24), so the agent's and the node's store paths do not
+          # move with it. macOS gets Drive.app from the release instead
+          # (macos/bundle-app.sh: dx bundle plus the File Provider extension).
+          drive-desktop =
+            let
+              desktopSrc = lib.fileset.toSource {
+                root = ./.;
+                fileset = lib.fileset.unions [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                  ./rust-toolchain.toml
+                  ./crates
+                  ./assets
+                  ./apps/drive
+                ];
+              };
+              runtimeLibs = [
+                pkgs.wayland
+                pkgs.libxkbcommon
+                pkgs.vulkan-loader
+                pkgs.libGL
+                pkgs.fontconfig
+                pkgs.freetype
+              ];
+              args = {
+                src = desktopSrc;
+                pname = "drive-desktop";
+                version = common.version;
+                strictDeps = true;
+                cargoVendorDir = craneLib.vendorCargoDeps {
+                  cargoLock = ./Cargo.lock;
+                  overrideVendorGitCheckout =
+                    _: drv:
+                    drv.overrideAttrs (old: {
+                      nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.python3 ];
+                      postPatch = ''
+                        find . -name Cargo.toml.orig -delete
+                        python3 ${./nix/inline-repo-includes.py}
+                      '';
+                    });
+                };
+                cargoExtraArgs = "--locked -p drive-app --no-default-features --features desktop";
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  pkgs.perl
+                  pkgs.makeWrapper
+                  pkgs.wrapGAppsHook3
+                  # stylo's build script (Blitz's style engine).
+                  pkgs.python3
+                ];
+                buildInputs = [
+                  pkgs.gtk3
+                  pkgs.webkitgtk_4_1
+                  pkgs.libsoup_3
+                  pkgs.glib
+                  pkgs.openssl
+                  pkgs.fuse3
+                ]
+                ++ runtimeLibs;
+                doCheck = false;
+              };
+              dx = pkgs.callPackage ./nix/dx.nix { };
+            in
+            craneLib.mkCargoDerivation (
+              args
+              // {
+                cargoArtifacts = craneLib.buildDepsOnly args;
+                nativeBuildInputs = args.nativeBuildInputs ++ [ dx ];
+                dontWrapGApps = true;
+                # dx keeps its own state under HOME.
+                buildPhaseCargoCommand = ''
+                  export HOME=$(mktemp -d)
+                  (cd apps/drive && dx build --release --locked --platform linux --renderer native \
+                    --no-default-features --features desktop)
+                '';
+                # dx's app folder: the program and assets/ beside it, where
+                # the resolver looks (the program's own folder).
+                installPhaseCommand = ''
+                  app=target/dx/drive-app/release/linux/app
+                  test -x $app/drive-app
+                  mkdir -p $out/lib
+                  cp -r $app $out/lib/drive-desktop
+                  install -Dm444 /dev/stdin $out/share/applications/app.fasttrackstudio.drive.desktop <<DESKTOP
+                  [Desktop Entry]
+                  Type=Application
+                  Name=Drive
+                  Comment=Your files on every computer
+                  Exec=drive-desktop
+                  Icon=app.fasttrackstudio.drive
+                  Categories=Utility;FileTools;
+                  StartupWMClass=app.fasttrackstudio.drive
+                  DESKTOP
+                  sed -i 's/^[[:space:]]*//' $out/share/applications/app.fasttrackstudio.drive.desktop
+                  for n in 32 128 256 512; do
+                    install -Dm444 apps/drive/icons/''${n}x''${n}.png \
+                      $out/share/icons/hicolor/''${n}x''${n}/apps/app.fasttrackstudio.drive.png
+                  done
+                '';
+                # gappsWrapperArgs is filled in at fixup: wrap after it.
+                postFixup = ''
+                  makeWrapper $out/lib/drive-desktop/drive-app $out/bin/drive-desktop \
+                    "''${gappsWrapperArgs[@]}" \
+                    --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath runtimeLibs}
+                '';
+                meta.mainProgram = "drive-desktop";
+              }
+            );
         };
     in
     {
