@@ -565,7 +565,6 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
     let files = use_doc(files_doc(&space));
     let reg = use_doc(space_doc(&space));
     let spine_doc = use_doc(spine::SPINE);
-    let mut status = use_signal(String::new);
     let mut new_folder = use_signal(String::new);
     let f = files.loro();
     let r = reg.loro();
@@ -619,15 +618,14 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
             crate::mobile::upload_files(files.clone(), reg.clone(), cur, e.files(), uploads)
         }
     };
+    // Read from the uploads, not kept in a signal written while rendering
+    // (which re-renders the folder in a loop, drive#64).
     let up_state = (uploads.0)();
-    if up_state.busy() {
-        let line = format!("Uploading {}…", up_state.current);
-        if status() != line {
-            status.set(line);
-        }
-    } else if !up_state.said.is_empty() && status() != up_state.said {
-        status.set(up_state.said.clone());
-    }
+    let status = if up_state.busy() {
+        format!("Uploading {}…", up_state.current)
+    } else {
+        up_state.said.clone()
+    };
     rsx! {
         div { class: "viewhead",
             div { class: "actions",
@@ -655,7 +653,7 @@ fn DriveFolder(space: String, folder: Option<String>) -> Element {
                 }
             }
         }
-        if !status().is_empty() {
+        if !status.is_empty() {
             p { class: "status", "{status}" }
         }
         Items {
@@ -1487,7 +1485,9 @@ pub fn Preview(space: String) -> Element {
 fn ShareLink(hash: String, name: String) -> Element {
     let origin = crate::host::origin();
     let url = format!("{origin}/blobs/{hash}?name={}", enc(&name));
-    let mut copied = use_signal(|| false);
+    // The link copied, not just "something was": the same panel showing
+    // another file's link says "Copy link" again (drive#64).
+    let mut copied = use_signal(|| None::<String>);
     let u = url.clone();
     rsx! {
         div { class: "share",
@@ -1496,9 +1496,9 @@ fn ShareLink(hash: String, name: String) -> Element {
                 class: "primary ghost",
                 onclick: move |_| {
                     crate::host::copy_text(&u);
-                    copied.set(true);
+                    copied.set(Some(u.clone()));
                 },
-                if copied() { "Copied" } else { "Copy link" }
+                if copied().as_deref() == Some(url.as_str()) { "Copied" } else { "Copy link" }
             }
         }
     }
