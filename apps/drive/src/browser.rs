@@ -1657,14 +1657,18 @@ fn ItemComments(item: Item, download: Option<String>) -> Element {
         item.kind.parent.clone()
     };
     let media = matches!(family.as_str(), "audio" | "video") && download.is_some();
-    let player = media.then(|| "drive-review-player".to_string());
+    // Its own element id: several open tabs (or the phone sheet beside a
+    // hidden pane) each have a player, and the comments must pin to and
+    // seek the one beside them (drive#64).
+    let player_id = use_hook(review_player_id);
+    let player = media.then(|| player_id.clone());
     rsx! {
         section { class: "isec",
             if media {
                 if family == "video" {
-                    video { id: "drive-review-player", class: "iplayer", controls: true, preload: "none", src: download.clone().unwrap_or_default() }
+                    video { id: "{player_id}", class: "iplayer", controls: true, preload: "none", src: download.clone().unwrap_or_default() }
                 } else {
-                    audio { id: "drive-review-player", class: "iplayer", controls: true, preload: "none", src: download.clone().unwrap_or_default() }
+                    audio { id: "{player_id}", class: "iplayer", controls: true, preload: "none", src: download.clone().unwrap_or_default() }
                 }
             }
             drive_dioxus::comments::CommentsPanel { key: "{item.key()}", target, version, player }
@@ -1672,9 +1676,21 @@ fn ItemComments(item: Item, download: Option<String>) -> Element {
     }
 }
 
+/// A player element id no other mounted player has.
+fn review_player_id() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("drive-review-player-{n}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::safe_href;
+    use super::{review_player_id, safe_href};
+
+    #[test]
+    fn each_review_player_gets_its_own_id() {
+        assert_ne!(review_player_id(), review_player_id());
+    }
 
     #[test]
     fn safe_href_keeps_web_and_local_links_only() {
