@@ -261,8 +261,27 @@ pub fn encode(index: &LocationIndex) -> Vec<u8> {
     zstd::encode_all(raw.as_slice(), 9).expect("zstd compresses in memory")
 }
 
+/// The most an index may unpack to. A few hundred bytes an entry, so this
+/// is millions of files; a few kilobytes of zstd can claim far more, and a
+/// node unpacks what agents upload (drive#63).
+pub const MAX_UNPACKED: u64 = 2 << 30;
+
 pub fn decode(bytes: &[u8]) -> Option<LocationIndex> {
-    let raw = zstd::decode_all(bytes).ok()?;
+    decode_within(bytes, MAX_UNPACKED)
+}
+
+/// [`decode`], refusing anything that unpacks to more than `max` bytes.
+pub fn decode_within(bytes: &[u8], max: u64) -> Option<LocationIndex> {
+    use std::io::Read;
+    let mut raw = Vec::new();
+    zstd::stream::Decoder::new(bytes)
+        .ok()?
+        .take(max.saturating_add(1))
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > max {
+        return None;
+    }
     postcard::from_bytes(&raw).ok()
 }
 
@@ -386,4 +405,15 @@ mod tests {
         assert_eq!(idx.entries[2].size, 0);
         assert_eq!(idx.entries[2].sampled, disk.entries[2].sampled);
     }
+
+    #[test]
+    fn decode_refuses_an_index_that_unpacks_past_its_bound() {
+        // A few kilobytes of zstd that unpack to 8 MiB of zeros, which
+        // postcard would read as an empty index.
+        let bomb = zstd::encode_all(vec![0u8; 8 << 20].as_slice(), 3).unwrap();
+        assert!(bomb.len() < 4096);
+        assert!(decode_within(&bomb, 1 << 20).is_none());
+        assert!(decode_within(&bomb, 16 << 20).is_some());
+    }
+
 }
