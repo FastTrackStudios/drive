@@ -118,21 +118,36 @@ impl Rooms {
         if p.member_of(org) {
             return true;
         }
-        let registry = drive_files::space_doc(org);
-        let shared: Vec<drive_files::projects::Project> = self
-            .read(&registry, drive_files::projects::projects)
-            .await
-            .into_iter()
+        let projects = self
+            .read(
+                &drive_files::space_doc(org),
+                drive_files::projects::projects,
+            )
+            .await;
+        Self::lent(p, org, id, &projects)
+    }
+
+    /// Whether `org`'s `projects` (its registry's) let someone outside it
+    /// see `id`: its registry, when a project is shared with one of their
+    /// orgs, and that project's documents.
+    fn lent(
+        p: &crate::auth::Principal,
+        org: &str,
+        id: &str,
+        projects: &[drive_files::projects::Project],
+    ) -> bool {
+        let mut shared = projects
+            .iter()
             .filter(|pr| pr.shared_with.iter().any(|o| p.member_of(o)))
-            .collect();
-        if shared.is_empty() {
+            .peekable();
+        if shared.peek().is_none() {
             return false;
         }
-        if id == registry {
+        if id == drive_files::space_doc(org) {
             return true;
         }
         let rest = drive_proto::unqualify(org, id);
-        shared.iter().any(|pr| pr.docs.iter().any(|d| d == rest))
+        shared.any(|pr| pr.docs.iter().any(|d| d == rest))
     }
 
     /// Whether someone may change a document: as [`Rooms::may`], except an
@@ -270,6 +285,27 @@ impl Rooms {
         }
         let room = self.ensure(&mut rooms, id).await;
         f(&room.doc)
+    }
+
+    /// Read a document without opening a room for it: its room if it has
+    /// one open, else its stored snapshot (empty when there is none).
+    async fn inspect<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
+        if let Some(room) = self.rooms.lock().await.get(id) {
+            return f(&room.doc);
+        }
+        let doc = LoroDoc::new();
+        match self.store.load(id).await {
+            Ok(Some(snapshot)) => {
+                if let Err(e) = doc.import(&snapshot) {
+                    tracing::warn!(doc.id = %id, error = %e, "a stored snapshot did not import");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(doc.id = %id, error = %e, "the store could not load a document")
+            }
+        }
+        f(&doc)
     }
 
     /// Which devices have an agent connected in `space`.
@@ -640,9 +676,30 @@ impl Rooms {
                     }
                 }
                 if !who.all {
+                    // Another org's registry is read once per listing, and
+                    // without opening its room (a listing runs every few
+                    // seconds per open view).
+                    let mut registries: HashMap<String, Vec<drive_files::projects::Project>> =
+                        HashMap::new();
                     let mut kept = Vec::new();
                     for d in docs {
-                        if self.may(who, &d.id).await {
+                        let Some(org) = drive_proto::org_of(&d.id).map(str::to_string) else {
+                            continue;
+                        };
+                        if who.member_of(&org) {
+                            kept.push(d);
+                            continue;
+                        }
+                        if !registries.contains_key(&org) {
+                            let projects = self
+                                .inspect(
+                                    &drive_files::space_doc(&org),
+                                    drive_files::projects::projects,
+                                )
+                                .await;
+                            registries.insert(org.clone(), projects);
+                        }
+                        if Self::lent(who, &org, &d.id, &registries[&org]) {
                             kept.push(d);
                         }
                     }
