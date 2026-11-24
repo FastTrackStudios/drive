@@ -63,6 +63,17 @@ pub enum Found {
         location: String,
         real: String,
     },
+    /// Inside a working copy: the Drive's own file (or folder), also kept
+    /// as a plain file on one device's disk.
+    Working {
+        path: String,
+        device: String,
+        location: String,
+        /// Its real path on that device.
+        real: String,
+        /// For a file: its size, hash and who holds its bytes.
+        file: Option<(u64, String, Vec<Holder>)>,
+    },
     /// A folder of the Drive tree.
     TreeFolder { path: String },
     /// A file of the Drive tree.
@@ -106,7 +117,32 @@ pub fn locate(c: &Copies, path: &str) -> Found {
             real,
         };
     }
-    match tree::resolve(&c.files, &path) {
+    let resolved = tree::resolve(&c.files, &path);
+    if let Some(Some(e)) = &resolved
+        && let Some((w, rel)) = working_copy_of(c, e.id)
+    {
+        let loc = space::locations(&c.space)
+            .into_iter()
+            .find(|l| l.id == w.location);
+        let (device, location, root) = match loc {
+            Some(l) => (device_name(&c.space, &w.device), l.name, l.path),
+            None => (
+                device_name(&c.space, &w.device),
+                w.location.clone(),
+                String::new(),
+            ),
+        };
+        let real = join_disk(&join_disk(&root, &w.sub), &rel);
+        let file = (!e.dir).then(|| (e.size, e.hash.clone(), holders(&c.space, &e.hash)));
+        return Found::Working {
+            path,
+            device,
+            location,
+            real,
+            file,
+        };
+    }
+    match resolved {
         Some(None) => Found::TreeFolder { path },
         Some(Some(e)) if e.dir => Found::TreeFolder { path },
         Some(Some(e)) => {
@@ -120,6 +156,30 @@ pub fn locate(c: &Copies, path: &str) -> Found {
         }
         None => Found::Missing { path },
     }
+}
+
+/// The working copy a tree entry is in (itself or a folder above it), and
+/// its path under the working copy's root.
+fn working_copy_of(
+    c: &Copies,
+    id: loro::TreeID,
+) -> Option<(drive_files::working::WorkingCopy, String)> {
+    let copies = drive_files::working::working_copies(&c.space);
+    if copies.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let mut at = Some(id);
+    while let Some(cur) = at {
+        let key = tree::id_string(cur);
+        if let Some(w) = copies.iter().find(|w| w.root == key) {
+            parts.reverse();
+            return Some((w.clone(), parts.join("/")));
+        }
+        parts.push(tree::entry(&c.files, cur)?.name);
+        at = tree::parent_of(&c.files, cur);
+    }
+    None
 }
 
 /// Who holds `hash`, by name, with the blob's real path where known.

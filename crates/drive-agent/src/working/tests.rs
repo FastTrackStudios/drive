@@ -1,0 +1,233 @@
+//! Working copies end to end in one process: a node, the device whose disk
+//! has the folder, and a second device that sees the tree.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use drive_files::{adopt, tree, working};
+
+use crate::adopt::tests::{device, node, snapshot, songs, wait_until};
+use crate::agent::Agent;
+
+/// The file at `rel` in `a`'s tree: its hash ("" if none).
+fn tree_hash(a: &Agent, rel: &str) -> String {
+    match tree::resolve(&a.files, rel) {
+        Some(Some(e)) if !e.dir => e.hash,
+        _ => String::new(),
+    }
+}
+
+fn read(p: &Path) -> Vec<u8> {
+    std::fs::read(p).unwrap()
+}
+
+/// Two devices; `studio` has a song folder adopted at Studio/Songs and
+/// owns it.
+async fn owned() -> (
+    Arc<Agent>,
+    Arc<Agent>,
+    std::path::PathBuf,
+    Vec<tempfile::TempDir>,
+) {
+    let (url, node_dir) = node().await;
+    let (da, db, disk) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let a = device(&url, da.path(), "studio", "Studio PC").await;
+    let b = device(&url, db.path(), "laptop", "Laptop").await;
+    let folder = songs(disk.path());
+    a.adopt(&folder, "Studio/Songs").await.unwrap();
+    (a, b, folder, vec![node_dir, da, db, disk])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owning_an_adoption_puts_its_files_in_the_tree_and_leaves_the_disk_alone() {
+    let (a, b, folder, _keep) = owned().await;
+    let before = snapshot(&folder);
+
+    let (w, done) = a.own("Studio/Songs").await.unwrap();
+    assert_eq!(done.up, 3, "{done:?}");
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    assert_eq!(snapshot(&folder), before, "owning touches no file on disk");
+
+    // The adoption is gone; the tree has the files, with their bytes.
+    assert!(adopt::adoptions(&a.space).is_empty());
+    assert_eq!(working::working_copies(&a.space), vec![w.clone()]);
+    let kick = tree_hash(&a, "Studio/Songs/Song A/Audio/kick.wav");
+    assert_eq!(
+        kick,
+        drive_files::hash::of_bytes(&read(&folder.join("Song A/Audio/kick.wav")))
+    );
+
+    // Another device sees ordinary files and can read them.
+    wait_until("the laptop sees the tree", || {
+        !tree_hash(&b, "Studio/Songs/Song B/notes.txt").is_empty()
+    })
+    .await;
+    let h = tree_hash(&b, "Studio/Songs/Song B/notes.txt");
+    assert_eq!(b.fetch_bytes(&h).await.unwrap(), b"bridge twice");
+
+    // The mount here still shows the folder in place.
+    assert!(matches!(
+        a.spot("Studio/Songs/Song A"),
+        Some(crate::adopt::Spot::Here { .. })
+    ));
+    assert!(b.spot("Studio/Songs/Song A").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edits_on_either_side_reach_the_other() {
+    let (a, b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+
+    // Here: an edit and a new file go to the tree.
+    std::fs::write(folder.join("Song B/notes.txt"), b"bridge three times").unwrap();
+    std::fs::write(folder.join("Song B/lyrics.txt"), b"la la").unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.up, 2, "{done:?}");
+    wait_until("the laptop sees the edit", || {
+        tree_hash(&b, "Studio/Songs/Song B/notes.txt")
+            == drive_files::hash::of_bytes(b"bridge three times")
+    })
+    .await;
+
+    // Elsewhere: an edit made on the laptop comes down to the disk.
+    let notes = tree::resolve(&b.files, "Studio/Songs/Song B")
+        .unwrap()
+        .unwrap();
+    let src = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(src.path(), b"from the laptop").unwrap();
+    b.put(src.path(), Some(notes.id), "notes.txt")
+        .await
+        .unwrap();
+    wait_until("the studio sees the laptop's edit", || {
+        tree_hash(&a, "Studio/Songs/Song B/notes.txt")
+            == drive_files::hash::of_bytes(b"from the laptop")
+    })
+    .await;
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.down, 1, "{done:?}");
+    assert_eq!(read(&folder.join("Song B/notes.txt")), b"from the laptop");
+
+    // Nothing more to do once level.
+    assert_eq!(
+        a.reconcile(&w).await.unwrap(),
+        crate::working::Reconciled::default()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deletes_go_to_the_other_sides_trash_and_renames_follow() {
+    let (a, b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+
+    // Deleted here: to the Drive's Trash.
+    std::fs::remove_file(folder.join("Song B/notes.txt")).unwrap();
+    a.reconcile(&w).await.unwrap();
+    assert!(tree::resolve(&a.files, "Studio/Songs/Song B/notes.txt").is_none());
+
+    // Renamed here: the same tree file, renamed (not trashed and made anew).
+    let id_before = tree::resolve(&a.files, "Studio/Songs/Song A/Song A.rpp")
+        .unwrap()
+        .unwrap()
+        .id;
+    std::fs::rename(
+        folder.join("Song A/Song A.rpp"),
+        folder.join("Song A/Song A v2.rpp"),
+    )
+    .unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.trashed, 0, "{done:?}");
+    let renamed = tree::resolve(&a.files, "Studio/Songs/Song A/Song A v2.rpp")
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.id, id_before);
+
+    // Renamed in the Drive (on the laptop): renamed on disk.
+    wait_until("the laptop sees the rename", || {
+        tree::resolve(&b.files, "Studio/Songs/Song A/Song A v2.rpp").is_some()
+    })
+    .await;
+    let e = tree::resolve(&b.files, "Studio/Songs/Song A/Audio/kick.wav")
+        .unwrap()
+        .unwrap();
+    let audio = tree::parent_of(&b.files, e.id);
+    tree::rename(&b.files, e.id, audio, "kick-in.wav").unwrap();
+    b.commit_files();
+    wait_until("the studio sees it", || {
+        tree::resolve(&a.files, "Studio/Songs/Song A/Audio/kick-in.wav").is_some()
+    })
+    .await;
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.moved, 1, "{done:?}");
+    assert!(folder.join("Song A/Audio/kick-in.wav").exists());
+    assert!(!folder.join("Song A/Audio/kick.wav").exists());
+
+    // Removed in the Drive: into the folder's .drive-trash, not deleted.
+    let e = tree::resolve(&b.files, "Studio/Songs/Song A/Song A v2.rpp")
+        .unwrap()
+        .unwrap();
+    tree::trash(&b.files, e.id).unwrap();
+    b.commit_files();
+    wait_until("the studio sees it", || {
+        tree::resolve(&a.files, "Studio/Songs/Song A/Song A v2.rpp").is_none()
+    })
+    .await;
+    a.reconcile(&w).await.unwrap();
+    assert!(!folder.join("Song A/Song A v2.rpp").exists());
+    assert!(folder.join(".drive-trash/Song A/Song A v2.rpp").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_on_both_sides_keeps_both() {
+    let (a, b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+    wait_until("the laptop sees the tree", || {
+        !tree_hash(&b, "Studio/Songs/Song B/notes.txt").is_empty()
+    })
+    .await;
+
+    let song_b = tree::resolve(&b.files, "Studio/Songs/Song B")
+        .unwrap()
+        .unwrap();
+    let src = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(src.path(), b"laptop version").unwrap();
+    b.put(src.path(), Some(song_b.id), "notes.txt")
+        .await
+        .unwrap();
+    wait_until("the studio sees it", || {
+        tree_hash(&a, "Studio/Songs/Song B/notes.txt")
+            == drive_files::hash::of_bytes(b"laptop version")
+    })
+    .await;
+    std::fs::write(folder.join("Song B/notes.txt"), b"studio version, longer").unwrap();
+
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.conflicts, 1, "{done:?}");
+    assert_eq!(read(&folder.join("Song B/notes.txt")), b"laptop version");
+    let aside: Vec<_> = std::fs::read_dir(folder.join("Song B"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("(conflict Studio PC"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(
+        read(&folder.join("Song B").join(&aside[0])),
+        b"studio version, longer"
+    );
+    assert!(!tree_hash(&a, &format!("Studio/Songs/Song B/{}", aside[0])).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owning_is_refused_off_the_device_that_has_the_folder() {
+    let (_a, b, _folder, _keep) = owned().await;
+    wait_until("the laptop sees the adoption", || {
+        !adopt::adoptions(&b.space).is_empty()
+    })
+    .await;
+    let e = b.own("Studio/Songs").await.unwrap_err();
+    assert!(e.contains("run `drive own` there"), "{e}");
+    assert!(e.contains("Studio PC"), "{e}");
+}

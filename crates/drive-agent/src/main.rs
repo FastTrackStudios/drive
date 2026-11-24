@@ -40,6 +40,12 @@
 //! drive [--dir DIR] adopt --list                  # every adopted folder
 //! drive [--dir DIR] unadopt LOGICAL/PATH          # the mapping only; the files stay
 //!
+//! Working copies (docs/working-copies.md): the Drive's own files, kept in a
+//! folder on one device too and synced both ways:
+//! drive [--dir DIR] own LOGICAL/PATH | own --all  # an adopted folder becomes the
+//!                                   # Drive's own; its folder here, its working copy
+//! drive [--dir DIR] working                       # every working copy
+//!
 //! Tags and fields (docs/tags.md; THING: a file here, drive:PATH, LOCATION:PATH,
 //! project:NAME, doc:ID):
 //! drive [--dir DIR] tag ls [THING] | add THING TAG… | rm THING TAG…
@@ -129,6 +135,7 @@ mod tagging;
 mod telemetry;
 mod transfer;
 mod view;
+mod working;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -960,6 +967,72 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 "{} is no longer adopted; its folder, files and location are as they were.",
                 ad.at
             ));
+        }
+        // An adopted folder becomes the Drive tree's own, its folder here
+        // its working copy (docs/working-copies.md).
+        "own" => {
+            let a = start(dir).await?;
+            let targets: Vec<String> = match args.get(1).map(String::as_str) {
+                Some("--all") => {
+                    let mine: Vec<String> = a.my_locations().into_iter().map(|l| l.id).collect();
+                    a.adoptions()
+                        .into_iter()
+                        .filter(|ad| mine.contains(&ad.location))
+                        .map(|ad| ad.at)
+                        .collect()
+                }
+                Some(p) => vec![p.to_string()],
+                None => return Err("own LOGICAL/PATH | own --all".into()),
+            };
+            if targets.is_empty() {
+                out("nothing adopted from this device's folders");
+            }
+            let mut failed = 0;
+            for at in targets {
+                match a.own(&at).await {
+                    Ok((w, r)) => {
+                        let folder = a.working_folder(&w).map(|p| p.display().to_string()).unwrap_or_default();
+                        out(format!(
+                            "{at}: the Drive's own now; working copy {folder} ({} files in, {} errors)",
+                            r.up,
+                            r.errors.len()
+                        ));
+                        for e in r.errors.iter().take(5) {
+                            out(format!("  {e}"));
+                        }
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        out(format!("{at}: {e}"));
+                    }
+                }
+            }
+            settle(&a).await;
+            if failed > 0 {
+                return Err(format!("{failed} not owned"));
+            }
+        }
+        "working" => {
+            let a = start(dir).await?;
+            let all = drive_files::working::working_copies(&a.space);
+            if all.is_empty() {
+                out("no working copies");
+            }
+            for w in all {
+                let at = tree::parse_id(&w.root)
+                    .map(|id| tree::path_of(&a.files, id))
+                    .unwrap_or_default();
+                let device = space::devices(&a.space)
+                    .into_iter()
+                    .find(|d| d.id == w.device)
+                    .map_or(w.device.clone(), |d| d.name);
+                let disk = space::locations(&a.space)
+                    .into_iter()
+                    .find(|l| l.id == w.location)
+                    .map(|l| if w.sub.is_empty() { l.path } else { format!("{}/{}", l.path, w.sub) })
+                    .unwrap_or_default();
+                out(format!("drive:{at}  ←→  {device}:{disk}"));
+            }
         }
         "tag" => tagging::command(dir, args).await?,
         // An MCP server on stdio for AI agents (docs/agents.md): stdout is
@@ -1946,6 +2019,18 @@ fn print_found(f: &locate::Found) {
     match f {
         locate::Found::Adopted { device, location, real, .. } => {
             out(format!("  on {device}: {real}  (adopted from {location})"));
+        }
+        locate::Found::Working { device, location, real, file, .. } => {
+            out(format!("  on {device}: {real}  (working copy, {location})"));
+            if let Some((size, hash, holders)) = file {
+                out(format!("  {}  blake3 {hash}", human(*size)));
+                for h in holders {
+                    match &h.path {
+                        Some(p) => out(format!("  {} {}: {p}", h.how, h.who)),
+                        None => out(format!("  {} on {}", h.how, h.who)),
+                    }
+                }
+            }
         }
         locate::Found::TreeFolder { .. } => out("  a folder of the Drive tree"),
         locate::Found::TreeFile { size, hash, holders, .. } => {

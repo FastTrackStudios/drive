@@ -261,7 +261,7 @@ impl<F: Filesystem + TreeSide> AdoptFs<F> {
         let Some(name) = name.to_str() else {
             return Ok(None);
         };
-        let added = adopt::names_in(&self.agent.adoptions(), &dir);
+        let added = adopt::names_in(&self.agent.in_place(), &dir);
         Ok(added
             .into_iter()
             .find(|(n, _)| n == name)
@@ -332,7 +332,7 @@ impl<F: Filesystem + TreeSide> AdoptFs<F> {
     /// in place of a tree entry of the same name); `None`: nothing added.
     fn rows_inner(&self, ino: INodeNo) -> Option<Result<Rows, Errno>> {
         let dir = self.inner.folder_path(ino)?;
-        let added = adopt::names_in(&self.agent.adoptions(), &dir);
+        let added = adopt::names_in(&self.agent.in_place(), &dir);
         if added.is_empty() {
             return None;
         }

@@ -411,12 +411,20 @@ impl Agent {
         if !cached.exists() {
             write_atomic_async(cached, bytes.clone()).await?;
         }
+        self.keep_blob(&h, bytes).await;
+        Ok((h, size))
+    }
+
+    /// A blob's bytes into every storage this device runs and the node,
+    /// recorded as held here too (in the cache, or a working copy's file:
+    /// the caller has them on this disk either way).
+    pub async fn keep_blob(&self, h: &str, bytes: Vec<u8>) {
         let me = self.device_id();
-        let _ = space::set_held(&self.space, &me, &h, Some("local"));
+        let _ = space::set_held(&self.space, &me, h, Some("local"));
         for (sid, store) in &self.stores {
-            match store.put_checked(&h, bytes.clone()).await {
+            match store.put_checked(h, bytes.clone()).await {
                 Ok(()) => {
-                    let _ = space::set_held(&self.space, sid, &h, Some("stored"));
+                    let _ = space::set_held(&self.space, sid, h, Some("stored"));
                 }
                 Err(e) => tracing::warn!(storage.id = %sid, error = %e, "a storage refused a blob"),
             }
@@ -424,13 +432,12 @@ impl Agent {
         let url = format!("{}/blobs/{h}", self.cfg.lock().expect("cfg").node_http());
         match self.http.put(&url).body(bytes).send().await {
             Ok(r) if r.status().is_success() => {
-                let _ = space::set_held(&self.space, "node", &h, Some("stored"));
+                let _ = space::set_held(&self.space, "node", h, Some("stored"));
             }
             Ok(r) => tracing::warn!(status = %r.status(), "the node refused a blob"),
             Err(e) => tracing::warn!(error = %e, "the node is unreachable; the blob stays here"),
         }
         self.commit_space();
-        Ok((h, size))
     }
 
     /// Keep a file here always (and fetch it now), or let it go.
