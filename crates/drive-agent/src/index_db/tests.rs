@@ -131,6 +131,18 @@ async fn the_index_outlives_the_process() {
 }
 
 #[tokio::test]
+async fn a_write_leaves_no_log_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("indexes.db");
+    let db = IndexDb::open(&path).await.unwrap();
+    let entries = (0..5000).map(|i| e(&format!("f{i:05}.wav"), false, i, &format!("{i:064x}"))).collect();
+    db.put(&index("loc", entries)).await.unwrap();
+    let wal = std::fs::metadata(dir.path().join("indexes.db-wal")).map_or(0, |m| m.len());
+    assert_eq!(wal, 0, "the log is folded into the database after a write");
+    assert_eq!(db.meta("loc").await.unwrap().unwrap().files, 5000);
+}
+
+#[tokio::test]
 async fn two_handles_share_one_database() {
     // As the daemon and a `drive` command do (each its own process: this
     // is the closest one test gets).

@@ -78,7 +78,31 @@ pub fn walk(
     root: &Path,
     previous: Option<&LocationIndex>,
 ) -> (LocationIndex, WalkStats) {
+    let tree = previous.map(|p| Tree::new(p.clone()));
+    walk_with(location, root, tree.as_ref().map(|t| t as &dyn Previous), walk_threads())
+}
+
+/// [`walk_with`] on the default number of threads.
+pub fn walk_from(
+    location: &str,
+    root: &Path,
+    previous: Option<&dyn Previous>,
+) -> (LocationIndex, WalkStats) {
     walk_with(location, root, previous, walk_threads())
+}
+
+/// What a location held at its last walk, asked a folder at a time (so
+/// it can live on disk: the agent answers from its index database,
+/// drive#47). A file unchanged since (same size and time) keeps its hash.
+pub trait Previous: Sync {
+    /// The entries directly in `dir` (`""`: the root).
+    fn folder(&self, dir: &str) -> Vec<IndexEntry>;
+}
+
+impl Previous for Tree {
+    fn folder(&self, dir: &str) -> Vec<IndexEntry> {
+        self.list(dir).into_iter().cloned().collect()
+    }
 }
 
 /// How many threads a walk uses: directories are listed and files hashed
@@ -98,31 +122,13 @@ struct Seen {
     kept: Option<String>,
 }
 
-/// [`walk`] on `threads` threads.
+/// [`walk`] on `threads` threads, with the last walk as `previous`.
 pub fn walk_with(
     location: &str,
     root: &Path,
-    previous: Option<&LocationIndex>,
+    previous: Option<&dyn Previous>,
     threads: usize,
 ) -> (LocationIndex, WalkStats) {
-    // The previous index is sorted by path (every walk sorts it), so an
-    // entry is found by binary search, not a second map of every path.
-    let sorted = previous.is_some_and(|p| p.entries.is_sorted_by(|a, b| a.path <= b.path));
-    let map: HashMap<&str, &IndexEntry> = match previous {
-        Some(p) if !sorted => p.entries.iter().map(|e| (e.path.as_str(), e)).collect(),
-        _ => HashMap::new(),
-    };
-    let old = |path: &str| -> Option<&IndexEntry> {
-        let p = previous?;
-        if sorted {
-            p.entries
-                .binary_search_by(|e| e.path.as_str().cmp(path))
-                .ok()
-                .map(|i| &p.entries[i])
-        } else {
-            map.get(path).copied()
-        }
-    };
     let mut overrides = ignore::overrides::OverrideBuilder::new(root);
     for pat in DEFAULT_IGNORES {
         let _ = overrides.add(&format!("!{pat}"));
@@ -152,12 +158,23 @@ pub fn walk_with(
             }
         }
         let mut batch = Batch(Vec::new(), &found);
-        let old = &old;
+        // A folder's entries are visited together by the thread that read
+        // it: its last walk is asked for once, and kept while they are.
+        let mut last: (Option<String>, HashMap<String, IndexEntry>) = (None, HashMap::new());
         Box::new(move |dent| {
             let Ok(dent) = dent else {
                 return ignore::WalkState::Continue;
             };
-            if let Some(seen) = seen(root, &dent, old) {
+            let mut old = |path: &str| -> Option<IndexEntry> {
+                let p = previous?;
+                let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+                if last.0.as_deref() != Some(dir) {
+                    last.1 = p.folder(dir).into_iter().map(|e| (e.path.clone(), e)).collect();
+                    last.0 = Some(dir.to_string());
+                }
+                last.1.get(path).cloned()
+            };
+            if let Some(seen) = seen(root, &dent, &mut old) {
                 batch.0.push(seen);
             }
             ignore::WalkState::Continue
@@ -233,10 +250,10 @@ pub fn walk_with(
 
 /// One walked entry as the index keeps it (`None`: the root, a path that
 /// is not UTF-8, something unreadable, or neither a file nor a folder).
-fn seen<'p>(
+fn seen(
     root: &Path,
     dent: &ignore::DirEntry,
-    old: &impl Fn(&str) -> Option<&'p IndexEntry>,
+    old: &mut impl FnMut(&str) -> Option<IndexEntry>,
 ) -> Option<Seen> {
     let rel = dent.path().strip_prefix(root).ok()?;
     if rel.as_os_str().is_empty() {
@@ -258,7 +275,7 @@ fn seen<'p>(
     let size = meta.len();
     let kept = match old(&rel) {
         Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
-            Some(o.sampled.clone())
+            Some(o.sampled)
         }
         _ => None,
     };

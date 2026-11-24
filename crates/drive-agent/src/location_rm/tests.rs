@@ -55,7 +55,7 @@ async fn rm_takes_the_location_out_of_the_registry_and_the_node_and_leaves_every
     a.index_location(&loc).await.unwrap();
     assert!(listed(&a, &loc.id).await > 0);
     assert!(stats_locations(&a).await.get(&loc.id).is_some());
-    assert!(a.cached_index(&loc.id).is_some());
+    assert!(a.index_db.meta(&loc.id).await.unwrap().is_some());
 
     let r = a.remove_location("Songs", false).await.unwrap();
     assert_eq!(r.location.id, loc.id);
@@ -63,7 +63,13 @@ async fn rm_takes_the_location_out_of_the_registry_and_the_node_and_leaves_every
     assert!(space::locations(&a.space).iter().all(|l| l.id != loc.id));
     assert_eq!(listed(&a, &loc.id).await, 0);
     assert!(stats_locations(&a).await.get(&loc.id).is_none());
-    assert!(a.cached_index(&loc.id).is_none());
+    for _ in 0..100 {
+        if a.index_db.meta(&loc.id).await.unwrap().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(a.index_db.meta(&loc.id).await.unwrap().is_none());
     assert!(
         !a.dir
             .join("indexes")

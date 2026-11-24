@@ -187,6 +187,9 @@ impl IndexDb {
             let _ = conn.execute("ROLLBACK", ()).await;
         }
         self.tx_open.store(false, Ordering::Release);
+        if done.as_ref().is_ok_and(|n| *n > 0) {
+            checkpoint(&conn).await;
+        }
         done
     }
 
@@ -203,6 +206,7 @@ impl IndexDb {
             vec![t(location)],
         )
         .await?;
+        checkpoint(&conn).await;
         Ok(())
     }
 
@@ -433,6 +437,23 @@ impl IndexDb {
     }
 }
 
+/// A location's last walk, from the database a folder at a time: what
+/// [`drive_files::index::walk_from`] asks on its threads (blocking on the
+/// agent's runtime, which those threads are not part of).
+pub struct Previous {
+    pub db: std::sync::Arc<IndexDb>,
+    pub location: String,
+    pub rt: tokio::runtime::Handle,
+}
+
+impl drive_files::index::Previous for Previous {
+    fn folder(&self, dir: &str) -> Vec<IndexEntry> {
+        self.rt
+            .block_on(self.db.list(&self.location, dir))
+            .unwrap_or_default()
+    }
+}
+
 /// A location's entries a page at a time (in path order, under a folder
 /// or all of it): `while let Some(page) = pages.next().await { .. }`.
 pub struct Pages {
@@ -485,6 +506,17 @@ impl Pages {
             self.done = true;
         }
         Some(page)
+    }
+}
+
+/// Fold the write-ahead log into the database and empty it. Without this
+/// nothing did, in the multi-process mode: indexing 208k files left an
+/// 852 MB log beside a 134 MB database. Best effort: another process
+/// reading just then leaves it for the next write.
+async fn checkpoint(conn: &turso::Connection) {
+    match conn.query("PRAGMA wal_checkpoint(TRUNCATE)", ()).await {
+        Ok(mut rows) => while let Ok(Some(_)) = rows.next().await {},
+        Err(e) => tracing::debug!(error = %e, "the index database's log was not checkpointed"),
     }
 }
 
