@@ -2,7 +2,7 @@
 //! default number (drive#47):
 //! `cargo run --release -p drive-files --example walk_time -- <folder>`.
 
-use drive_files::index::walk_with;
+use drive_files::index::{Previous, Tree, walk_with};
 
 fn main() {
     let root = std::path::PathBuf::from(std::env::args().nth(1).expect("a folder"));
@@ -14,7 +14,8 @@ fn main() {
         let (idx, st) = walk_with("w", &root, None, t);
         let first = start.elapsed();
         let start = std::time::Instant::now();
-        let (_, again) = walk_with("w", &root, Some(&idx), t);
+        let tree = Tree::new(idx);
+        let (_, again) = walk_with("w", &root, Some(&tree as &dyn Previous), t);
         println!(
             "{t} thread(s): first index {first:?} ({} files, {} hashed), reindex {:?} ({} hashed)",
             st.files,

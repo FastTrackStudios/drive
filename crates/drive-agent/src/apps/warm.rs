@@ -77,7 +77,7 @@ fn is_here(apps: &Apps, src: &Source) -> bool {
 pub async fn expand(apps: &Apps, w: &Warm) -> Result<Vec<(String, Source)>, String> {
     let mut out: Vec<(String, Source)> = Vec::new();
     // Other computers' folders list from their indexes: fetch any newer.
-    apps.a.refresh_indexes().await;
+    apps.a.sync_indexes().await;
     let mut names: Vec<String> = w.targets.clone();
     names.extend(w.folder.clone());
     for t in &names {

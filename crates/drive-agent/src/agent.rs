@@ -172,7 +172,9 @@ pub struct Agent {
     /// Every location's index, decoded once and shared until its file
     /// changes: a big disk's index is millions of entries, and placement,
     /// the view, the rules and the tags each read every index often.
-    pub(crate) indexes: crate::places::IndexCache,
+    /// Locations whose index changed here but did not reach the node:
+    /// published again on their next walk, changed or not.
+    pub(crate) unpublished: Mutex<HashSet<String>>,
     /// Every location's index on disk (drive#47), shared with this
     /// device's other agent processes.
     pub(crate) index_db: Arc<crate::index_db::IndexDb>,
@@ -237,7 +239,7 @@ impl Agent {
             busy: Mutex::new(HashSet::new()),
             provider: std::sync::OnceLock::new(),
             leases: Default::default(),
-            indexes: Default::default(),
+            unpublished: Default::default(),
             index_db,
             fetched: Default::default(),
         }
@@ -546,7 +548,8 @@ pub fn this_device(id: &str, name: &str) -> Device {
 }
 
 /// Indexes kept as files (`indexes/<location>.idx`) before the database:
-/// put in it once, each, the first time an agent starts with it.
+/// put in it once, each, the first time an agent starts with it, and the
+/// file removed.
 async fn import_index_files(dir: &Path, db: &crate::index_db::IndexDb) {
     let have: HashSet<String> = db.locations().await.unwrap_or_default().into_iter().collect();
     let Ok(files) = std::fs::read_dir(dir.join("indexes")) else {
@@ -562,6 +565,7 @@ async fn import_index_files(dir: &Path, db: &crate::index_db::IndexDb) {
             continue;
         };
         if have.contains(id) {
+            let _ = std::fs::remove_file(&path);
             continue;
         }
         let Some(index) = std::fs::read(&path).ok().and_then(|b| drive_files::index::decode(&b)) else {
@@ -571,7 +575,10 @@ async fn import_index_files(dir: &Path, db: &crate::index_db::IndexDb) {
             continue;
         }
         match db.put(&index).await {
-            Ok(n) => tracing::info!(location.id = %id, index.entries = n, "an index file was put in the index database"),
+            Ok(n) => {
+                tracing::info!(location.id = %id, index.entries = n, "an index file was put in the index database");
+                let _ = std::fs::remove_file(&path);
+            }
             Err(e) => tracing::warn!(location.id = %id, error = %e, "an index file could not be put in the index database"),
         }
     }

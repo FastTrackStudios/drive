@@ -2,11 +2,9 @@
 //! storages it runs), its volumes, publishing their indexes, and answering
 //! the node when someone elsewhere opens one of their files.
 
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
-use drive_files::index::{self, IndexEntry, LocationIndex, WalkStats};
+use drive_files::index::{self, IndexEntry, WalkStats};
 use drive_files::space::{self, Location, Volume};
 
 use crate::agent::Agent;
@@ -143,11 +141,6 @@ pub fn confined(root: &Path, rel: &str, agent_dir: &Path) -> Option<PathBuf> {
     (real.starts_with(&base) && !in_agent).then_some(real)
 }
 
-/// Decoded indexes by location, with the file's stamp (modified, length)
-/// they were read at.
-pub(crate) type IndexCache =
-    std::sync::Mutex<HashMap<String, ((Option<std::time::SystemTime>, u64), Arc<LocationIndex>)>>;
-
 impl Agent {
     pub fn report_volumes(&self) {
         let me = self.device_id();
@@ -202,26 +195,6 @@ impl Agent {
         Ok(self.dir.join("indexes").join(format!("{id}.idx")))
     }
 
-    /// A location's index as last downloaded or built here: decoded once,
-    /// then shared until its file changes.
-    pub fn cached_index(&self, location: &str) -> Option<Arc<LocationIndex>> {
-        let path = self.index_cache(location).ok()?;
-        let meta = std::fs::metadata(&path).ok()?;
-        let stamp = (meta.modified().ok(), meta.len());
-        if let Some((s, i)) = self.indexes.lock().expect("indexes").get(location)
-            && *s == stamp
-        {
-            return Some(i.clone());
-        }
-        let _span = tracing::info_span!("drive.index.decode", location.id = %location).entered();
-        let decoded = Arc::new(index::decode(&std::fs::read(&path).ok()?)?);
-        self.indexes
-            .lock()
-            .expect("indexes")
-            .insert(location.to_string(), (stamp, decoded.clone()));
-        Some(decoded)
-    }
-
     /// Walk one of this device's locations, publish its index to the node
     /// and record it in the registry.
     #[tracing::instrument(name = "drive.index", skip_all, fields(location.name = %loc.name, index.files = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
@@ -230,7 +203,7 @@ impl Agent {
             tracing::debug!(location.name = %loc.name, "paused: kept the last index");
             return Ok(WalkStats::default());
         }
-        let previous = self.cached_index(&loc.id);
+        let previous = self.index_db.meta(&loc.id).await.ok().flatten();
         // A folder this process may not read (macOS privacy protection on a
         // background service, a drive not mounted, permissions) must never
         // publish an empty index over a full one: Drive would show the
@@ -241,13 +214,20 @@ impl Agent {
         let had = self
             .space_files_of(&loc.id)
             .unwrap_or(0)
-            .max(previous.as_ref().map_or(0, |p| p.entries.len()));
-        let previous_entries = previous.clone();
+            .max(previous.as_ref().map_or(0, |p| (p.files + p.dirs) as usize));
         let (idx, stats) = if loc.storage.is_empty() {
             let (id, root) = (loc.id.clone(), PathBuf::from(&loc.path));
-            tokio::task::spawn_blocking(move || index::walk(&id, &root, previous.as_deref()))
-                .await
-                .map_err(|e| e.to_string())?
+            // The last walk, asked of the index database a folder at a time.
+            let last = previous.is_some().then(|| crate::index_db::Previous {
+                db: self.index_db.clone(),
+                location: loc.id.clone(),
+                rt: tokio::runtime::Handle::current(),
+            });
+            tokio::task::spawn_blocking(move || {
+                index::walk_from(&id, &root, last.as_ref().map(|p| p as &dyn index::Previous))
+            })
+            .await
+            .map_err(|e| e.to_string())?
         } else {
             let own = self
                 .cfg
@@ -259,7 +239,8 @@ impl Agent {
                 .cloned();
             let own = own.ok_or("this device does not run that location's storage")?;
             let op = own.config.operator().map_err(|e| e.to_string())?;
-            index::walk_storage(&loc.id, &op, &loc.path, previous.as_deref())
+            let last = self.index_db.load(&loc.id).await.ok().flatten();
+            index::walk_storage(&loc.id, &op, &loc.path, last.as_ref())
                 .await
                 .map_err(|e| e.to_string())?
         };
@@ -273,31 +254,28 @@ impl Agent {
         if !self.has_location(&loc.id) {
             return Err(format!("{} is no longer a location", loc.name));
         }
+        // Into the index database: only the rows that changed are written.
+        let written = self
+            .index_db
+            .put(&idx)
+            .await
+            .map_err(|e| format!("the index database: {e}"))?;
         // Nothing changed since the index the node has: publish nothing.
         // Every full pass used to send the whole index again (tens of MB
         // for millions of files), the node rewrote every row, and the new
         // `built` time made every other device download it again (drive#47).
+        // One whose last publish failed is published again.
         let published = space::locations(&self.space)
             .into_iter()
             .any(|l| l.id == loc.id && !l.index.is_empty());
-        if published && previous_entries.as_ref().is_some_and(|p| p.entries == idx.entries) {
+        let retry = self.unpublished.lock().expect("unpublished").contains(&loc.id);
+        if published && written == 0 && !retry {
             tracing::debug!(location.name = %loc.name, index.files = stats.files, "unchanged: nothing published");
             return Ok(stats);
         }
-        drop(previous_entries);
         let bytes = index::encode(&idx);
-        let _ = std::fs::create_dir_all(self.dir.join("indexes"));
-        let cache = self.index_cache(&loc.id)?;
-        std::fs::write(&cache, &bytes).map_err(|e| e.to_string())?;
-        // The cache gets the index just built, not a decode of the file
-        // (which would hold a second copy of millions of entries a while).
-        self.index_db.put(&idx).await.map_err(|e| format!("the index database: {e}"))?;
-        if let Ok(meta) = std::fs::metadata(&cache) {
-            self.indexes.lock().expect("indexes").insert(
-                loc.id.clone(),
-                ((meta.modified().ok(), meta.len()), Arc::new(idx)),
-            );
-        }
+        drop(idx);
+        self.unpublished.lock().expect("unpublished").insert(loc.id.clone());
         let (node, space_name) = {
             let c = self.cfg.lock().expect("cfg");
             (c.node_http(), c.space.clone())
@@ -313,6 +291,7 @@ impl Agent {
             return Err(format!("the node refused the index ({})", resp.status()));
         }
         let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        self.unpublished.lock().expect("unpublished").remove(&loc.id);
         // Removed while the index was on its way: the node drops it again,
         // so no rows stay behind for a location nobody has.
         if !self.has_location(&loc.id) {
@@ -358,60 +337,50 @@ impl Agent {
     }
 
     /// Download every index the registry has newer than this device's
-    /// copy into the index database, without holding any of them after.
+    /// copy into the index database (so browsing works offline after),
+    /// holding each only while it is put there.
+    #[tracing::instrument(name = "drive.indexes.sync", skip_all, fields(indexes.fetched = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
     pub async fn sync_indexes(&self) {
-        let _ = self.refresh_indexes().await;
-    }
-
-    /// Every location's index, downloaded when the registry has a newer
-    /// one than this device's copy (so browsing works offline after).
-    #[tracing::instrument(name = "drive.indexes.refresh", skip_all, fields(indexes.count = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
-    pub async fn refresh_indexes(&self) -> HashMap<String, Arc<LocationIndex>> {
-        let mut out = HashMap::new();
+        let mut fetched = 0;
         for loc in space::locations(&self.space) {
-            let have = self.cached_index(&loc.id);
-            // The registry records when the index was published; ours is
-            // stale when it was built well before that. This device's own
-            // locations are indexed here: its copy is the one published.
-            let mine = loc.device == self.device_id();
+            // This device's own locations are indexed here: its copy is the
+            // one published.
+            if loc.device == self.device_id() || loc.index.is_empty() {
+                continue;
+            }
+            // Stale when the registry says it was published well after the
+            // copy here was built.
+            let have = self.index_db.meta(&loc.id).await.ok().flatten();
             let got = self.fetched.lock().expect("fetched").get(&loc.id).copied();
-            let stale = !mine
-                && got.is_none_or(|g| g < loc.built)
+            let stale = got.is_none_or(|g| g < loc.built)
                 && have.as_ref().is_none_or(|h| h.built + 60_000 < loc.built);
-            let fresh = if stale && !loc.index.is_empty() {
-                match self.fetch_bytes(&loc.index).await {
-                    Ok(bytes) => {
-                        let _ = std::fs::create_dir_all(self.dir.join("indexes"));
-                        if let Ok(p) = self.index_cache(&loc.id) {
-                            let _ = std::fs::write(p, &bytes);
-                        }
-                        self.fetched
-                            .lock()
-                            .expect("fetched")
-                            .insert(loc.id.clone(), loc.built);
-                        let got = self.cached_index(&loc.id);
-                        if let Some(i) = &got
-                            && let Err(e) = self.index_db.put(i).await
-                        {
-                            tracing::warn!(location.id = %loc.id, error = %e, "a downloaded index was not put in the index database");
-                        }
-                        got
-                    }
-                    Err(e) => {
-                        tracing::debug!(location.id = %loc.id, error = %e, "an index could not be fetched");
-                        None
-                    }
+            if !stale {
+                continue;
+            }
+            let index = match self.fetch_bytes(&loc.index).await {
+                Ok(bytes) => index::decode(&bytes),
+                Err(e) => {
+                    tracing::debug!(location.id = %loc.id, error = %e, "an index could not be fetched");
+                    continue;
                 }
-            } else {
-                None
             };
-            if let Some(i) = fresh.or(have) {
-                out.insert(loc.id.clone(), i);
+            let Some(index) = index.filter(|i| i.location == loc.id) else {
+                tracing::warn!(location.id = %loc.id, "a downloaded index did not decode as that location's");
+                continue;
+            };
+            match self.index_db.put(&index).await {
+                Ok(_) => {
+                    fetched += 1;
+                    self.fetched
+                        .lock()
+                        .expect("fetched")
+                        .insert(loc.id.clone(), loc.built);
+                }
+                Err(e) => tracing::warn!(location.id = %loc.id, error = %e, "a downloaded index was not put in the index database"),
             }
         }
-        tracing::Span::current().record("indexes.count", out.len());
+        tracing::Span::current().record("indexes.fetched", fetched);
         crate::telemetry::mark_rss();
-        out
     }
 
     /// The node asks for a file in one of this device's locations: put its
@@ -570,16 +539,12 @@ mod reindex_tests {
         let after = built(&a, &loc.id);
         assert!(after.1 > first.1 && after.0 != first.0, "a change is published");
         assert!(
-            a.cached_index(&loc.id)
-                .unwrap()
-                .entries
-                .iter()
-                .any(|e| e.path.ends_with("new take.wav")),
-            "and cached without decoding it back"
-        );
-        assert!(
             a.index_db.get(&loc.id, "new take.wav").await.unwrap().is_some(),
             "and kept in the index database"
+        );
+        assert!(
+            !dir.path().join("indexes").exists(),
+            "and in no index file"
         );
     }
 
@@ -592,10 +557,19 @@ mod reindex_tests {
         let loc = a.add_location("Songs", &songs).unwrap();
         a.index_location(&loc).await.unwrap();
         // An agent from before the database: only the file.
+        let idx = a.index_db.load(&loc.id).await.unwrap().unwrap();
         a.index_db.remove(&loc.id).await.unwrap();
+        let file = dir.path().join("indexes").join(format!("{}.idx", loc.id));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, drive_files::index::encode(&idx)).unwrap();
         drop(a);
         let again = device(&url, dir.path(), "studio", "Studio PC").await;
-        assert!(again.index_db.meta(&loc.id).await.unwrap().is_some(), "imported at start");
+        assert_eq!(
+            again.index_db.load(&loc.id).await.unwrap().unwrap().entries,
+            idx.entries,
+            "imported at start"
+        );
+        assert!(!file.exists(), "and the file removed");
 
         again.remove_location("Songs", false).await.unwrap();
         for _ in 0..100 {

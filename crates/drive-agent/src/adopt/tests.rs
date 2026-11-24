@@ -218,7 +218,7 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
         }
         other => panic!("not elsewhere: {other:?}"),
     }
-    b.refresh_indexes().await;
+    b.sync_indexes().await;
     assert_eq!(
         b.logical_list("Studio/Songs/Song B").await.unwrap(),
         vec![("notes.txt".to_string(), false)]
