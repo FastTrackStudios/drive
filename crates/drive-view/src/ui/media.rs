@@ -13,6 +13,7 @@ use crate::{Anchor, clock, peaks};
 #[component]
 pub fn ImageView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>>) -> Element {
     let id = use_hook(super::fresh_id);
+    let url = use_playable(&src, None);
     let mut actual = use_signal(|| false);
     let mut dims = use_signal(|| None::<(u32, u32)>);
     let mut failed = use_signal(|| false);
@@ -43,6 +44,11 @@ pub fn ImageView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
     if failed() {
         return rsx! { p { class: "dv-err", "This image could not be shown." } };
     }
+    let url = match &*url.read() {
+        None => return rsx! { p { class: "dv-wait", "Reading the image…" } },
+        Some(Err(e)) => return rsx! { p { class: "dv-err", "{e}" } },
+        Some(Ok(u)) => u.clone(),
+    };
     let class = if actual() { "dv-img actual" } else { "dv-img" };
     rsx! {
         if !compact {
@@ -57,10 +63,10 @@ pub fn ImageView(src: Src, compact: bool, on_anchor: Option<EventHandler<Anchor>
         div { class: "dv-stage",
             if on_anchor.is_some() && !compact {
                 Region { on_pick: pick,
-                    img { id: "{id}", class: "{class}", src: "{src.url}", alt: "", draggable: false, onload: on_load, onerror: move |_| failed.set(true) }
+                    img { id: "{id}", class: "{class}", src: "{url}", alt: "", draggable: false, onload: on_load, onerror: move |_| failed.set(true) }
                 }
             } else {
-                img { id: "{id}", class: "{class}", src: "{src.url}", alt: "", onload: on_load, onerror: move |_| failed.set(true) }
+                img { id: "{id}", class: "{class}", src: "{url}", alt: "", onload: on_load, onerror: move |_| failed.set(true) }
             }
         }
     }
@@ -107,7 +113,10 @@ pub fn AudioView(
                     if p.frames > 0 && p.sample_rate > 0 {
                         length.set(p.seconds());
                     }
-                    wave.set(Wave::Ready(p.columns(BUCKETS), src.url.clone()));
+                    wave.set(match playable(&src, Some(READ_MAX)).await {
+                        Ok(url) => Wave::Ready(p.columns(BUCKETS), url),
+                        Err(e) => Wave::Failed(e),
+                    });
                     return;
                 }
                 if src.size == 0 || src.size > WAVEFORM_MAX {
@@ -261,6 +270,47 @@ fn object_url(bytes: &[u8]) -> Option<String> {
     web_sys::Url::create_object_url_with_blob(&blob).ok()
 }
 
+/// Files read whole when their element cannot load them itself (it would
+/// need the bearer): bigger ones, or ones of unknown size, are loaded from
+/// their URL as they are.
+const READ_MAX: u64 = 96 << 20;
+
+/// The URL an `<img>`/`<audio>`/`<video>` loads `src` from: its own, unless
+/// that would need the bearer an element cannot send ([`Src::plain_ok`]);
+/// then its bytes, read with the bearer, as a `blob:` URL. `max` bounds
+/// what is read (`None`: any size, as for an image).
+async fn playable(src: &Src, max: Option<u64>) -> Result<String, String> {
+    let fits = max.is_none_or(|m| src.size > 0 && src.size <= m);
+    if src.plain_ok() || !fits {
+        return Ok(src.url.clone());
+    }
+    let bytes = src.bytes().await?;
+    Ok(object_url(&bytes).unwrap_or_else(|| src.url.clone()))
+}
+
+/// [`playable`] as a signal (`None` while it is read); a `blob:` URL is
+/// let go of with the component.
+fn use_playable(src: &Src, max: Option<u64>) -> Signal<Option<Result<String, String>>> {
+    let mut url = use_signal(|| src.plain_ok().then(|| Ok(src.url.clone())));
+    use_hook({
+        let src = src.clone();
+        move || {
+            if url.peek().is_none() {
+                spawn(async move { url.set(Some(playable(&src, max).await)) });
+            }
+        }
+    });
+    use_drop(move || {
+        if let Ok(u) = url.try_peek()
+            && let Some(Ok(u)) = &*u
+            && u.starts_with("blob:")
+        {
+            let _ = web_sys::Url::revoke_object_url(u);
+        }
+    });
+    url
+}
+
 /// The sound's peaks, decoded by the browser (every format it plays).
 async fn decode_peaks(bytes: &[u8]) -> Option<Vec<(f32, f32)>> {
     let ctx = web_sys::AudioContext::new().ok()?;
@@ -293,6 +343,7 @@ pub fn VideoView(
     poster: Option<String>,
 ) -> Element {
     let id = use_hook(super::fresh_id);
+    let url = use_playable(&src, Some(READ_MAX));
     let mut now = use_signal(|| 0.0f64);
     let mut length = use_signal(|| 0.0f64);
     let mut failed = use_signal(|| false);
@@ -319,6 +370,11 @@ pub fn VideoView(
             });
         }
     };
+    let url = match &*url.read() {
+        None => return rsx! { p { class: "dv-wait", "Reading the video…" } },
+        Some(Err(e)) => return rsx! { p { class: "dv-err", "{e}" } },
+        Some(Ok(u)) => u.clone(),
+    };
     let mut t1 = read_time.clone();
     rsx! {
         if failed() {
@@ -331,7 +387,7 @@ pub fn VideoView(
             preload: "metadata",
             playsinline: true,
             poster: poster.unwrap_or_default(),
-            src: "{src.url}",
+            src: "{url}",
             ontimeupdate: move |_| t1(),
             onloadedmetadata: move |_| read_time(),
             onpause: emit_time.clone(),

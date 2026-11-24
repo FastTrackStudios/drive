@@ -118,6 +118,16 @@ pub(crate) struct Src {
 }
 
 impl Src {
+    /// Whether an element can load [`Src::url`] itself, or its bytes need
+    /// reading with the bearer first ([`plain_request_ok`]).
+    pub fn plain_ok(&self) -> bool {
+        self.bearer.is_none()
+            || plain_request_ok(
+                &self.url,
+                &web_sys::window().map(|w| w.origin()).unwrap_or_default(),
+            )
+    }
+
     /// The file's bytes, or why not (the node's own words when it says).
     pub async fn bytes(&self) -> Result<Vec<u8>, String> {
         let mut req = gloo_net::http::Request::get(&self.url);
@@ -186,4 +196,61 @@ pub(crate) fn js_str(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Whether a plain `<img>`/`<audio>`/`<video>` request for `url` from a
+/// page at `origin` can do without an `Authorization` header: a local
+/// `blob:`/`data:` URL, or one on the page's own origin (the node's
+/// same-site `drive_token` cookie goes with it). Another origin gets no
+/// cookie, so its bytes have to be read with the bearer.
+pub(crate) fn plain_request_ok(url: &str, origin: &str) -> bool {
+    let u = url.trim();
+    if u.starts_with("blob:") || u.starts_with("data:") {
+        return true;
+    }
+    if u.starts_with("//") {
+        return false;
+    }
+    let scheme_end = u.find(':');
+    let path_start = u.find(['/', '?', '#']);
+    let absolute = match (scheme_end, path_start) {
+        (Some(c), Some(p)) => c < p,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    if !absolute {
+        return true;
+    }
+    !origin.is_empty()
+        && u.strip_prefix(origin)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_request_ok;
+
+    #[test]
+    fn only_same_origin_and_local_urls_play_without_a_bearer() {
+        let page = "https://drive.example";
+        for ok in [
+            "/fetch/home/l1?path=a.mp4",
+            "fetch/x",
+            "https://drive.example/fetch/home/l1",
+            "https://drive.example",
+            "blob:https://drive.example/1234",
+            "data:image/png;base64,AAAA",
+        ] {
+            assert!(plain_request_ok(ok, page), "{ok}");
+        }
+        for bad in [
+            "https://node.example/fetch/home/l1",
+            "https://drive.example.evil/x",
+            "https://drive.example:8443/x",
+            "http://drive.example/x",
+            "//node.example/x",
+        ] {
+            assert!(!plain_request_ok(bad, page), "{bad}");
+        }
+    }
 }
