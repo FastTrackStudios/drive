@@ -49,6 +49,17 @@ impl Principal {
     }
 }
 
+/// What the issuer says of a token asked about again (a live connection).
+#[derive(Debug, PartialEq)]
+pub enum Recheck {
+    /// Still good: who it is now.
+    Still(Principal),
+    /// Refused: expired, revoked, or the person is gone.
+    Refused,
+    /// The issuer could not be asked; nothing is known.
+    Unknown,
+}
+
 pub struct Auth {
     pub issuer: Option<String>,
     http: reqwest::Client,
@@ -77,36 +88,56 @@ impl Auth {
         self.cache.lock().await.insert(key, (Instant::now(), p));
     }
 
+    /// Forget what the issuer said of `token` (tests: as if a minute passed).
+    #[doc(hidden)]
+    pub async fn forget(&self, token: &str) {
+        let key: [u8; 32] = *blake3::hash(token.as_bytes()).as_bytes();
+        self.cache.lock().await.remove(&key);
+    }
+
     /// Who this is: `None` when the node needs a sign-in and has none (or
-    /// a token the issuer refuses).
+    /// a token the issuer refuses, or the issuer cannot be reached).
     pub async fn principal(&self, token: Option<&str>, local: bool) -> Option<Principal> {
+        match self.recheck(token, local).await {
+            Recheck::Still(p) => Some(p),
+            Recheck::Refused | Recheck::Unknown => None,
+        }
+    }
+
+    /// As [`Auth::principal`], telling a refused token from an issuer that
+    /// could not be asked (a live connection keeps going through the
+    /// latter, and ends on the former).
+    pub async fn recheck(&self, token: Option<&str>, local: bool) -> Recheck {
         let Some(issuer) = &self.issuer else {
-            return Some(Principal::everyone("anyone (no issuer)"));
+            return Recheck::Still(Principal::everyone("anyone (no issuer)"));
         };
         if local && token.is_none() {
-            return Some(Principal::everyone("this computer"));
+            return Recheck::Still(Principal::everyone("this computer"));
         }
-        let token = token?.trim();
-        if token.is_empty() {
-            return None;
-        }
+        let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) else {
+            return Recheck::Refused;
+        };
         let key: [u8; 32] = *blake3::hash(token.as_bytes()).as_bytes();
         if let Some((at, p)) = self.cache.lock().await.get(&key)
             && at.elapsed() < KEEP
         {
-            return Some(p.clone());
+            return Recheck::Still(p.clone());
         }
         let p = match self.ask(issuer, token).await {
             Ok(p) => p,
-            Err(why) => {
+            Err(Asked::Refused(why)) => {
                 tracing::warn!(auth.outcome = "refused", auth.why = %why, "the issuer did not accept a token");
-                return None;
+                return Recheck::Refused;
+            }
+            Err(Asked::Unreachable(why)) => {
+                tracing::warn!(auth.outcome = "unknown", auth.why = %why, "the issuer could not be asked about a token");
+                return Recheck::Unknown;
             }
         };
         let mut cache = self.cache.lock().await;
         cache.retain(|_, (at, _)| at.elapsed() < KEEP);
         cache.insert(key, (Instant::now(), p.clone()));
-        Some(p)
+        Recheck::Still(p)
     }
 
     /// Who is in `org`, as the issuer says (asked with the token of one of
@@ -178,7 +209,7 @@ impl Auth {
         Ok(members)
     }
 
-    async fn ask(&self, issuer: &str, token: &str) -> Result<Principal, String> {
+    async fn ask(&self, issuer: &str, token: &str) -> Result<Principal, Asked> {
         let orgs = self
             .http
             .post(format!("{issuer}/auth/organization/list"))
@@ -187,11 +218,18 @@ impl Auth {
             .body("{}")
             .send()
             .await
-            .map_err(|e| format!("the issuer is unreachable: {e}"))?;
-        if !orgs.status().is_success() {
-            return Err(format!("the issuer answered {}", orgs.status()));
+            .map_err(|e| Asked::Unreachable(format!("the issuer is unreachable: {e}")))?;
+        let status = orgs.status();
+        if status.is_client_error() {
+            return Err(Asked::Refused(format!("the issuer answered {status}")));
         }
-        let list: serde_json::Value = orgs.json().await.map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(Asked::Unreachable(format!("the issuer answered {status}")));
+        }
+        let list: serde_json::Value = orgs
+            .json()
+            .await
+            .map_err(|e| Asked::Unreachable(e.to_string()))?;
         let mut slugs: Vec<String> = list
             .as_array()
             .map(|a| {
@@ -230,6 +268,14 @@ impl Auth {
             all: false,
         })
     }
+}
+
+/// Why the issuer gave no principal for a token.
+enum Asked {
+    /// It answered no (4xx).
+    Refused(String),
+    /// It could not be reached, or failed itself.
+    Unreachable(String),
 }
 
 /// An issuer's JSON answer, or why not.

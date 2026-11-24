@@ -627,10 +627,14 @@ impl Rooms {
     }
 }
 
+/// How often a live connection's sign-in is asked about again: a token
+/// that expired or was revoked, or a person who left an org, ends the
+/// connection (the client reconnects, signing in afresh).
+pub const RECHECK: Duration = Duration::from_secs(5 * 60);
+
 /// One client's connection, from its first message to its last.
 pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
-    let peer = rooms.next_peer.fetch_add(1, Ordering::Relaxed);
-    let (mut sink, mut stream) = socket.split();
+    let (mut sink, stream) = socket.split();
     let (out, mut outbox) = mpsc::unbounded_channel::<ToClient>();
     let writer = tokio::spawn(async move {
         while let Some(msg) = outbox.recv().await {
@@ -643,25 +647,78 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
             }
         }
     });
+    let incoming = stream
+        .take_while(|frame| std::future::ready(frame.is_ok()))
+        .filter_map(|frame| {
+            std::future::ready(match frame {
+                Ok(Message::Binary(bytes)) => match drive_proto::decode::<ToNode>(&bytes) {
+                    Ok(m) => Some(m),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "a message did not decode");
+                        None
+                    }
+                },
+                _ => None,
+            })
+        });
+    session(rooms, std::pin::pin!(incoming), out, local, RECHECK).await;
+    let _ = writer.await;
+}
 
+/// A connection's messages, whatever carries them: answered on `out`,
+/// its sign-in asked about again every `recheck`.
+pub(crate) async fn session(
+    rooms: Arc<Rooms>,
+    mut incoming: impl futures::Stream<Item = ToNode> + Unpin,
+    out: Outbox,
+    local: bool,
+    recheck: Duration,
+) {
+    let peer = rooms.next_peer.fetch_add(1, Ordering::Relaxed);
     let mut name = String::from("Guest");
     let mut who: Option<crate::auth::Principal> = None;
+    let mut token: Option<String> = None;
     let mut joined = HashSet::new();
-    while let Some(Ok(frame)) = stream.next().await {
-        let Message::Binary(bytes) = frame else {
-            continue;
-        };
-        let msg = match drive_proto::decode::<ToNode>(&bytes) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(peer, error = %e, "a message did not decode");
+    let mut every = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let msg = tokio::select! {
+            m = incoming.next() => match m {
+                Some(m) => m,
+                None => break,
+            },
+            _ = every.tick() => {
+                let Some(old) = &who else { continue };
+                match rooms.auth.recheck(token.as_deref(), local).await {
+                    crate::auth::Recheck::Still(p) => {
+                        // Gaining an org is fine; losing one (or everything)
+                        // ends the connection, which may hold its documents.
+                        let kept = p.all || (!old.all && old.orgs.iter().all(|o| p.member_of(o)));
+                        if !kept {
+                            tracing::info!(auth.outcome = "narrowed", auth.who = %old.who, peer, "a connection's access narrowed; ending it");
+                            let _ = out.send(ToClient::Error {
+                                message: "access changed: reconnect".into(),
+                            });
+                            break;
+                        }
+                        who = Some(p);
+                    }
+                    crate::auth::Recheck::Refused => {
+                        tracing::info!(auth.outcome = "expired", auth.who = %old.who, peer, "a connection's sign-in is no longer accepted; ending it");
+                        let _ = out.send(ToClient::Error {
+                            message: "sign in".into(),
+                        });
+                        break;
+                    }
+                    crate::auth::Recheck::Unknown => {}
+                }
                 continue;
             }
         };
         if let ToNode::Hello {
             version,
             name: n,
-            token,
+            token: t,
         } = &msg
         {
             if *version != drive_proto::VERSION {
@@ -670,8 +727,11 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
                 });
                 break;
             }
-            match rooms.auth.principal(token.as_deref(), local).await {
-                Some(p) => who = Some(p),
+            match rooms.auth.principal(t.as_deref(), local).await {
+                Some(p) => {
+                    who = Some(p);
+                    token = t.clone();
+                }
                 None => {
                     let _ = out.send(ToClient::Error {
                         message: "sign in".into(),
@@ -690,6 +750,7 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
         rooms.leave(peer, &name, &id).await;
     }
     rooms.agents.lock().await.retain(|_, (p, _)| *p != peer);
-    drop(out);
-    let _ = writer.await;
 }
+
+#[cfg(test)]
+mod session_tests;
