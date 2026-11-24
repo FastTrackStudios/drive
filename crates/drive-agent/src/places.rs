@@ -242,6 +242,7 @@ impl Agent {
             .space_files_of(&loc.id)
             .unwrap_or(0)
             .max(previous.as_ref().map_or(0, |p| p.entries.len()));
+        let previous_entries = previous.clone();
         let (idx, stats) = if loc.storage.is_empty() {
             let (id, root) = (loc.id.clone(), PathBuf::from(&loc.path));
             tokio::task::spawn_blocking(move || index::walk(&id, &root, previous.as_deref()))
@@ -272,9 +273,30 @@ impl Agent {
         if !self.has_location(&loc.id) {
             return Err(format!("{} is no longer a location", loc.name));
         }
+        // Nothing changed since the index the node has: publish nothing.
+        // Every full pass used to send the whole index again (tens of MB
+        // for millions of files), the node rewrote every row, and the new
+        // `built` time made every other device download it again (drive#47).
+        let published = space::locations(&self.space)
+            .into_iter()
+            .any(|l| l.id == loc.id && !l.index.is_empty());
+        if published && previous_entries.as_ref().is_some_and(|p| p.entries == idx.entries) {
+            tracing::debug!(location.name = %loc.name, index.files = stats.files, "unchanged: nothing published");
+            return Ok(stats);
+        }
+        drop(previous_entries);
         let bytes = index::encode(&idx);
         let _ = std::fs::create_dir_all(self.dir.join("indexes"));
-        std::fs::write(self.index_cache(&loc.id)?, &bytes).map_err(|e| e.to_string())?;
+        let cache = self.index_cache(&loc.id)?;
+        std::fs::write(&cache, &bytes).map_err(|e| e.to_string())?;
+        // The cache gets the index just built, not a decode of the file
+        // (which would hold a second copy of millions of entries a while).
+        if let Ok(meta) = std::fs::metadata(&cache) {
+            self.indexes.lock().expect("indexes").insert(
+                loc.id.clone(),
+                ((meta.modified().ok(), meta.len()), Arc::new(idx)),
+            );
+        }
         let (node, space_name) = {
             let c = self.cfg.lock().expect("cfg");
             (c.node_http(), c.space.clone())
@@ -486,5 +508,46 @@ mod tests {
             Some(canon(&mirror.join("c.wav")))
         );
         assert_eq!(confined(&mirror, "../../config.json", &agent), None);
+    }
+}
+
+#[cfg(test)]
+mod reindex_tests {
+    use drive_files::space;
+
+    use crate::adopt::tests::{device, node, songs};
+
+    fn built(a: &crate::agent::Agent, id: &str) -> (String, i64) {
+        let l = space::locations(&a.space).into_iter().find(|l| l.id == id).unwrap();
+        (l.index, l.built)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unchanged_location_publishes_nothing_and_a_change_publishes_again() {
+        let (url, _node_dir) = node().await;
+        let (dir, disk) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&url, dir.path(), "studio", "Studio PC").await;
+        let songs = songs(disk.path());
+        let loc = a.add_location("Songs", &songs).unwrap();
+        a.index_location(&loc).await.unwrap();
+        let first = built(&a, &loc.id);
+        assert!(!first.0.is_empty());
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        a.index_location(&loc).await.unwrap();
+        assert_eq!(built(&a, &loc.id), first, "nothing changed: not published again");
+
+        std::fs::write(songs.join("new take.wav"), b"new").unwrap();
+        a.index_location(&loc).await.unwrap();
+        let after = built(&a, &loc.id);
+        assert!(after.1 > first.1 && after.0 != first.0, "a change is published");
+        assert!(
+            a.cached_index(&loc.id)
+                .unwrap()
+                .entries
+                .iter()
+                .any(|e| e.path.ends_with("new take.wav")),
+            "and cached without decoding it back"
+        );
     }
 }
