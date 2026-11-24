@@ -480,8 +480,7 @@ impl Drive {
             d.doc.export(ExportMode::Snapshot).ok()
         };
         if let Some(bytes) = snapshot {
-            let id = id.to_string();
-            platform::spawn(async move { platform::save_doc(&id, &bytes).await });
+            platform::save_doc(id, bytes);
         }
     }
 
@@ -650,6 +649,14 @@ fn guest_name() -> String {
 mod tests {
     use super::*;
 
+    /// The copies' folder, one for every test here (it is process-wide).
+    fn copies() -> &'static std::path::Path {
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap()).path();
+        set_data_dir(dir);
+        dir
+    }
+
     fn pending(drive: &Drive, id: &str) -> usize {
         lock(&drive.0.docs)
             .get(id)
@@ -658,8 +665,7 @@ mod tests {
 
     #[test]
     fn an_edit_made_offline_stays_queued() {
-        let copies = tempfile::tempdir().unwrap();
-        set_data_dir(copies.path());
+        copies();
         // Nothing listens here, so the client stays offline.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -706,8 +712,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_superseded_socket_closing_leaves_the_connection_alone() {
-        let copies = tempfile::tempdir().unwrap();
-        set_data_dir(copies.path());
+        copies();
         let (url, _data) = node().await;
         let (drive, _events) = Drive::connect(Some(url));
         online(&drive).await;
@@ -719,5 +724,39 @@ mod tests {
         assert_eq!(drive.status(), Status::Online);
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert_eq!(drive.peer(), peer, "no second socket was opened");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saves_made_together_leave_the_newest_whole() {
+        let dir = copies();
+        let id = "home/test:saves";
+        let copies: Vec<Vec<u8>> = (0..40u8)
+            .map(|i| vec![i; 200_000 + usize::from(i) * 997])
+            .collect();
+        for bytes in &copies {
+            platform::save_doc(id, bytes.clone());
+        }
+        let docs = dir.join("docs");
+        let file = docs.join(drive_native::file_name(id));
+        let mut kept = Vec::new();
+        for _ in 0..100 {
+            kept = std::fs::read(&file).unwrap_or_default();
+            if kept == *copies.last().unwrap() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            &kept,
+            copies.last().unwrap(),
+            "the newest copy is kept whole"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let stray: Vec<_> = std::fs::read_dir(&docs)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(stray.is_empty(), "no temporary files are left");
     }
 }

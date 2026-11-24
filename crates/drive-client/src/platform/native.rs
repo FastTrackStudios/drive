@@ -5,9 +5,10 @@
 //! it works the same whether or not the app has one (a Blitz window runs
 //! none of its own).
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -120,17 +121,57 @@ pub(crate) async fn load_doc(id: &str) -> Option<Vec<u8>> {
     tokio::fs::read(path).await.ok()
 }
 
-pub(crate) async fn save_doc(id: &str, bytes: &[u8]) {
+/// Each document's newest save written so far, so saves of one document
+/// are written one at a time and an older one never replaces a newer.
+fn saves(id: &str) -> Arc<tokio::sync::Mutex<u64>> {
+    static SAVES: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<u64>>>>> = OnceLock::new();
+    let mut saves = SAVES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    saves.entry(id.to_string()).or_default().clone()
+}
+
+/// Save a document's copy soon, in the order the saves are asked for.
+pub(crate) fn save_doc(id: &str, bytes: Vec<u8>) {
+    static STAMP: AtomicU64 = AtomicU64::new(0);
     let Some(d) = dir() else { return };
-    let docs = d.join("docs");
-    if tokio::fs::create_dir_all(&docs).await.is_err() {
-        return;
+    let stamp = STAMP.fetch_add(1, Ordering::SeqCst) + 1;
+    let newest = saves(id);
+    let path = d.join("docs").join(drive_native::file_name(id));
+    spawn(async move {
+        let mut newest = newest.lock().await;
+        if *newest > stamp {
+            return;
+        }
+        match write_whole(&path, &bytes).await {
+            Ok(()) => *newest = stamp,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "a document's copy was not saved")
+            }
+        }
+    });
+}
+
+/// Write `path` whole or not at all: to a temporary file of this write's
+/// own (other apps on this machine keep their copies here too), then
+/// renamed over it.
+async fn write_whole(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
     }
-    let path = docs.join(drive_native::file_name(id));
-    let tmp = path.with_extension("tmp");
-    if tokio::fs::write(&tmp, bytes).await.is_ok() {
-        let _ = tokio::fs::rename(&tmp, &path).await;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{:016x}.tmp", (random() * u64::MAX as f64) as u64));
+    let tmp = path.with_file_name(name);
+    let written = async {
+        tokio::fs::write(&tmp, bytes).await?;
+        tokio::fs::rename(&tmp, path).await
     }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    written
 }
 
 /// Nothing older to drop natively.
