@@ -123,10 +123,21 @@ jobs:
         run: |
           bash scripts/dist.sh aarch64-apple-darwin dist
           bash scripts/dist.sh x86_64-apple-darwin dist
+      # Drive.app (the desktop app with the File Provider extension):
+      # bundled by dx, signed with the Developer ID, notarized.
+      - name: Drive.app
+        env:
+          KEYCHAIN_PW: fts-build
+          DX: /Volumes/build-disk/development/tools/dx-0.8.0-alpha.3/bin/dx
+        run: |
+          bash macos/bundle-app.sh aarch64-apple-darwin dist
+          bash macos/bundle-app.sh x86_64-apple-darwin dist
       - uses: actions/upload-artifact@v4
         with:
           name: dist-macos
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           retention-days: 7
 
   nix:
@@ -166,7 +177,7 @@ jobs:
         run: |
           export PATH="/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:$PATH"
           ref="github:FastTrackStudios/drive/$GITHUB_REF_NAME"
-          paths=$(nix build --no-link --print-out-paths "$ref#drive" "$ref#drive-node")
+          paths=$(nix build --no-link --print-out-paths "$ref#drive" "$ref#drive-node" "$ref#drive-desktop")
           echo "$paths"
           # cachix from the nixpkgs Drive's flake pins.
           nix run github:NixOS/nixpkgs/8ce4ef6cb6f871616146b9fe26d2a5ae594e94fe#cachix -- \
@@ -193,7 +204,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Checksums
-        run: cd dist && sha256sum ./*.tar.gz > SHA256SUMS && cat SHA256SUMS
+        run: cd dist && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS && cat SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

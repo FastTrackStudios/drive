@@ -9,6 +9,8 @@
 # Env:
 #   DX           dx matching the dioxus crate (default: `dx` on PATH)
 #   KEYCHAIN, KEYCHAIN_PW, SIGN_ID   as in build-fileprovider.sh
+#   NOTARIZE     1 (default): notarize and staple, with the App Store
+#                Connect key in ~/.appstoreconnect/config.env; 0 signs only
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -70,4 +72,21 @@ codesign --verify --deep --strict "$final"
 zip="$out/Drive-$version-$target.zip"
 rm -f "$zip"
 ditto -c -k --keepParent "$final" "$zip"
+
+if [ "${NOTARIZE:-1}" = 1 ]; then
+    echo "── notarizing ──────────────────────────────────────────────────"
+    # The App Store Connect API key Studio's releases use.
+    # shellcheck disable=SC1091
+    [ -f "$HOME/.appstoreconnect/config.env" ] && source "$HOME/.appstoreconnect/config.env"
+    : "${ASC_KEY_ID:?ASC_KEY_ID missing (~/.appstoreconnect/config.env); NOTARIZE=0 signs only}"
+    : "${ASC_ISSUER_ID:?ASC_ISSUER_ID missing}"
+    : "${ASC_KEY_PATH:?ASC_KEY_PATH missing}"
+    xcrun notarytool submit "$zip" --key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" \
+        --issuer "$ASC_ISSUER_ID" --wait --timeout 30m
+    xcrun stapler staple "$final"
+    xcrun stapler validate "$final"
+    # Again, with the ticket stapled in.
+    rm -f "$zip"
+    ditto -c -k --keepParent "$final" "$zip"
+fi
 echo "built $zip"
