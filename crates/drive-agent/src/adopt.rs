@@ -310,6 +310,17 @@ impl Agent {
         }
     }
 
+    /// Where a copy of another device's file is kept here (`remote/`, by
+    /// its sampled hash); refused for a sampled hash that is not one.
+    pub(crate) fn remote_copy(&self, loc: &Location, e: &IndexEntry) -> Result<PathBuf, String> {
+        let key = if e.sampled.is_empty() {
+            drive_files::hash::of_bytes(format!("{}/{}", loc.id, e.path).as_bytes())
+        } else {
+            crate::synced::hash(&e.sampled)?.to_string()
+        };
+        Ok(self.dir.join("remote").join(key))
+    }
+
     /// A file of another device's location, on this disk: the copy kept
     /// from before, or brought now through the node (kept beside the
     /// Devices folder's copies).
@@ -318,12 +329,7 @@ impl Agent {
         loc: &Location,
         e: &IndexEntry,
     ) -> Result<PathBuf, String> {
-        let key = if e.sampled.is_empty() {
-            drive_files::hash::of_bytes(format!("{}/{}", loc.id, e.path).as_bytes())
-        } else {
-            e.sampled.clone()
-        };
-        let cached = self.dir.join("remote").join(key);
+        let cached = self.remote_copy(loc, e)?;
         if cached.exists() {
             return Ok(cached);
         }

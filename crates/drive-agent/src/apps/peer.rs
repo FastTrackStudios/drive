@@ -158,7 +158,7 @@ async fn provide_blob(
     if !valid_hash(hash) {
         return Err("not a content hash".into());
     }
-    let tree = a.cache_path(hash);
+    let tree = a.cache_path(hash)?;
     let file = if tree.is_file() {
         tree
     } else if let Some((p, _)) = apps.and_then(|x| x.cache.get(hash)) {

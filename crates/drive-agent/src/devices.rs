@@ -579,20 +579,11 @@ impl DevicesFs {
 
     // ── locations ───────────────────────────────────────────────────────
 
-    fn remote_cache(&self, loc: &Location, e: &IndexEntry) -> PathBuf {
-        let key = if e.sampled.is_empty() {
-            drive_files::hash::of_bytes(format!("{}/{}", loc.id, e.path).as_bytes())
-        } else {
-            e.sampled.clone()
-        };
-        self.agent.dir.join("remote").join(key)
-    }
-
     fn state(&self, loc: &Location, e: &IndexEntry) -> &'static str {
         let v = self.view.read().expect("view");
         if loc.device == v.me {
             "here"
-        } else if self.remote_cache(loc, e).exists() {
+        } else if self.agent.remote_copy(loc, e).is_ok_and(|p| p.exists()) {
             "cached"
         } else if v.online.contains(&loc.device) {
             "remote"
@@ -607,7 +598,7 @@ impl DevicesFs {
         if loc.device == me && loc.storage.is_empty() {
             return inside(Path::new(&loc.path), &e.path).ok_or(Errno::EACCES);
         }
-        let cached = self.remote_cache(loc, e);
+        let cached = self.agent.remote_copy(loc, e).map_err(|_| Errno::EACCES)?;
         if cached.exists() {
             return Ok(cached);
         }

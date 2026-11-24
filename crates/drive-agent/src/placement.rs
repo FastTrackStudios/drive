@@ -147,7 +147,10 @@ impl Agent {
             .filter(|_| may_evict)
             .filter(|h| !self.leases.holds_hash(h))
         {
-            if std::fs::remove_file(self.cache_path(h)).is_ok() {
+            if self
+                .cache_path(h)
+                .is_ok_and(|p| std::fs::remove_file(p).is_ok())
+            {
                 let _ = space::set_held(&self.space, &me, h, None);
                 done.evicted += 1;
             }
@@ -190,7 +193,11 @@ impl Agent {
             let Some(idx) = indexes.get(&src.id) else {
                 continue;
             };
-            let root = self.dir.join("mirror").join(&src.id);
+            let Ok(id) = crate::synced::id(&src.id) else {
+                tracing::warn!(location = %src.id, "not mirrored: its id is not a plain name");
+                continue;
+            };
+            let root = self.dir.join("mirror").join(id);
             let mut room_left = room(&self.dir);
             let mut changed = false;
             for e in idx.entries.iter().filter(|e| !e.dir) {

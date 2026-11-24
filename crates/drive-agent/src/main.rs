@@ -116,6 +116,7 @@ mod rules;
 mod rules_fs;
 mod sidecars;
 mod sites;
+mod synced;
 mod tagging;
 mod telemetry;
 mod transfer;

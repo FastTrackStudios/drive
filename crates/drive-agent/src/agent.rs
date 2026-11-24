@@ -259,12 +259,13 @@ impl Agent {
         self.drive.commit(&self.space_id);
     }
 
-    pub fn cache_path(&self, hash: &str) -> PathBuf {
-        self.dir.join("cache").join(hash)
+    /// A blob's file in the cache; refused for what is not a hash.
+    pub fn cache_path(&self, hash: &str) -> Result<PathBuf, String> {
+        Ok(self.dir.join("cache").join(crate::synced::hash(hash)?))
     }
 
     pub fn is_cached(&self, hash: &str) -> bool {
-        !hash.is_empty() && self.cache_path(hash).exists()
+        self.cache_path(hash).is_ok_and(|p| p.exists())
     }
 
     /// Pinned here: read from the space's registry (so the mount, the
@@ -347,7 +348,7 @@ impl Agent {
     /// this device's own storages first, then the node. Checked against the
     /// hash either way.
     pub async fn fetch(&self, hash: &str) -> Result<PathBuf, String> {
-        let path = self.cache_path(hash);
+        let path = self.cache_path(hash)?;
         if path.exists() {
             return Ok(path);
         }
@@ -405,7 +406,7 @@ impl Agent {
         let h = hash::of_file(src).map_err(|e| e.to_string())?;
         let bytes = tokio::fs::read(src).await.map_err(|e| e.to_string())?;
         let size = bytes.len() as u64;
-        let cached = self.cache_path(&h);
+        let cached = self.cache_path(&h)?;
         if !cached.exists() {
             tokio::fs::write(&cached, &bytes)
                 .await
@@ -458,7 +459,9 @@ impl Agent {
                 .any(|(_, how)| how == "stored");
             let allowed = self.cfg.lock().expect("cfg").allow_evict;
             if stored && allowed && !self.still_wanted(e) {
-                let _ = std::fs::remove_file(self.cache_path(&e.hash));
+                if let Ok(p) = self.cache_path(&e.hash) {
+                    let _ = std::fs::remove_file(p);
+                }
                 let _ = space::set_held(&self.space, &me, &e.hash, None);
             }
         }
