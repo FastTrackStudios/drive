@@ -364,12 +364,12 @@ fn Fields(space: String, target: Target, by: String) -> Element {
                 }
             }
         } else {
-            select {
+            crate::shell::AddPick {
                 class: "tagadd fieldpick",
-                onchange: {
+                prompt: "+ Field",
+                on_pick: {
                     let add = add.clone();
-                    move |e: FormEvent| {
-                        let v = e.value();
+                    move |v: String| {
                         if v == "*" {
                             naming.set(true);
                         } else if let Some((n, k)) = tags::templates().into_iter().find(|(n, _)| *n == v) {
@@ -377,7 +377,6 @@ fn Fields(space: String, target: Target, by: String) -> Element {
                         }
                     }
                 },
-                option { value: "", selected: true, "+ Field" }
                 for (n , k) in tags::templates() {
                     option { key: "{n}", value: "{n}", "{n} · {k.label()}" }
                 }

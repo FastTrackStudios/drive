@@ -292,6 +292,39 @@ fn volume_crumbs(
     crate::browse::volume_crumbs(device, root, path, &device_name, &root_name)
 }
 
+/// A "+ Add…" `<select>`: `prompt` first, then `children` (its options).
+/// Picking one hands its value to `on_pick` and puts the prompt back, so
+/// the same option can be picked twice in a row. The browser keeps a
+/// select's live value whatever its `selected` attribute says, so the
+/// select is drawn afresh (a new key) after each pick.
+#[component]
+pub fn AddPick(
+    #[props(into, default)] class: String,
+    #[props(into)] prompt: String,
+    on_pick: EventHandler<String>,
+    children: Element,
+) -> Element {
+    let mut picks = use_signal(|| 0u64);
+    let n = picks();
+    rsx! {
+        for n in [n] {
+            select {
+                key: "{n}",
+                class: "{class}",
+                onchange: move |e: FormEvent| {
+                    let v = e.value();
+                    picks += 1;
+                    if !v.is_empty() {
+                        on_pick.call(v);
+                    }
+                },
+                option { value: "", selected: true, "{prompt}" }
+                {children.clone()}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn volume_breadcrumbs_link_to_parents_on_the_same_device() {

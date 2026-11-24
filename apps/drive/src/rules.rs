@@ -1101,15 +1101,10 @@ fn RuleEditor(space: String, draft: Signal<Rule>) -> Element {
                 for (ai , a) in r.actions.iter().enumerate() {
                     ActionRow { key: "{ai}-{a.kind()}", draft, ai, action: a.clone(), lists: lists.clone() }
                 }
-                select {
+                crate::shell::AddPick {
                     class: "add",
-                    onchange: move |e| {
-                        let v = e.value();
-                        if !v.is_empty() {
-                            draft.write().actions.push(new_action(&v));
-                        }
-                    },
-                    option { value: "", selected: true, "+ Action…" }
+                    prompt: "+ Action…",
+                    on_pick: move |v: String| draft.write().actions.push(new_action(&v)),
                     for (id , label) in ACTIONS {
                         option { key: "{id}", value: "{id}", "{label}" }
                     }
@@ -1264,10 +1259,11 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                     }
                 }
             }
-            select {
+            crate::shell::AddPick {
                 class: "add",
-                onchange: move |e| {
-                    let p = match e.value().as_str() {
+                prompt: "+ Place…",
+                on_pick: move |v: String| {
+                    let p = match v.as_str() {
                         "location" => Some(RulePlace::Location { location: String::new(), path: String::new() }),
                         "drive" => Some(RulePlace::Drive { path: String::new() }),
                         "project" => Some(RulePlace::Project { project: String::new() }),
@@ -1278,7 +1274,6 @@ fn ScopeEditor(draft: Signal<Rule>, lists: Lists) -> Element {
                         draft.write().scope.places.push(p);
                     }
                 },
-                option { value: "", selected: true, "+ Place…" }
                 option { value: "location", "A location (a computer's folder)" }
                 option { value: "drive", "A Drive folder" }
                 option { value: "project", "A project" }
@@ -1625,16 +1620,18 @@ fn tag_picker(
                 }
             }
         }
-        select {
-            onchange: move |e| {
-                let v = e.value();
-                if !v.is_empty() && !t2.contains(&v) {
+        crate::shell::AddPick {
+            prompt: "+ tag…",
+            on_pick: move |v: String| {
+                if !t2.contains(&v) {
                     let mut n = t2.clone();
                     n.push(v);
                     set2(n);
                 }
             },
-            {select_opts(&lists.tags, "", "+ tag…")}
+            for (id , name) in lists.tags.iter() {
+                option { key: "{id}", value: "{id}", "{name}" }
+            }
         }
     }
 }
