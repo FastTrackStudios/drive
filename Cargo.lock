@@ -2764,6 +2764,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "blake3",
+ "drive-fileprovider",
  "drive-files",
  "drive-kache",
  "drive-local",
@@ -2869,6 +2870,15 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "drive-fileprovider"
+version = "0.1.0"
+dependencies = [
+ "drive-local",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

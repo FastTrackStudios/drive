@@ -62,6 +62,12 @@ pub struct Settings {
     /// one), written with a token to `app.port`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// Folders to put another `app.sock` in, for programs that cannot
+    /// reach the agent's folder: a sandboxed macOS extension reaches only
+    /// its app group's container ([`group_container`] is added there by
+    /// itself).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sockets_in: Vec<std::path::PathBuf>,
 }
 
 impl Settings {
@@ -70,6 +76,35 @@ impl Settings {
             .unwrap_or(DEFAULT_BUDGET_GIB)
             .saturating_mul(1 << 30)
     }
+
+    /// Every folder an `app.sock` goes in besides the agent's own.
+    pub fn socket_dirs(&self) -> Vec<std::path::PathBuf> {
+        let mut dirs = self.sockets_in.clone();
+        if let Some(g) = group_container() {
+            dirs.push(g);
+        }
+        dirs.dedup();
+        dirs
+    }
+}
+
+/// The app group Drive's macOS app and its File Provider extension share
+/// (docs/fileprovider.md): team-prefixed, the form a Developer ID build
+/// uses without a provisioning profile.
+pub const APP_GROUP: &str = "28C2G63DA7.app.fasttrackstudio.drive";
+
+/// That group's container, where the sandboxed extension finds the
+/// agent: on macOS only.
+pub fn group_container() -> Option<std::path::PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join("Library/Group Containers")
+            .join(APP_GROUP),
+    )
 }
 
 /// The app API's state in the running agent.
@@ -185,6 +220,24 @@ pub async fn serve(apps: Arc<Apps>) -> Result<(), String> {
             tracing::info!(apps.socket = %sock.display(), "serving files to apps");
             let a = apps.clone();
             tokio::spawn(async move { accept_unix(a, l).await });
+        }
+        // The same API in the folders sandboxed programs can reach. One that
+        // cannot be bound is logged and skipped: the agent's own socket
+        // still serves everyone else.
+        let extra = apps.a.cfg.lock().expect("cfg").apps.socket_dirs();
+        for d in extra {
+            if d.join(drive_local::SOCKET).as_os_str().len() >= SOCKET_PATH_MAX {
+                tracing::warn!(apps.socket_dir = %d.display(), "too deep for a socket; skipped");
+                continue;
+            }
+            match bind_socket(&d) {
+                Ok(l) => {
+                    tracing::info!(apps.socket = %d.join(drive_local::SOCKET).display(), "serving files to sandboxed apps");
+                    let a = apps.clone();
+                    tokio::spawn(async move { accept_unix(a, l).await });
+                }
+                Err(e) => tracing::warn!(apps.socket_dir = %d.display(), error = %e, "no socket there"),
+            }
         }
     }
     #[cfg(not(unix))]
@@ -501,7 +554,7 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
         ),
         Op::Status => c.answer(id, Ok(serde_json::to_value(apps.status()).expect("status"))),
         // The Drive tree for a system file provider (crate::fileprovider).
-        Op::FpItem { id: item } => c.answer(id, apps.a.fp_item(&item).map(json)),
+        Op::FpItem { item } => c.answer(id, apps.a.fp_item(&item).map(json)),
         Op::FpList {
             parent,
             after,
@@ -509,7 +562,7 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
         } => c.answer(id, apps.a.fp_list(&parent, after.as_deref(), limit).map(json)),
         Op::FpAnchor => c.answer(id, Ok(serde_json::json!({ "anchor": apps.a.fp_anchor() }))),
         Op::FpChanges { anchor } => c.answer(id, Ok(json(apps.a.fp_changes(&anchor)))),
-        Op::FpFetch { id: item, into } => {
+        Op::FpFetch { item, into } => {
             let r = apps.a.fp_fetch(&item, &into).await;
             c.answer(id, r.map(json));
         }
@@ -523,7 +576,7 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
             c.answer(id, r.map(json));
         }
         Op::FpModify {
-            id: item,
+            item,
             name,
             parent,
             from,
@@ -534,7 +587,7 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
                 .await;
             c.answer(id, r.map(json));
         }
-        Op::FpDelete { id: item } => {
+        Op::FpDelete { item } => {
             c.answer(id, apps.a.fp_delete(&item).map(|()| serde_json::Value::Null))
         }
     }

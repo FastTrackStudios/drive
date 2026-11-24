@@ -1090,3 +1090,41 @@ fn concurrent_atomic_writes_each_land_whole() {
     assert!((0..8u8).any(|i| got == pattern(1 << 20, i)), "one writer's bytes, whole");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp files left");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_extension_reaches_the_tree_through_a_socket_in_its_container() {
+    let (url, _node) = node().await;
+    let d = device(&url, "mac", "Mac").await;
+    // The app group's container, as the macOS extension sees it.
+    let group = tempfile::tempdir().unwrap();
+    d.apps.a.cfg.lock().unwrap().apps.sockets_in = vec![group.path().to_path_buf()];
+    serve(d.apps.clone()).await.unwrap();
+    let sock = group.path().join(drive_local::SOCKET);
+    #[cfg(unix)]
+    assert_eq!(mode_of(&sock), 0o600);
+    let staging = group.path().join("staging");
+    let src = d.disk.path().join("take.wav");
+    std::fs::write(&src, b"a take").unwrap();
+    tokio::task::spawn_blocking(move || {
+        drive_fileprovider::connect(&sock).unwrap();
+        let call = |req: serde_json::Value| -> serde_json::Value {
+            serde_json::from_str(&drive_fileprovider::call(&req.to_string()).unwrap()).unwrap()
+        };
+        let folder = call(serde_json::json!({ "op": "fp_create", "parent": "root", "name": "Songs", "dir": true }));
+        let file = call(serde_json::json!({
+            "op": "fp_create", "parent": folder["id"], "name": "take.wav", "from": src
+        }));
+        let page = call(serde_json::json!({ "op": "fp_list", "parent": folder["id"] }));
+        assert_eq!(page["items"][0]["name"], "take.wav");
+        let anchor = call(serde_json::json!({ "op": "fp_anchor" }))["anchor"].clone();
+        call(serde_json::json!({ "op": "fp_modify", "item": file["id"], "name": "final.wav" }));
+        let changes = call(serde_json::json!({ "op": "fp_changes", "anchor": anchor }));
+        assert_eq!(changes["updated"][0]["name"], "final.wav");
+        let got = call(serde_json::json!({ "op": "fp_fetch", "item": file["id"], "into": staging }));
+        assert_eq!(std::fs::read(got["path"].as_str().unwrap()).unwrap(), b"a take");
+        let err = drive_fileprovider::call(&serde_json::json!({ "op": "fp_item", "item": "nope" }).to_string());
+        assert!(err.unwrap_err().contains("no item"));
+    })
+    .await
+    .unwrap();
+}

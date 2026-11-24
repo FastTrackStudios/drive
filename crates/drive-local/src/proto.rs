@@ -79,8 +79,9 @@ pub enum Op {
     Status,
     // ── The Drive tree, for a system file provider (macOS File Provider:
     //    docs/fileprovider.md). Ids are tree ids; the top is `root`. ──
-    /// One item.
-    FpItem { id: String },
+    /// One item. (The item's id is `item`: a request's own `id` is its
+    /// number on the connection, and both are keys of one object.)
+    FpItem { item: String },
     /// A folder's items, a page at a time: `after` is the last page's
     /// `next` (none: from the start).
     FpList {
@@ -96,7 +97,7 @@ pub enum Op {
     FpChanges { anchor: String },
     /// A file's bytes, copied into `into` (a folder the asking process
     /// can read); the answer is the copy's path and the item.
-    FpFetch { id: String, into: std::path::PathBuf },
+    FpFetch { item: String, into: std::path::PathBuf },
     /// A new file or folder; a file's bytes are read from `from`.
     FpCreate {
         parent: String,
@@ -108,7 +109,7 @@ pub enum Op {
     },
     /// Rename, move and/or replace a file's bytes (from `from`).
     FpModify {
-        id: String,
+        item: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,7 +118,7 @@ pub enum Op {
         from: Option<std::path::PathBuf>,
     },
     /// Into the Drive's Trash (nothing is ever deleted).
-    FpDelete { id: String },
+    FpDelete { item: String },
 }
 
 /// One item of the Drive tree, as a file provider shows it.
@@ -459,6 +460,23 @@ mod tests {
         .unwrap();
         let Op::Warm(w) = w.op else { panic!() };
         assert!(w.lease && w.priority == Priority::High && w.targets.is_empty());
+        // Every file-provider op survives the trip with its request id:
+        // no field of an op may be called `id` (it is the request's).
+        for op in [
+            Op::FpItem { item: "1@2".into() },
+            Op::FpList { parent: "root".into(), after: Some("5".into()), limit: Some(9) },
+            Op::FpAnchor,
+            Op::FpChanges { anchor: "00".into() },
+            Op::FpFetch { item: "1@2".into(), into: "/tmp/x".into() },
+            Op::FpCreate { parent: "root".into(), name: "a".into(), dir: true, from: None },
+            Op::FpModify { item: "1@2".into(), name: Some("b".into()), parent: None, from: Some("/tmp/y".into()) },
+            Op::FpDelete { item: "1@2".into() },
+        ] {
+            let req = Request { id: 77, op };
+            let line = serde_json::to_string(&req).unwrap();
+            assert_eq!(line.matches("\"id\"").count(), 1, "{line}");
+            assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), req);
+        }
         let m: Message = serde_json::from_str(r#"{"id":3,"err":"no"}"#).unwrap();
         assert!(matches!(m, Message::Answer { id: 3, .. }));
         let m: Message =

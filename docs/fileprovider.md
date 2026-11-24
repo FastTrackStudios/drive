@@ -29,14 +29,18 @@ Finder ─▶ fileproviderd ─▶ the extension (Swift, sandboxed)
 
 | op | answer |
 |---|---|
-| `fp_item {id}` | one item |
+| `fp_item {item}` | one item |
 | `fp_list {parent, after?, limit?}` | a folder's items, a page at a time (`next` → the next page's `after`) |
 | `fp_anchor` | the tree's version now |
 | `fp_changes {anchor}` | the items updated and the ids deleted since then, and the new anchor; `expired` if that version cannot be gone back to |
-| `fp_fetch {id, into}` | the file's bytes copied into `into`, and the item |
+| `fp_fetch {item, into}` | the file's bytes copied into `into`, and the item |
 | `fp_create {parent, name, dir?, from?}` | a new folder, or a file whose bytes are read from `from` |
-| `fp_modify {id, name?, parent?, from?}` | rename, move and/or new bytes |
-| `fp_delete {id}` | into the Drive's Trash (nothing is ever deleted) |
+| `fp_modify {item, name?, parent?, from?}` | rename, move and/or new bytes |
+| `fp_delete {item}` | into the Drive's Trash (nothing is ever deleted) |
+
+An item is named by `item` in a request, not `id`: every request already
+has its own `id`, its number on the connection, as a key of the same
+object.
 
 ## Items
 
