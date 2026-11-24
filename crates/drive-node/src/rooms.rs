@@ -656,12 +656,12 @@ impl Rooms {
                 };
                 let mut docs: Vec<DocInfo> = match self.store.list().await {
                     Ok(list) => list
-                        .into_iter()
+                        .iter()
                         .filter(|(id, _)| matches(id))
                         .map(|(id, bytes)| DocInfo {
-                            peers: open.get(&id).copied().unwrap_or(0),
-                            id,
-                            bytes,
+                            peers: open.get(id).copied().unwrap_or(0),
+                            id: id.clone(),
+                            bytes: *bytes,
                         })
                         .collect(),
                     Err(_) => Vec::new(),
