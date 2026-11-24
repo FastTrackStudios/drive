@@ -537,7 +537,7 @@ pub fn this_device(id: &str, name: &str) -> Device {
 
 /// The agent's HTTP client: its session token, if it has one, on every
 /// request.
-fn http_client(token: Option<&str>) -> reqwest::Client {
+pub(crate) fn http_client(token: Option<&str>) -> reqwest::Client {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Some(t) = token.filter(|t| !t.is_empty())
         && let Ok(mut v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {t}"))

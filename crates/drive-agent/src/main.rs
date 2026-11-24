@@ -1586,7 +1586,9 @@ async fn node_get(
     path: &str,
     query: &[(&str, &str)],
 ) -> Result<serde_json::Value, String> {
-    let r = reqwest::Client::new()
+    // The device's session, as the agent itself sends it: a node reached
+    // from another computer answers 401 without it (drive#63).
+    let r = agent::http_client(cfg.token.as_deref())
         .get(format!("{}{path}", cfg.node_http()))
         .query(query)
         .send()
@@ -1933,5 +1935,40 @@ mod dir_tests {
             resolve_dir(None, None, None, home),
             PathBuf::from("/home/u/.local/share/drive-agent")
         );
+    }
+}
+
+#[cfg(test)]
+mod node_get_tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    #[tokio::test]
+    async fn node_get_sends_the_device_session() {
+        let app = axum::Router::new().route(
+            "/search",
+            axum::routing::get(|h: HeaderMap| async move {
+                let auth = h
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                axum::Json(serde_json::json!({ "auth": auth }))
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "node": format!("ws://{addr}/sync"),
+            "space": "me",
+            "device_id": "d",
+            "device_name": "d",
+            "token": "secret-session",
+        }))
+        .unwrap();
+        let v = node_get(&cfg, "/search", &[("q", "x")]).await.unwrap();
+        assert_eq!(v["auth"], "Bearer secret-session");
     }
 }
