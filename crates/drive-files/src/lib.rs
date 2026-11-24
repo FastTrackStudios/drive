@@ -34,6 +34,7 @@ pub mod space;
 #[cfg(feature = "storage")]
 pub mod storage;
 pub mod tree;
+pub mod working;
 
 /// The file tree's document id for a space (a space is an org: its
 /// documents are all `<space>/…`).

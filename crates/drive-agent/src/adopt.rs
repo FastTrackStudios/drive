@@ -64,6 +64,33 @@ impl Agent {
         adopt::adoptions(&self.space)
     }
 
+    /// What the mount shows in place from a disk: the adoptions, and this
+    /// device's working copies at their tree folder's current path (here
+    /// the folder on disk is the working copy, read and written in place;
+    /// every other device sees the tree's files).
+    pub fn in_place(&self) -> Vec<Adoption> {
+        let mut all = self.adoptions();
+        for w in self.my_working_copies() {
+            let Some(id) = tree::parse_id(&w.root) else { continue };
+            if tree::entry(&self.files, id).is_none() || tree::in_trash(&self.files, id) {
+                continue;
+            }
+            let at = tree::path_of(&self.files, id);
+            if at.is_empty() || all.iter().any(|a| a.at == at) {
+                continue;
+            }
+            all.push(Adoption {
+                at,
+                location: w.location,
+                sub: w.sub,
+                by: w.device,
+                added: w.added,
+            });
+        }
+        all.sort_by(|a, b| a.at.cmp(&b.at));
+        all
+    }
+
     /// Take a folder of this device over in place, showing at `at` in the
     /// Drive tree.
     #[tracing::instrument(name = "drive.adopt", skip_all, fields(
@@ -239,7 +266,7 @@ impl Agent {
     /// What a logical path is, as far as adoptions go (`None`: nothing
     /// adopted there; the Drive tree's own).
     pub fn spot(&self, logical: &str) -> Option<Spot> {
-        let all = self.adoptions();
+        let all = self.in_place();
         let place = adopt::place(&all, logical);
         let path = place.location_path();
         match place {
@@ -291,7 +318,7 @@ impl Agent {
                     .collect())
             }
             None | Some(Spot::Above) => {
-                let all = self.adoptions();
+                let all = self.in_place();
                 let added = adopt::names_in(&all, dir);
                 let mut rows: Vec<Row> = match tree::resolve(&self.files, dir) {
                     Some(None) => tree::children(&self.files, None),

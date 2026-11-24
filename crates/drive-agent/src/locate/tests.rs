@@ -201,3 +201,39 @@ fn an_indexed_file_has_its_device_real_path_and_drive_path_when_adopted() {
         Some("Studio/Songs/Fire".into())
     );
 }
+
+#[test]
+fn a_file_in_a_working_copy_has_its_device_real_path_and_holders() {
+    let c = copies();
+    let songs = tree::resolve(&c.files, "Studio").unwrap().unwrap();
+    let wc = tree::mkdir(&c.files, Some(songs.id), "Live").unwrap();
+    let set = tree::mkdir(&c.files, Some(wc), "Set 1").unwrap();
+    let f = tree::create_file(&c.files, Some(set), "song.rpp").unwrap();
+    tree::set_content(&c.files, f, 5, HASH).unwrap();
+    drive_files::working::bind(
+        &c.space,
+        &drive_files::working::WorkingCopy {
+            root: tree::id_string(wc),
+            device: "ws".into(),
+            location: "loc".into(),
+            sub: "live".into(),
+            added: 0,
+        },
+    )
+    .unwrap();
+    let Found::Working {
+        device, real, file, ..
+    } = locate(&c, "Studio/Live/Set 1/song.rpp")
+    else {
+        panic!("in a working copy")
+    };
+    assert_eq!(device, "Workstation");
+    assert_eq!(real, "/media/dev/recital/live/Set 1/song.rpp");
+    let (size, hash, holders) = file.unwrap();
+    assert_eq!((size, hash.as_str(), holders.len()), (5, HASH, 2));
+    // The folder itself: no file part.
+    assert!(matches!(
+        locate(&c, "Studio/Live"),
+        Found::Working { file: None, .. }
+    ));
+}

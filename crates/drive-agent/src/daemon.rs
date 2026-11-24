@@ -176,6 +176,12 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // time, starting a minute after the first indexing.
     let backfilling = Busy::default();
     let mut last_backfill = tokio::time::Instant::now() - Duration::from_secs(540);
+    // Working copies (crate::working): reconciled a few seconds after their
+    // folder or the tree changes, and every ten minutes; one pass at a time.
+    let reconciling = Busy::default();
+    let mut reconcile_due: Option<tokio::time::Instant> =
+        Some(tokio::time::Instant::now() + Duration::from_secs(10));
+    let mut last_reconcile = tokio::time::Instant::now();
     loop {
         tokio::select! {
             ev = events.recv() => match ev {
@@ -263,6 +269,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 Ok(Event::Changed(doc)) if doc == a.files_id || doc.contains("/drive:site:") => {
                     let at = tokio::time::Instant::now() + Duration::from_secs(4);
                     sites_due = Some(sites_due.map_or(at, |d| d.min(at)));
+                    if doc == a.files_id && !a.my_working_copies().is_empty() {
+                        let at = tokio::time::Instant::now() + Duration::from_secs(3);
+                        reconcile_due = Some(reconcile_due.map_or(at, |d| d.min(at)));
+                    }
                 }
                 Ok(Event::Presence { .. }) => {
                     view.write().expect("view").online = online_devices(&a);
@@ -275,6 +285,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 rules_due.push(id);
             }
             Some(id) = changed.recv() => {
+                if a.my_working_copies().iter().any(|w| w.location == id) {
+                    let at = tokio::time::Instant::now() + Duration::from_secs(5);
+                    reconcile_due = Some(reconcile_due.map_or(at, |d| d.min(at)));
+                }
                 pending.insert(id, tokio::time::Instant::now() + Duration::from_secs(5));
             }
             _ = tick.tick() => {
@@ -341,6 +355,36 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                         a.make_available().await;
                         a.publish_available().await;
                                 });
+                }
+                if now.duration_since(last_reconcile) > Duration::from_secs(600) && reconcile_due.is_none() {
+                    reconcile_due = Some(now);
+                }
+                if reconcile_due.is_some_and(|d| d <= now)
+                    && let Some(busy) = reconciling.claim()
+                {
+                    reconcile_due = None;
+                    last_reconcile = now;
+                    let a = a.clone();
+                    tokio::spawn(async move {
+                        let _busy = busy;
+                        for w in a.my_working_copies() {
+                            match a.reconcile(&w).await {
+                                Ok(r) if r != crate::working::Reconciled::default() => tracing::info!(
+                                    working.root = %w.root,
+                                    working.up = r.up,
+                                    working.down = r.down,
+                                    working.moved = r.moved,
+                                    working.trashed = r.trashed,
+                                    working.conflicts = r.conflicts,
+                                    working.errors = r.errors.len(),
+                                    working.first_error = r.errors.first().map(String::as_str).unwrap_or(""),
+                                    "a working copy was reconciled"
+                                ),
+                                Ok(_) => {}
+                                Err(e) => tracing::warn!(working.root = %w.root, error = %e, "a working copy did not reconcile"),
+                            }
+                        }
+                    });
                 }
                 if now.duration_since(last_sites) > Duration::from_secs(60) && sites_due.is_none() {
                     sites_due = Some(now);
