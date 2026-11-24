@@ -495,6 +495,35 @@ async fn a_dropped_fetch_resumes_and_partials_are_never_handed_out() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn opening_an_evicted_cache_entry_does_not_return_a_missing_path() {
+    let (url, _node) = node().await;
+    let device = device(&url, "lease-test", "Lease test").await;
+    let bytes = b"cached bytes";
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    let cache = &device.apps.cache;
+    std::fs::write(cache.partial_path(&hash), bytes).unwrap();
+    let path = cache.commit(&hash, bytes.len() as u64, &|_| false).unwrap();
+    let conn = 1;
+    device.a.leases.open(conn, "test app");
+
+    let on_bytes = |_| cache.set_budget(0, &|h| device.a.leases.holds_hash(h));
+    let result = device
+        .apps
+        .open_for(
+            conn,
+            &format!("content:{hash}"),
+            &OpenOptions::new(),
+            "open",
+            &on_bytes,
+        )
+        .await;
+
+    assert!(!path.exists(), "the callback must evict the selected file");
+    assert!(result.is_err(), "the app must not receive a missing path");
+    assert!(!device.a.leases.holds_hash(&hash));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pinned_files_are_not_evicted_and_leases_end_with_the_app() {
     let w = world().await;
     serve(w.b.apps.clone()).await.unwrap();

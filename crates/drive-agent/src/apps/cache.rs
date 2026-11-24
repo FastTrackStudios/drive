@@ -187,6 +187,32 @@ impl AppCache {
         Some((self.object_path(hash), o.size))
     }
 
+    /// Register an app's lease while a cached file is protected from eviction.
+    pub(super) fn hold_file(
+        &self,
+        leases: &super::leases::Leases,
+        conn: u64,
+        item: super::leases::Item,
+    ) -> Result<(), String> {
+        if item.path.starts_with(&self.objects) {
+            // Eviction checks these same leases while holding the cache lock.
+            let inner = self.inner.lock().expect("cache");
+            let present = item
+                .hash
+                .as_deref()
+                .is_some_and(|hash| inner.map.contains_key(hash) && item.path.is_file());
+            if !present {
+                return Err(
+                    "the file left the app cache before it could be leased; try again".into(),
+                );
+            }
+            leases.hold(conn, item);
+        } else {
+            leases.hold(conn, item);
+        }
+        Ok(())
+    }
+
     pub fn has(&self, hash: &str) -> bool {
         self.inner.lock().expect("cache").map.contains_key(hash)
     }

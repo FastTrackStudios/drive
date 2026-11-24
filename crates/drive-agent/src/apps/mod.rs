@@ -133,20 +133,31 @@ impl Apps {
         let src = self.resolve(target).await?;
         let f = self.materialize(&src, opts, on_bytes).await?;
         if opts.lease {
-            self.a.leases.hold(
-                conn,
-                leases::Item {
-                    target: target.to_string(),
-                    path: f.path.clone(),
-                    hash: f.hash.clone(),
-                    size: f.size,
-                    how: f.how,
-                    why: why.to_string(),
-                    since: now_ms(),
-                },
-            );
+            self.hold_file(conn, target, why, &f)?;
         }
         Ok(f)
+    }
+
+    fn hold_file(
+        &self,
+        conn: u64,
+        target: &str,
+        why: &str,
+        file: &drive_local::LocalFile,
+    ) -> Result<(), String> {
+        self.cache.hold_file(
+            &self.a.leases,
+            conn,
+            leases::Item {
+                target: target.to_string(),
+                path: file.path.clone(),
+                hash: file.hash.clone(),
+                size: file.size,
+                how: file.how,
+                why: why.to_string(),
+                since: now_ms(),
+            },
+        )
     }
 }
 
