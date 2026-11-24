@@ -189,6 +189,10 @@ pub fn VolumeFolder(space: String, device: String, root: String, path: String) -
     let mut hidden = use_signal(|| false);
     // Pages after the first ("Show more").
     let mut more = use_signal(Vec::<Value>::new);
+    // Bumped each time the first page is asked for again (another folder,
+    // hidden files shown or not): a "Show more" page asked for before it
+    // is dropped, not added to the new listing (drive#64).
+    let mut listing = use_signal(|| 0u64);
     let mut loading_more = use_signal(|| false);
     let mut status = use_signal(String::new);
     let mut made = use_signal(|| None::<String>);
@@ -198,6 +202,8 @@ pub fn VolumeFolder(space: String, device: String, root: String, path: String) -
         let h = hidden();
         async move {
             more.set(Vec::new());
+            *listing.write() += 1;
+            loading_more.set(false);
             let answer = get_any(format!(
                 "{}/list?root={}&path={}&limit={PAGE}{}",
                 base(&sp, &dv),
@@ -298,6 +304,7 @@ pub fn VolumeFolder(space: String, device: String, root: String, path: String) -
             let (sp, dv, rt, pt) = (sp.clone(), dv.clone(), rt.clone(), pt.clone());
             async move {
                 loading_more.set(true);
+                let asked_in = *listing.peek();
                 let offset = shown;
                 let url = format!(
                     "{}/list?root={}&path={}&offset={offset}&limit={PAGE}{}",
@@ -306,7 +313,11 @@ pub fn VolumeFolder(space: String, device: String, root: String, path: String) -
                     enc(&pt),
                     if hidden() { "&hidden=1" } else { "" }
                 );
-                if let Some((200, v)) = get_any(url).await {
+                let answer = get_any(url).await;
+                if *listing.peek() != asked_in {
+                    return;
+                }
+                if let Some((200, v)) = answer {
                     let page = v["entries"].as_array().cloned().unwrap_or_default();
                     more.write().extend(page);
                 }
