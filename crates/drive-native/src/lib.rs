@@ -95,8 +95,24 @@ struct Inner {
 pub struct Drive(Arc<Inner>);
 
 /// The file a document's copy is kept in (also how `drive-client` names
-/// a native app's copies).
+/// a native app's copies): lowercase letters, digits and `-` as they are,
+/// every other byte `%` and its hex, so two ids never share a file (on a
+/// case-insensitive disk either).
 pub fn file_name(id: &str) -> String {
+    let mut name = String::with_capacity(id.len() + 5);
+    for b in id.bytes() {
+        if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' {
+            name.push(b as char);
+        } else {
+            name.push_str(&format!("%{b:02x}"));
+        }
+    }
+    name + ".loro"
+}
+
+/// The name copies had before [`file_name`] kept ids apart: every other
+/// character `_` (so `a/b`, `a:b` and `a_b` shared one file).
+fn legacy_file_name(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -107,6 +123,18 @@ pub fn file_name(id: &str) -> String {
         })
         .collect::<String>()
         + ".loro"
+}
+
+/// The copy of `id` to read in `docs`: its own file, else one kept under
+/// the name copies had before (written again under its own on save).
+pub fn copy_path(docs: &std::path::Path, id: &str) -> PathBuf {
+    let own = docs.join(file_name(id));
+    let legacy = docs.join(legacy_file_name(id));
+    if !own.exists() && legacy.exists() {
+        legacy
+    } else {
+        own
+    }
 }
 
 impl Drive {
@@ -163,7 +191,7 @@ impl Drive {
         }
         let doc = LoroDoc::new();
         drive_spine::history::prepare(&doc, &self.0.name);
-        if let Ok(bytes) = tokio::fs::read(self.0.dir.join("docs").join(file_name(id))).await {
+        if let Ok(bytes) = tokio::fs::read(copy_path(&self.0.dir.join("docs"), id)).await {
             let _ = doc.import(&bytes);
         }
         let outbox = Arc::new(Mutex::new(Vec::new()));
@@ -519,5 +547,31 @@ impl Drive {
                 tracing::warn!(drive.error = %message, "the node refused something")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_that_differ_keep_copies_apart() {
+        let ids = ["a/b", "a:b", "a_b", "a.b", "A_b", "a%2fb", "home/drive:files"];
+        let names: std::collections::HashSet<String> = ids.iter().map(|i| file_name(i)).collect();
+        assert_eq!(names.len(), ids.len(), "{names:?}");
+        // Case-insensitive disks (macOS, Windows) too.
+        let lower: std::collections::HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        assert_eq!(lower.len(), ids.len());
+        assert!(names.iter().all(|n| n.ends_with(".loro") && !n.contains('/')));
+    }
+
+    #[test]
+    fn a_copy_under_the_old_name_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "home/drive:files";
+        std::fs::write(dir.path().join("home_drive_files.loro"), b"old").unwrap();
+        assert_eq!(std::fs::read(copy_path(dir.path(), id)).unwrap(), b"old");
+        std::fs::write(dir.path().join(file_name(id)), b"new").unwrap();
+        assert_eq!(std::fs::read(copy_path(dir.path(), id)).unwrap(), b"new");
     }
 }
