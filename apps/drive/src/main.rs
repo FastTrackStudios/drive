@@ -18,6 +18,8 @@ mod shell;
 mod sites;
 mod tags;
 
+#[cfg(feature = "desktop")]
+mod desktop;
 use dioxus::prelude::*;
 use drive_dioxus::{DriveProvider, use_doc, use_docs, use_drive};
 use drive_spine as spine;
@@ -43,6 +45,13 @@ fn main() {
             .build()
             .expect("a Tokio runtime");
         let _entered = runtime.enter();
+        // The desktop app: in the menu bar, its window on demand.
+        #[cfg(feature = "desktop")]
+        {
+            desktop::run();
+            return;
+        }
+        #[cfg(not(feature = "desktop"))]
         app_shell_native::launch(
             App,
             no_popout,
@@ -53,6 +62,8 @@ fn main() {
                 // `shot <path.png>` on the app's control socket
                 // ($XDG_RUNTIME_DIR/app-shell/drive.sock).
                 control: Some("drive".to_owned()),
+                // The window's app id on Linux (the desktop app's, src/desktop.rs).
+                app_id: Some("app.fasttrackstudio.drive".to_owned()),
             },
         );
     }
