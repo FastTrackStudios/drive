@@ -239,3 +239,31 @@ async fn index_db_timing() {
     let all = db.load("big").await.unwrap().unwrap();
     eprintln!("load {}: {:?}", all.entries.len(), t0.elapsed());
 }
+
+#[tokio::test]
+async fn find_matches_names_in_any_case_and_takes_wildcards_literally() {
+    let (db, _dir) = db().await;
+    db.put(&songs()).await.unwrap();
+    db.put(&index("other", vec![e("100%_done.wav", false, 1, "hx"), e("1000 done.wav", false, 1, "hy")]))
+        .await
+        .unwrap();
+    let paths = |hits: Vec<(String, IndexEntry)>| hits.into_iter().map(|(l, x)| format!("{l}:{}", x.path)).collect::<Vec<_>>();
+    assert_eq!(paths(db.find("a.WAV", 10).await.unwrap()), vec!["loc:Album/A.wav"]);
+    assert_eq!(paths(db.find("album", 10).await.unwrap()), vec!["loc:Album"]);
+    assert_eq!(paths(db.find("%_", 10).await.unwrap()), vec!["other:100%_done.wav"]);
+    assert_eq!(db.find("wav", 1).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn open_existing_makes_nothing_and_reads_what_is_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("indexes.db");
+    assert!(IndexDb::open_existing(&path).await.unwrap().is_none());
+    assert!(!path.exists());
+    {
+        let db = IndexDb::open(&path).await.unwrap();
+        db.put(&songs()).await.unwrap();
+    }
+    let db = IndexDb::open_existing(&path).await.unwrap().expect("there");
+    assert_eq!(db.find("notes", 10).await.unwrap().len(), 1);
+}

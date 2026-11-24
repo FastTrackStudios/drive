@@ -31,6 +31,9 @@
 //! drive [--dir DIR] locations | volumes | index [NAME]
 //! drive [--dir DIR] search WORDS…                 # every device's files
 //! drive [--dir DIR] copies LOCATION PATH          # where else a file is
+//! drive [--dir DIR] where DRIVE/PATH              # its device and real path, from this
+//!                                   # computer's copies alone: works with Drive down
+//! drive [--dir DIR] where --find WORDS…           # by name: the tree and every index
 //!
 //! Adopting a folder in place (docs/adopt.md; nothing is copied or moved):
 //! drive [--dir DIR] adopt FOLDER --as LOGICAL/PATH # FOLDER shows at MOUNT/LOGICAL/PATH
@@ -109,6 +112,7 @@ mod fileprovider;
 // Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]
 mod index_db;
+mod locate;
 mod kache;
 mod location_rm;
 mod mcp;
@@ -962,6 +966,51 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         // the protocol's, so nothing else here may print.
         "mcp" => mcp::serve(dir, args).await?,
         "rules" => rules::command(dir, args).await?,
+        // From the copies on disk alone (docs/where.md): no agent, no node,
+        // nothing written, so it answers with Drive down.
+        "where" => {
+            let cfg = Config::load(dir)?;
+            let copies = locate::load(dir, &cfg.space)?;
+            if args.get(1).map(String::as_str) == Some("--find") {
+                let words = args[2..].join(" ");
+                if words.trim().is_empty() {
+                    return Err("where --find WORDS…".into());
+                }
+                let mut n = 0;
+                for path in locate::find_in_tree(&copies, &words, 200) {
+                    out(format!("drive:{path}"));
+                    print_found(&locate::locate(&copies, &path));
+                    n += 1;
+                }
+                match index_db::IndexDb::open_existing(&dir.join("indexes.db")).await {
+                    Ok(Some(db)) => {
+                        for (loc, e) in db.find(&words, 200).await.map_err(|e| e.to_string())? {
+                            let d = locate::on_disk(&copies, &loc, &e.path);
+                            let mark = if e.dir { "/" } else { "" };
+                            match &d.drive {
+                                Some(p) => out(format!("drive:{p}{mark}")),
+                                None => out(format!("{}:{}{mark}", d.location, e.path)),
+                            }
+                            out(format!("  on {}: {}{mark}", d.device, d.real));
+                            n += 1;
+                        }
+                    }
+                    Ok(None) => out("# no location indexes on this computer"),
+                    Err(e) => out(format!("# the location indexes would not open: {e}")),
+                }
+                if n == 0 {
+                    return Err(format!("nothing called {words:?}"));
+                }
+                return Ok(());
+            }
+            let path = args.get(1).ok_or("where DRIVE/PATH | where --find WORDS…")?;
+            let path = path.strip_prefix("drive:").unwrap_or(path);
+            let found = locate::locate(&copies, path);
+            if let locate::Found::Missing { path } = &found {
+                return Err(format!("drive:{path} is not in the Drive (as this computer last saw it)"));
+            }
+            print_found(&found);
+        }
         "search" => {
             let words = args[1..].join(" ");
             let cfg = Config::load(dir)?;
@@ -1890,6 +1939,29 @@ fn app_command(dir: &Path, args: &[String]) -> Result<(), String> {
         _ => unreachable!(),
     }
     Ok(())
+}
+
+/// One `drive where` answer, indented under its path.
+fn print_found(f: &locate::Found) {
+    match f {
+        locate::Found::Adopted { device, location, real, .. } => {
+            out(format!("  on {device}: {real}  (adopted from {location})"));
+        }
+        locate::Found::TreeFolder { .. } => out("  a folder of the Drive tree"),
+        locate::Found::TreeFile { size, hash, holders, .. } => {
+            out(format!("  {}  blake3 {hash}", human(*size)));
+            if holders.is_empty() {
+                out("  no device or storage says it holds the bytes");
+            }
+            for h in holders {
+                match &h.path {
+                    Some(p) => out(format!("  {} {}: {p}", h.how, h.who)),
+                    None => out(format!("  {} on {}", h.how, h.who)),
+                }
+            }
+        }
+        locate::Found::Missing { .. } => out("  not in the Drive"),
+    }
 }
 
 async fn start(dir: &Path) -> Result<Agent, String> {
