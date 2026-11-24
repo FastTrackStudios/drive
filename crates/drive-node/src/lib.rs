@@ -530,10 +530,16 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                     "/s/{space}/{token}/comments",
                     get(share::comments).post(share::comment),
                 )
-                // Built sites: public, like share links.
+                .with_state(catalog.clone()),
+        )
+        // Built sites: public, like share links, and sandboxed: they are on
+        // the node's origin, so they run in an opaque one (sites::isolate).
+        .merge(
+            Router::new()
                 .route("/sites/{space}/{id}", get(sites::root))
                 .route("/sites/{space}/{id}/", get(sites::index))
                 .route("/sites/{space}/{id}/{*path}", get(sites::file))
+                .layer(axum::middleware::map_response(sites::isolate))
                 .with_state(catalog),
         )
         // Sidecars: reading one by its content key needs nothing (as a
