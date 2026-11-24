@@ -249,15 +249,20 @@ async fn object(
             None => StatusCode::NOT_FOUND.into_response(),
         },
         Method::GET => match k.open(&key).await {
-            Ok(Some((path, o))) => match tokio::fs::File::open(&path).await {
-                Ok(f) => (
+            // The file and the headers from one look, under the store's
+            // lock: a replacement after the lookup is never sent with the
+            // old object's size and ETag.
+            Ok(Some(_)) => match k.store.open_file(&key) {
+                Ok(Some((f, o))) => (
                     StatusCode::OK,
                     object_headers(o.size, &o.hash, o.modified),
-                    Body::from_stream(tokio_util::io::ReaderStream::new(f)),
+                    Body::from_stream(tokio_util::io::ReaderStream::new(
+                        tokio::fs::File::from_std(f),
+                    )),
                 )
                     .into_response(),
                 // Let go between the lookup and the open.
-                Err(_) => no_key(),
+                _ => no_key(),
             },
             Ok(None) => no_key(),
             Err(e) => xml_error(StatusCode::SERVICE_UNAVAILABLE, "SlowDown", &e),

@@ -180,6 +180,21 @@ impl Store {
         Some((self.object_path(key), o))
     }
 
+    /// A kept object's file, opened, and the object it is: opened while
+    /// commits and removals are excluded, so the bytes read are the ones
+    /// `Obj` describes even if the key is replaced or let go right after.
+    pub fn open_file(&self, key: &str) -> io::Result<Option<(File, Obj)>> {
+        let inner = self.inner.lock().expect("store");
+        let Some(o) = inner.map.get(key).cloned() else {
+            return Ok(None);
+        };
+        match File::open(self.object_path(key)) {
+            Ok(f) => Ok(Some((f, o))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Keys under `prefix`, in order.
     pub fn list(&self, prefix: &str) -> Vec<(String, Obj)> {
         let inner = self.inner.lock().expect("store");
@@ -461,6 +476,22 @@ mod tests {
             .unwrap();
         assert_eq!(c, Commit::Stored);
         gone
+    }
+
+    #[test]
+    fn an_opened_object_is_the_version_it_describes() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), 1024).unwrap();
+        put(&store, "key", b"old");
+        let (mut f, o) = store.open_file("key").unwrap().unwrap();
+        put(&store, "key", b"replaced");
+        let mut got = Vec::new();
+        f.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"old");
+        assert_eq!((o.size, o.hash), (3, blake3::hash(b"old").to_hex().to_string()));
+        store.remove("key");
+        assert!(store.open_file("key").unwrap().is_none());
     }
 
     #[test]
