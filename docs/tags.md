@@ -97,7 +97,7 @@ toggle: the language is a superset of the old search, so a plain search
 cannot be misread.
 
 What a tag search looks at: the whole Drive tree; every file on any
-computer whose content carries a tag (`/search?sampled=…`); and the files
+computer whose content carries a tag (a POST `/search` with the contents in its body); and the files
 the node's name index finds for its words, path pieces (the longest
 literal of a glob, `.wav` of `*.wav`) and kinds. `NOT`, `special:` and
 field searches therefore see the Drive and tagged files, not every file on

@@ -266,6 +266,43 @@ pub async fn search(
     ))
 }
 
+/// What a POST `/search?space=` asks for, as JSON: as the GET's query,
+/// with the contents as a list, as many as a tag is on (a URL holding
+/// them all would pass the request-line limit).
+#[derive(serde::Deserialize)]
+pub struct SearchBody {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    exts: Vec<String>,
+    #[serde(default)]
+    sampled: Vec<String>,
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+fn default_limit() -> i64 {
+    100
+}
+
+/// POST `/search?space=` with a [`SearchBody`]: as [`search`].
+pub async fn search_post(
+    State(c): State<Catalog>,
+    Query(p): Q,
+    Json(b): Json<SearchBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let space_id = q(&p, "space");
+    let found = c
+        .rooms
+        .store
+        .search_with(space_id, &b.q, &b.exts, &b.sampled, b.limit)
+        .await
+        .map_err(fail)?;
+    Ok(Json(
+        serde_json::json!({ "results": hits(&c, space_id, found).await }),
+    ))
+}
+
 /// `?space=&location=&path=`: one folder of a location's index.
 pub async fn list(
     State(c): State<Catalog>,

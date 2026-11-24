@@ -510,7 +510,7 @@ pub async fn router(data: &Path, apps: Vec<(String, PathBuf)>, opts: Options) ->
                     "/index/{space}/{location}",
                     axum::routing::put(catalog::put_index).delete(catalog::drop_index),
                 )
-                .route("/search", get(catalog::search))
+                .route("/search", get(catalog::search).post(catalog::search_post))
                 .route("/list", get(catalog::list))
                 // The Drive tree with its adopted folders (docs/adopt.md).
                 .route("/tree", get(adopted::list))
