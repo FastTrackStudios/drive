@@ -11,7 +11,7 @@ use drive_sidecars::produce::{self, Limits, Made};
 use drive_sidecars::{Kind, kinds_for, sampled_key};
 
 use crate::agent::Agent;
-use crate::places::inside;
+use crate::places::{confined, inside};
 
 /// Files up to this size are fully hashed as well, so their sidecars are
 /// also found by full hash (a copy of the file in the space's tree).
@@ -77,7 +77,8 @@ impl Agent {
     async fn job_for(&self, loc: &Location, rel: &str, kinds: Vec<Kind>) -> Result<Job, String> {
         let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
         if loc.storage.is_empty() {
-            let path = inside(Path::new(&loc.path), rel).ok_or("a path outside the location")?;
+            let path = confined(Path::new(&loc.path), rel, &self.dir)
+                .ok_or("a path outside the location")?;
             let p2 = path.clone();
             let (size, sampled) = tokio::task::spawn_blocking(move || {
                 let size = std::fs::metadata(&p2).map(|m| m.len());

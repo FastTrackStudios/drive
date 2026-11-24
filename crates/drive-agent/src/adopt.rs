@@ -20,7 +20,7 @@ use drive_files::space::{self, Location};
 use drive_files::tree;
 
 use crate::agent::Agent;
-use crate::places::inside;
+use crate::places::confined;
 
 /// What adopting did.
 pub struct Adopted {
@@ -251,7 +251,7 @@ impl Agent {
                     .find(|l| l.id == adoption.location)?;
                 if location.device == self.device_id() && location.storage.is_empty() {
                     let root = PathBuf::from(&location.path);
-                    let real = inside(&root, &path)?;
+                    let real = confined(&root, &path, &self.dir)?;
                     Some(Spot::Here {
                         adoption: adoption.clone(),
                         path: real,

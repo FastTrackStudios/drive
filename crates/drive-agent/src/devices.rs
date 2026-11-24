@@ -43,7 +43,7 @@ use tokio::runtime::Handle;
 
 use crate::agent::Agent;
 use crate::browse::Rules;
-use crate::places::inside;
+use crate::places::confined;
 pub use crate::view::View;
 
 const TTL: Duration = Duration::from_secs(5);
@@ -596,7 +596,7 @@ impl DevicesFs {
     fn local_file(&self, loc: &Location, e: &IndexEntry) -> Result<PathBuf, Errno> {
         let me = self.me();
         if loc.device == me && loc.storage.is_empty() {
-            return inside(Path::new(&loc.path), &e.path).ok_or(Errno::EACCES);
+            return confined(Path::new(&loc.path), &e.path, &self.agent.dir).ok_or(Errno::EACCES);
         }
         let cached = self.agent.remote_copy(loc, e).map_err(|_| Errno::EACCES)?;
         if cached.exists() {
