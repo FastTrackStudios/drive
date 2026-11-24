@@ -301,7 +301,7 @@ fn not_implemented_sync() -> Response {
 }
 
 async fn put(k: &Arc<Kache>, key: &str, req: Request) -> Response {
-    use std::io::Write;
+    use tokio::io::AsyncWriteExt;
     let Some(cond) = condition(req.headers()) else {
         return not_implemented_sync();
     };
@@ -318,7 +318,14 @@ async fn put(k: &Arc<Kache>, key: &str, req: Request) -> Response {
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok()?.parse().ok());
-    let (tmp, mut file) = match k.store.temp() {
+    // The body limit is off (build outputs are large), so the cache's own
+    // budget bounds a write: nothing bigger could be kept, and spooling it
+    // first could fill the disk (drive#63).
+    let max = k.store.budget();
+    if expected.is_some_and(|e| e > max) {
+        return too_large();
+    }
+    let (tmp, file) = match k.store.temp() {
         Ok(t) => t,
         Err(e) => {
             return xml_error(
@@ -328,6 +335,9 @@ async fn put(k: &Arc<Kache>, key: &str, req: Request) -> Response {
             );
         }
     };
+    // Written through tokio's file, which does the blocking writes off the
+    // runtime's workers.
+    let mut file = tokio::fs::File::from_std(file);
     let mut hasher = blake3::Hasher::new();
     let mut n = 0u64;
     let mut body = req.into_body().into_data_stream();
@@ -337,27 +347,49 @@ async fn put(k: &Arc<Kache>, key: &str, req: Request) -> Response {
             Ok(c) => {
                 hasher.update(&c);
                 n += c.len() as u64;
-                if let Err(e) = file.write_all(&c) {
-                    failed = Some(e.to_string());
+                if n > max {
+                    failed = Some(Failed::TooLarge);
+                    break;
+                }
+                if let Err(e) = file.write_all(&c).await {
+                    failed = Some(Failed::Body(e.to_string()));
                     break;
                 }
             }
             Err(e) => {
-                failed = Some(e.to_string());
+                failed = Some(Failed::Body(e.to_string()));
                 break;
             }
         }
     }
+    if failed.is_none()
+        && let Err(e) = file.flush().await
+    {
+        failed = Some(Failed::Body(e.to_string()));
+    }
     drop(file);
     if failed.is_none() && expected.is_some_and(|e| e != n) {
-        failed = Some("the body is shorter than its Content-Length".into());
+        failed = Some(Failed::Body(
+            "the body is shorter than its Content-Length".into(),
+        ));
     }
-    if let Some(e) = failed {
+    if let Some(f) = failed {
         k.store.discard(&tmp);
-        return xml_error(StatusCode::BAD_REQUEST, "IncompleteBody", &e);
+        return match f {
+            Failed::TooLarge => too_large(),
+            Failed::Body(e) => xml_error(StatusCode::BAD_REQUEST, "IncompleteBody", &e),
+        };
     }
     let hash = hasher.finalize().to_hex().to_string();
-    match k.store.commit(key, &tmp, n, &hash, &cond) {
+    // The rename, the journal line and any eviction's unlinks: off the
+    // workers too.
+    let committed = {
+        let (k, key, hash) = (k.clone(), key.to_string(), hash.clone());
+        tokio::task::spawn_blocking(move || k.store.commit(&key, &tmp, n, &hash, &cond))
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+    };
+    match committed {
         Ok((crate::Commit::Stored, gone)) => {
             k.forget(gone).await;
             let mut h = HeaderMap::new();
@@ -377,6 +409,19 @@ async fn put(k: &Arc<Kache>, key: &str, req: Request) -> Response {
             &e.to_string(),
         ),
     }
+}
+
+enum Failed {
+    TooLarge,
+    Body(String),
+}
+
+fn too_large() -> Response {
+    xml_error(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "EntityTooLarge",
+        "the object is bigger than this computer's kache budget",
+    )
 }
 
 /// Keys as kache writes them: relative, `/`-separated, no empty, `.` or
@@ -530,4 +575,36 @@ mod tests {
             assert!(!super::valid_key(bad), "{bad:?}");
         }
     }
+
+    #[tokio::test]
+    async fn a_put_bigger_than_the_budget_is_refused_and_not_spooled() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::open(dir.path(), 1024).unwrap();
+        let cache = Kache::new(store, Arc::new(Vec::new), Default::default());
+        let (addr, _task) = serve(cache.clone(), "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let url = format!("http://{addr}/{BUCKET}/big");
+        let http = reqwest::Client::new();
+
+        let r = http.put(&url).body(vec![7u8; 4096]).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // No Content-Length: cut off once past the budget.
+        let chunks = futures::stream::iter(
+            (0..8).map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![7u8; 512]))),
+        );
+        let r = http
+            .put(&url)
+            .body(reqwest::Body::wrap_stream(chunks))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(cache.store.get("big").is_none());
+
+        let r = http.put(&url).body(vec![7u8; 512]).send().await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(cache.store.get("big").unwrap().1.size, 512);
+    }
+
 }

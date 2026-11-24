@@ -21,7 +21,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 # The S3 client kache itself uses (OpenDAL's S3 service, the version kache
 # 2.x pins), so the tests speak to the endpoint exactly as kache does.
 opendal = { version = "=0.59.5", default-features = false, features = ["services-s3", "http-transport-reqwest", "executors-tokio"] }
