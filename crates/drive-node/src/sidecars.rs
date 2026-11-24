@@ -392,9 +392,12 @@ impl Sidecars {
         });
         let of_kind = |k: &str| kinds.as_ref().is_none_or(|ks| ks.iter().any(|x| x == k));
         let rows = self.all_rows().await?;
-        let cutoff = p
-            .older_than_days
-            .map(|d| now() - d as i64 * 24 * 3600 * 1000);
+        // Saturating: an age too large to count back from now purges
+        // nothing (and a `u64` past `i64::MAX` never wraps to the future).
+        let cutoff = p.older_than_days.map(|d| {
+            const DAY_MS: i64 = 24 * 3600 * 1000;
+            now().saturating_sub(i64::try_from(d).unwrap_or(i64::MAX).saturating_mul(DAY_MS))
+        });
         let mut drop: Vec<&Row> = Vec::new();
         let mut keep: Vec<&Row> = Vec::new();
         for r in &rows {
@@ -970,6 +973,27 @@ mod tests {
         .await
         .unwrap();
         assert!(sc.needs(&a, Kind::Thumb256).await);
+    }
+
+    #[tokio::test]
+    async fn a_huge_age_purges_nothing_and_never_overflows() {
+        let dir = tempfile::tempdir().unwrap();
+        let sc = store(dir.path()).await;
+        sc.put(&[key('1')], Kind::Thumb256, 1, "image/jpeg", vec![1; 10])
+            .await
+            .unwrap();
+        // Days that overflow in milliseconds, and ones that do not fit an i64.
+        for days in [i64::MAX as u64 / 1000, i64::MAX as u64 + 1, u64::MAX] {
+            let out = sc
+                .purge(&Purge {
+                    older_than_days: Some(days),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(out.rows, 0, "{days} days");
+        }
+        assert_eq!(sc.stats().await.unwrap().count, 1);
     }
 
     #[tokio::test]
