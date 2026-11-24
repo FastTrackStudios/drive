@@ -8,8 +8,8 @@
 import FileProvider
 import Foundation
 
-/// The app group the extension and the agent share: the agent serves its
-/// app API on a socket in this group's container.
+/// The app group Drive.app and the extension are in (the registrar's
+/// domain work needs no folder in it).
 let appGroup = "28C2G63DA7.app.fasttrackstudio.drive"
 
 /// A call the agent refused or could not be asked, with its reason.
@@ -84,20 +84,24 @@ struct DriveFetched: Decodable {
 private struct Anchor: Decodable { let anchor: String }
 
 enum Agent {
-    /// The group container: where the socket is, and where fetched bytes
-    /// and outgoing edits are staged (the agent may not read the
-    /// extension's own container, and the extension may not read the
-    /// agent's cache).
-    static var container: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    /// The agent's folder, `~/.local/share/drive-agent`: its app socket is
+    /// there, and fetched bytes and outgoing edits are staged there. The
+    /// extension reaches it through a home-relative sandbox exception
+    /// (DriveFileProvider.entitlements); macOS 15 refuses the app group's
+    /// container to the agent. The real home, not the sandbox's:
+    /// NSHomeDirectory() is the extension's container.
+    static var agentDir: URL? {
+        guard let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir else { return nil }
+        return URL(fileURLWithPath: String(cString: home), isDirectory: true)
+            .appendingPathComponent(".local/share/drive-agent", isDirectory: true)
     }
 
     static var staging: URL? {
-        container?.appendingPathComponent("staging", isDirectory: true)
+        agentDir?.appendingPathComponent("fp-staging", isDirectory: true)
     }
 
     private static let connected: Bool = {
-        guard let sock = container?.appendingPathComponent("app.sock").path else { return false }
+        guard let sock = agentDir?.appendingPathComponent("app.sock").path else { return false }
         return dfp_connect(sock) == 0
     }()
 
@@ -105,7 +109,7 @@ enum Agent {
     static func raw(_ request: [String: Any]) throws -> String {
         if !connected {
             // Connecting again each call: the agent may have started since.
-            if let sock = container?.appendingPathComponent("app.sock").path, dfp_connect(sock) != 0 {
+            if let sock = agentDir?.appendingPathComponent("app.sock").path, dfp_connect(sock) != 0 {
                 throw AgentError.last("the Drive agent is not running")
             }
         }
@@ -149,7 +153,7 @@ enum Agent {
     }
 
     static func fetch(_ id: String) throws -> DriveFetched {
-        guard let into = staging?.path else { throw AgentError(reason: "no app group container") }
+        guard let into = staging?.path else { throw AgentError(reason: "no home folder") }
         return try call(["op": "fp_fetch", "item": id, "into": into], as: DriveFetched.self)
     }
 
@@ -171,10 +175,10 @@ enum Agent {
         try send(["op": "fp_delete", "item": id])
     }
 
-    /// Copy what the system hands over into the group container, where the
-    /// agent can read it. The caller removes it once the agent has.
+    /// Copy what the system hands over into the agent's staging folder,
+    /// where the agent can read it. The caller removes it once the agent has.
     static func stage(_ url: URL) throws -> URL {
-        guard let dir = staging else { throw AgentError(reason: "no app group container") }
+        guard let dir = staging else { throw AgentError(reason: "no home folder") }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let copy = dir.appendingPathComponent("up-\(UUID().uuidString)")
         try FileManager.default.copyItem(at: url, to: copy)

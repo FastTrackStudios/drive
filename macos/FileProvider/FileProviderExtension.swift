@@ -3,8 +3,8 @@
 // The system loads this from the app bundle and asks it for the tree,
 // through `NSFileProviderReplicatedExtension`. Every answer comes from the
 // running agent (Bridge.swift): this keeps no state of its own and touches
-// no file outside its app group's container, where the agent's socket is
-// and where bytes are staged both ways.
+// no file outside the agent's folder (~/.local/share/drive-agent), where the
+// agent's socket is and where bytes are staged both ways.
 
 import FileProvider
 import Foundation
