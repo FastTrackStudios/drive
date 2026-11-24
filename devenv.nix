@@ -4,7 +4,10 @@
 # thumbnails (the sidecars' video producer); without it videos get none.
 # fontconfig and freetype: the native app's text (Blitz), as in Studio.
 # gh, jq and python3: scripts/release.sh, here and on the release runners.
-{ pkgs, ... }:
+# GTK 3, WebKitGTK 4.1 and libsoup 3 (Linux): the desktop app's tray and its
+# web-view windows (app-shell's tray feature: ksni, gtk, wry).
+{ pkgs, lib, ... }:
 {
-  packages = [ pkgs.pkg-config pkgs.fuse3 pkgs.openssl pkgs.ffmpeg-headless pkgs.fontconfig pkgs.freetype pkgs.gh pkgs.jq pkgs.python3 ];
+  packages = [ pkgs.pkg-config pkgs.fuse3 pkgs.openssl pkgs.ffmpeg-headless pkgs.fontconfig pkgs.freetype pkgs.gh pkgs.jq pkgs.python3 ]
+    ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.gtk3 pkgs.webkitgtk_4_1 pkgs.libsoup_3 pkgs.glib ];
 }
