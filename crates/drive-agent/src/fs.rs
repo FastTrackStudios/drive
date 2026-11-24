@@ -34,7 +34,10 @@ const HOLDERS: &str = "user.drive.holders";
 /// An open file: a scratch copy when written to.
 struct Open {
     id: TreeID,
-    scratch: Option<(PathBuf, File)>,
+    /// Shared so reads and writes use it after letting go of the open
+    /// table's lock: one slow disk never stalls every other file
+    /// (drive#63).
+    scratch: Option<(PathBuf, Arc<File>)>,
     dirty: bool,
 }
 
@@ -50,23 +53,64 @@ pub struct DriveFs {
     gid: u32,
 }
 
+/// Inode numbers for tree entries. The kernel counts the lookups it
+/// holds and gives them back with `forget`; an inode it holds none of is
+/// let go (on its last forget, or when unheld ones pile up from listings),
+/// so browsing millions of files does not keep a number for each forever.
 #[derive(Default)]
 struct Inodes {
     by_ino: HashMap<u64, TreeID>,
     by_id: HashMap<TreeID, u64>,
+    /// The kernel's lookup count per inode (absent: none).
+    held: HashMap<u64, u64>,
     next: u64,
 }
+
+/// Unheld inodes (from directory listings) kept before they are pruned.
+const UNHELD_MAX: usize = 100_000;
 
 impl Inodes {
     fn ino(&mut self, id: TreeID) -> u64 {
         if let Some(i) = self.by_id.get(&id) {
             return *i;
         }
+        if self.by_ino.len() - self.held.len() >= UNHELD_MAX {
+            self.prune();
+        }
         self.next = self.next.max(1) + 1;
         let i = self.next;
         self.by_ino.insert(i, id);
         self.by_id.insert(id, i);
         i
+    }
+
+    /// The inode for `id`, handed to the kernel in an entry reply (which
+    /// it counts as one lookup).
+    fn looked_up(&mut self, id: TreeID) -> u64 {
+        let i = self.ino(id);
+        *self.held.entry(i).or_default() += 1;
+        i
+    }
+
+    fn forget(&mut self, ino: u64, n: u64) {
+        let Some(c) = self.held.get_mut(&ino) else {
+            return;
+        };
+        *c = c.saturating_sub(n);
+        if *c == 0 {
+            self.held.remove(&ino);
+            if let Some(id) = self.by_ino.remove(&ino) {
+                self.by_id.remove(&id);
+            }
+        }
+    }
+
+    /// Let go of every inode the kernel holds no lookup of.
+    fn prune(&mut self) {
+        let held = &self.held;
+        self.by_ino.retain(|i, _| held.contains_key(i));
+        let by_ino = &self.by_ino;
+        self.by_id.retain(|_, i| by_ino.contains_key(i));
     }
 }
 
@@ -103,6 +147,12 @@ impl DriveFs {
 
     fn ino_of(&self, id: TreeID) -> INodeNo {
         INodeNo(self.inodes.lock().expect("inodes").ino(id))
+    }
+
+    /// [`Self::ino_of`] for an entry reply: the kernel holds it until it
+    /// forgets it.
+    fn ino_for_entry(&self, id: TreeID) -> INodeNo {
+        INodeNo(self.inodes.lock().expect("inodes").looked_up(id))
     }
 
     /// Whether the tree's top folder has an entry named `name`.
@@ -152,18 +202,14 @@ impl DriveFs {
             None => (true, 0, drive_files::now_ms()),
             Some(e) => {
                 // A file being written shows its scratch size.
-                let scratch = self
+                let file = self
                     .open
                     .lock()
                     .expect("open")
                     .values()
                     .find(|o| o.id == e.id && o.scratch.is_some())
-                    .and_then(|o| {
-                        o.scratch
-                            .as_ref()
-                            .and_then(|(_, f)| f.metadata().ok())
-                            .map(|m| m.len())
-                    });
+                    .and_then(|o| o.scratch.as_ref().map(|(_, f)| f.clone()));
+                let scratch = file.and_then(|f| f.metadata().ok()).map(|m| m.len());
                 (e.dir, scratch.unwrap_or(e.size), e.mtime)
             }
         };
@@ -292,7 +338,7 @@ impl Filesystem for DriveFs {
             let parent = self.id_of(parent)?;
             let name = Self::name(name)?;
             let e = tree::lookup(&self.agent.files, parent, name).ok_or(Errno::ENOENT)?;
-            let ino = self.ino_of(e.id);
+            let ino = self.ino_for_entry(e.id);
             Ok::<_, Errno>(self.attr(ino, Some(&e)))
         })();
         match r {
@@ -393,7 +439,7 @@ impl Filesystem for DriveFs {
             let id = tree::mkdir(&self.agent.files, parent, name).map_err(|_| Errno::EIO)?;
             self.agent.commit_files();
             let e = tree::entry(&self.agent.files, id).ok_or(Errno::EIO)?;
-            Ok(self.attr(self.ino_of(id), Some(&e)))
+            Ok(self.attr(self.ino_for_entry(id), Some(&e)))
         })();
         match r {
             Ok(a) => reply.entry(&TTL, &a, Generation(0)),
@@ -486,7 +532,8 @@ impl Filesystem for DriveFs {
             let truncate = flags.0 & libc::O_TRUNC != 0;
             let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
             let scratch = if write {
-                Some(self.scratch_for(&e, truncate)?)
+                let (path, f) = self.scratch_for(&e, truncate)?;
+                Some((path, Arc::new(f)))
             } else {
                 // Reading fetches the bytes now (a placeholder becomes local).
                 if !e.hash.is_empty() {
@@ -527,11 +574,15 @@ impl Filesystem for DriveFs {
         let r = (|| {
             let mut buf = vec![0u8; size as usize];
             let n = {
-                let open = self.open.lock().expect("open");
-                match open.get(&fh.0).and_then(|o| o.scratch.as_ref()) {
-                    Some((_, f)) => f.read_at(&mut buf, offset).map_err(|_| Errno::EIO)?,
+                let scratch = self
+                    .open
+                    .lock()
+                    .expect("open")
+                    .get(&fh.0)
+                    .and_then(|o| o.scratch.as_ref().map(|(_, f)| f.clone()));
+                match scratch {
+                    Some(f) => f.read_at(&mut buf, offset).map_err(|_| Errno::EIO)?,
                     None => {
-                        drop(open);
                         let e = self.entry_of(ino)?.ok_or(Errno::EISDIR)?;
                         if e.hash.is_empty() {
                             0
@@ -568,19 +619,24 @@ impl Filesystem for DriveFs {
         _lock: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
-        let mut open = self.open.lock().expect("open");
-        match open.get_mut(&fh.0) {
-            Some(o) => match &o.scratch {
-                Some((_, f)) => match f.write_at(data, offset) {
-                    Ok(n) => {
+        // Marked dirty before the write, under the lock: a flush racing it
+        // uploads again rather than missing it.
+        let file = {
+            let mut open = self.open.lock().expect("open");
+            match open.get_mut(&fh.0) {
+                Some(o) => match &o.scratch {
+                    Some((_, f)) => {
                         o.dirty = true;
-                        reply.written(n as u32);
+                        Ok(f.clone())
                     }
-                    Err(_) => reply.error(Errno::EIO),
+                    None => Err(Errno::EBADF),
                 },
-                None => reply.error(Errno::EBADF),
-            },
-            None => reply.error(Errno::EBADF),
+                None => Err(Errno::EBADF),
+            }
+        };
+        match file.and_then(|f| f.write_at(data, offset).map_err(|_| Errno::EIO)) {
+            Ok(n) => reply.written(n as u32),
+            Err(e) => reply.error(e),
         }
     }
 
@@ -599,13 +655,10 @@ impl Filesystem for DriveFs {
             let mut open = self.open.lock().expect("open");
             match open.get_mut(&fh.0) {
                 Some(o) if o.dirty => match &o.scratch {
-                    Some((path, f)) => match f.try_clone() {
-                        Ok(f) => {
-                            o.dirty = false;
-                            Some((o.id, path.clone(), f))
-                        }
-                        Err(_) => None,
-                    },
+                    Some((path, f)) => {
+                        o.dirty = false;
+                        Some((o.id, path.clone(), f.clone()))
+                    }
                     None => None,
                 },
                 _ => None,
@@ -649,6 +702,10 @@ impl Filesystem for DriveFs {
             }
             None => reply.ok(),
         }
+    }
+
+    fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        self.inodes.lock().expect("inodes").forget(ino.0, nlookup);
     }
 
     fn readdir(
@@ -697,7 +754,8 @@ impl Filesystem for DriveFs {
             };
             let e = tree::entry(&self.agent.files, id).ok_or(Errno::EIO)?;
             let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
-            let scratch = self.scratch_for(&e, true)?;
+            let (path, f) = self.scratch_for(&e, true)?;
+            let scratch = (path, Arc::new(f));
             self.open.lock().expect("open").insert(
                 fh,
                 Open {
@@ -706,7 +764,7 @@ impl Filesystem for DriveFs {
                     dirty: true,
                 },
             );
-            Ok((self.attr(self.ino_of(id), Some(&e)), fh))
+            Ok((self.attr(self.ino_for_entry(id), Some(&e)), fh))
         })();
         match r {
             Ok((a, fh)) => {
@@ -778,4 +836,27 @@ mod tests {
         f1.write_all(b"first writer").unwrap();
         assert_eq!(std::fs::read(&one).unwrap(), b"first writer");
     }
+
+    #[test]
+    fn inodes_the_kernel_forgets_are_let_go() {
+        let id = |n| TreeID::new(1, n);
+        let mut t = Inodes::default();
+        let a = t.looked_up(id(1));
+        assert_eq!(t.looked_up(id(1)), a, "one number per entry");
+        t.forget(a, 1);
+        assert!(t.by_ino.contains_key(&a), "still held once");
+        t.forget(a, 1);
+        assert!(t.by_ino.is_empty() && t.by_id.is_empty() && t.held.is_empty());
+
+        // Listed but never looked up: pruned once enough pile up, while a
+        // held one stays.
+        let kept = t.looked_up(id(0));
+        for n in 1..=(UNHELD_MAX as i32 + 10) {
+            t.ino(id(n));
+        }
+        assert!(t.by_ino.len() <= UNHELD_MAX + 1);
+        assert_eq!(t.by_ino.get(&kept), Some(&id(0)));
+        assert_eq!(t.by_id.len(), t.by_ino.len());
+    }
+
 }
