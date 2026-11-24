@@ -2795,6 +2795,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "turso",
 ]
 
 [[package]]
