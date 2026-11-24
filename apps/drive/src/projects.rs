@@ -283,21 +283,19 @@ pub fn AddToProject(reg: Doc, location: String, path: String, label: String) -> 
         if !inside.is_empty() {
             span { class: "chip ok", "In {inside.join(\", \")}" }
         }
-        select {
+        crate::shell::AddPick {
             class: "sortpick",
-            value: "",
-            onchange: move |e: FormEvent| {
-                let pid = e.value();
-                if pid.is_empty() {
-                    return;
+            prompt: "Add to project…",
+            on_pick: {
+                let projects = projects.clone();
+                move |pid: String| {
+                    let name = projects.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_default();
+                    reg.edit(|d| {
+                        let _ = proj::add_part(d, &pid, &label, &location, &path);
+                    });
+                    note.set(format!("Added to {name}"));
                 }
-                let name = projects.iter().find(|p| p.id == pid).map(|p| p.name.clone()).unwrap_or_default();
-                reg.edit(|d| {
-                    let _ = proj::add_part(d, &pid, &label, &location, &path);
-                });
-                note.set(format!("Added to {name}"));
             },
-            option { value: "", selected: true, "Add to project…" }
             for p in projects.iter() {
                 option { key: "{p.id}", value: "{p.id}", "{p.name}" }
             }
