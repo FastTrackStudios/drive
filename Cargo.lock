@@ -2777,6 +2777,7 @@ dependencies = [
  "drive-transfer",
  "fuser",
  "futures",
+ "getrandom 0.3.4",
  "iroh",
  "libc",
  "loro",
@@ -2873,6 +2874,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
+ "getrandom 0.3.4",
  "ignore",
  "js-sys",
  "loro",
