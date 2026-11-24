@@ -20,6 +20,9 @@
 //! client (or the process ending) ends every lease it held.
 
 pub mod proto;
+mod private;
+
+pub use private::write_private;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

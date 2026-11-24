@@ -260,20 +260,16 @@ pub async fn bind_port(dir: &Path, port: u16) -> Result<(tokio::net::TcpListener
         let port = l.local_addr().map_err(|e| e.to_string())?.port();
         let token = new_token()?;
         let file = dir.join(drive_local::PORT_FILE);
-        std::fs::write(
+        drive_local::write_private(
             &file,
             serde_json::to_string(&PortFile {
                 port,
                 token: token.clone(),
             })
-            .expect("a port file serializes"),
+            .expect("a port file serializes")
+            .as_bytes(),
         )
-        .map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
-        }
+        .map_err(|e| format!("{}: {e}", file.display()))?;
         Ok((l, token))
     })
 }

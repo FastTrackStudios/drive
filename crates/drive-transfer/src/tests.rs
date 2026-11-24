@@ -320,3 +320,17 @@ async fn through_n0s_relay() {
     );
     p.shutdown().await;
 }
+
+#[test]
+fn the_endpoint_key_is_private_and_kept() {
+    let t = tempfile::tempdir().unwrap();
+    let f = t.path().join("keys/iroh.key");
+    let k = secret_key(&f).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    assert_eq!(secret_key(&f).unwrap().to_bytes(), k.to_bytes());
+}

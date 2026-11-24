@@ -15,6 +15,12 @@ use super::resolve::Source;
 use super::*;
 use crate::agent::{Agent, Config};
 
+#[cfg(unix)]
+fn mode_of(p: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
 #[test]
 fn port_tokens_are_full_length_and_unpredictable() {
     // Same process, same thread, same millisecond: still different tokens.
@@ -83,6 +89,8 @@ async fn device(url: &str, id: &str, name: &str) -> Dev {
         apps: Default::default(),
     };
     cfg.save(dir.path()).unwrap();
+    #[cfg(unix)]
+    assert_eq!(mode_of(&dir.path().join("config.json")), 0o600);
     let a = Agent::start_with(dir.path(), cfg, name, dir.path().join("state")).await;
     a.drive.online().await;
     space::add_device(&a.space, &crate::agent::this_device(id, name)).unwrap();
@@ -639,6 +647,8 @@ async fn only_this_user_on_loopback_gets_in() {
     // The loopback port: the token in `app.port` lets an app in…
     let port_dir = tempfile::tempdir().unwrap();
     let (l, token) = bind_port(port_dir.path(), 0).await.unwrap();
+    #[cfg(unix)]
+    assert_eq!(mode_of(&port_dir.path().join(drive_local::PORT_FILE)), 0o600);
     tokio::spawn(accept_tcp(d.apps.clone(), l, token));
     let (pd, a2) = (port_dir.path().to_path_buf(), abs.clone());
     tokio::task::spawn_blocking(move || {
