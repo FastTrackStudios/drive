@@ -168,15 +168,15 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // the agent was off.
     let rules = Arc::new(crate::rules::Engine::open(&a).await);
     crate::rules::claim(&a.dir);
-    let ruling = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ruling = Busy::default();
     let mut rules_due: Vec<String> = a.my_locations().into_iter().map(|l| l.id).collect();
     let mut last_rules = tokio::time::Instant::now();
 
     // Sites: checked a few seconds after their pages, theme or settings
     // change, and every minute (new sites, builds asked for elsewhere).
-    let building = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let placing = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let viewing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let building = Busy::default();
+    let placing = Busy::default();
+    let viewing = Busy::default();
     let mut sites_due: Option<tokio::time::Instant> =
         Some(tokio::time::Instant::now() + Duration::from_secs(3));
     let mut last_sites = tokio::time::Instant::now();
@@ -189,7 +189,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     let mut last_place = tokio::time::Instant::now() - Duration::from_secs(3600);
     // Sidecars: missing ones made in the background, a few files at a
     // time, starting a minute after the first indexing.
-    let backfilling = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let backfilling = Busy::default();
     let mut last_backfill = tokio::time::Instant::now() - Duration::from_secs(540);
     loop {
         tokio::select! {
@@ -250,8 +250,10 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     let gone: Vec<String> = known.difference(&now).cloned().collect();
                     let changed_set = now != known;
                     known = now;
+                    // Also a location paused here (`drive location pause`):
+                    // its watcher goes; resumed, `add_new` watches it again.
+                    watchers.drop_gone(&a);
                     if !gone.is_empty() {
-                        watchers.drop_gone(&a);
                         for id in &gone {
                             pending.remove(id);
                             a.forget_index(id);
@@ -309,12 +311,13 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     }
                 }
                 if (!rules_due.is_empty() || now.duration_since(last_rules) > Duration::from_secs(10))
-                    && !ruling.swap(true, std::sync::atomic::Ordering::SeqCst)
+                    && let Some(ruling) = ruling.claim()
                 {
                     last_rules = now;
                     let locs = std::mem::take(&mut rules_due);
-                    let (a, rules, ruling, lock) = (a.clone(), rules.clone(), ruling.clone(), indexing.clone());
+                    let (a, rules, lock) = (a.clone(), rules.clone(), indexing.clone());
                     tokio::spawn(async move {
+                        let _busy = ruling;
                         let _pass = lock.lock().await;
                         let mut locs = locs;
                         locs.sort();
@@ -323,8 +326,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                             rules.after_index(&a, &locs).await;
                         }
                         rules.tick(&a).await;
-                        ruling.store(false, std::sync::atomic::Ordering::SeqCst);
-                    });
+                                });
                 }
                 // The full pass, unless one is still running.
                 if now.duration_since(last_full) > Duration::from_secs(600)
@@ -343,39 +345,40 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                 // Placement reads every index (millions of entries on a big
                 // disk): beside the loop, one pass at a time.
                 if now.duration_since(last_place) > Duration::from_secs(60)
-                    && !placing.swap(true, std::sync::atomic::Ordering::SeqCst)
+                    && let Some(placing) = placing.claim()
                 {
                     last_place = now;
-                    let (a, placing, lock) = (a.clone(), placing.clone(), indexing.clone());
+                    let (a, lock) = (a.clone(), indexing.clone());
                     tokio::spawn(async move {
+                        let _busy = placing;
                         let _pass = lock.lock().await;
                         a.place().await;
                         a.make_available().await;
                         a.publish_available().await;
-                        placing.store(false, std::sync::atomic::Ordering::SeqCst);
-                    });
+                                });
                 }
                 if now.duration_since(last_sites) > Duration::from_secs(60) && sites_due.is_none() {
                     sites_due = Some(now);
                 }
                 if sites_due.is_some_and(|d| d <= now)
-                    && !building.swap(true, std::sync::atomic::Ordering::SeqCst)
+                    && let Some(building) = building.claim()
                 {
                     sites_due = None;
                     last_sites = now;
-                    let (a, building) = (a.clone(), building.clone());
+                    let a = a.clone();
                     tokio::spawn(async move {
+                        let _busy = building;
                         a.build_due_sites().await;
-                        building.store(false, std::sync::atomic::Ordering::SeqCst);
-                    });
+                                });
                 }
                 if now.duration_since(last_backfill) > Duration::from_secs(600)
                     && pending.is_empty()
-                    && !backfilling.swap(true, std::sync::atomic::Ordering::SeqCst)
+                    && let Some(backfilling) = backfilling.claim()
                 {
                     last_backfill = now;
-                    let (a, backfilling, lock) = (a.clone(), backfilling.clone(), indexing.clone());
+                    let (a, lock) = (a.clone(), indexing.clone());
                     tokio::spawn(async move {
+                        let _busy = backfilling;
                         let _pass = lock.lock().await;
                         let p = a.backfill_sidecars(&[], false, 200).await;
                         if p.files > 0 {
@@ -387,8 +390,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                                 "sidecars made in the background"
                             );
                         }
-                        backfilling.store(false, std::sync::atomic::Ordering::SeqCst);
-                    });
+                                });
                 }
                 if now.duration_since(last_view) > Duration::from_secs(30) {
                     last_view = now;
@@ -399,19 +401,39 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     if indexing.try_lock().is_err() {
                         refresh_devices(&a, &view);
                     }
-                    if !viewing.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        let (a, view, viewing, lock) = (a.clone(), view.clone(), viewing.clone(), indexing.clone());
+                    if let Some(viewing) = viewing.claim() {
+                        let (a, view, lock) = (a.clone(), view.clone(), indexing.clone());
                         tokio::spawn(async move {
+                            let _busy = viewing;
                             let _pass = lock.lock().await;
                             refresh_view(&a, &view).await;
-                            viewing.store(false, std::sync::atomic::Ordering::SeqCst);
-                        });
+                                        });
                     }
                 }
             }
         }
     }
     drop(watchers);
+}
+
+/// A background pass that runs one at a time: [`Busy::claim`] it, and
+/// it is free again when the claim is dropped, also when the pass panics
+/// (a flag reset by hand at the end stayed set for good, drive#63).
+#[derive(Clone, Default)]
+struct Busy(Arc<std::sync::atomic::AtomicBool>);
+
+struct Claim(Arc<std::sync::atomic::AtomicBool>);
+
+impl Busy {
+    fn claim(&self) -> Option<Claim> {
+        (!self.0.swap(true, std::sync::atomic::Ordering::SeqCst)).then(|| Claim(self.0.clone()))
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// The live watches on this device's locations, by location id, and the
@@ -486,5 +508,24 @@ impl Watchers {
                 Err(e) => tracing::warn!(error = %e, "no file watcher"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_pass_that_panics_frees_its_claim() {
+        let busy = Busy::default();
+        let claim = busy.claim().expect("free at first");
+        assert!(busy.claim().is_none(), "one pass at a time");
+        let r = tokio::spawn(async move {
+            let _busy = claim;
+            panic!("a pass failed");
+        })
+        .await;
+        assert!(r.is_err());
+        assert!(busy.claim().is_some(), "the next pass may run");
     }
 }
