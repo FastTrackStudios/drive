@@ -78,9 +78,51 @@ pub fn walk(
     root: &Path,
     previous: Option<&LocationIndex>,
 ) -> (LocationIndex, WalkStats) {
-    let old: HashMap<&str, &IndexEntry> = previous
-        .map(|p| p.entries.iter().map(|e| (e.path.as_str(), e)).collect())
-        .unwrap_or_default();
+    walk_with(location, root, previous, walk_threads())
+}
+
+/// How many threads a walk uses: directories are listed and files hashed
+/// on several at once (as `dua` and ripgrep do), which is most of a big
+/// first index's time on an SSD or a network disk.
+fn walk_threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8)
+}
+
+/// What the walk saw of one entry, before any hashing.
+struct Seen {
+    path: String,
+    dir: bool,
+    size: u64,
+    mtime: i64,
+    /// The hash it keeps (unchanged since the previous index), if any.
+    kept: Option<String>,
+}
+
+/// [`walk`] on `threads` threads.
+pub fn walk_with(
+    location: &str,
+    root: &Path,
+    previous: Option<&LocationIndex>,
+    threads: usize,
+) -> (LocationIndex, WalkStats) {
+    // The previous index is sorted by path (every walk sorts it), so an
+    // entry is found by binary search, not a second map of every path.
+    let sorted = previous.is_some_and(|p| p.entries.is_sorted_by(|a, b| a.path <= b.path));
+    let map: HashMap<&str, &IndexEntry> = match previous {
+        Some(p) if !sorted => p.entries.iter().map(|e| (e.path.as_str(), e)).collect(),
+        _ => HashMap::new(),
+    };
+    let old = |path: &str| -> Option<&IndexEntry> {
+        let p = previous?;
+        if sorted {
+            p.entries
+                .binary_search_by(|e| e.path.as_str().cmp(path))
+                .ok()
+                .map(|i| &p.entries[i])
+        } else {
+            map.get(path).copied()
+        }
+    };
     let mut overrides = ignore::overrides::OverrideBuilder::new(root);
     for pat in DEFAULT_IGNORES {
         let _ = overrides.add(&format!("!{pat}"));
@@ -98,59 +140,87 @@ pub fn walk(
                 .unwrap_or_else(|_| ignore::overrides::Override::empty()),
         )
         .follow_links(false)
-        .build();
-    let mut stats = WalkStats::default();
-    let mut entries = Vec::new();
-    for dent in walker.flatten() {
-        let Ok(rel) = dent.path().strip_prefix(root) else {
-            continue;
-        };
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        let Some(rel) = rel.to_str().map(|s| s.replace('\\', "/")) else {
-            continue;
-        };
-        let Ok(meta) = dent.metadata() else { continue };
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_millis() as i64);
-        if meta.is_dir() {
-            stats.dirs += 1;
-            entries.push(IndexEntry {
-                path: rel,
-                dir: true,
-                size: 0,
-                mtime,
-                sampled: String::new(),
-            });
-            continue;
-        }
-        if !meta.is_file() {
-            continue;
-        }
-        let size = meta.len();
-        stats.files += 1;
-        stats.bytes += size;
-        let sampled = match old.get(rel.as_str()) {
-            Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
-                o.sampled.clone()
+        .threads(threads)
+        .build_parallel();
+    let found: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
+    walker.run(|| {
+        // Each thread gathers its own and hands them over once, at its end.
+        struct Batch<'a>(Vec<Seen>, &'a std::sync::Mutex<Vec<Seen>>);
+        impl Drop for Batch<'_> {
+            fn drop(&mut self) {
+                self.1.lock().expect("walk").append(&mut self.0);
             }
-            _ => {
-                stats.hashed += 1;
-                crate::hash::sampled(dent.path()).unwrap_or_default()
+        }
+        let mut batch = Batch(Vec::new(), &found);
+        let old = &old;
+        Box::new(move |dent| {
+            let Ok(dent) = dent else {
+                return ignore::WalkState::Continue;
+            };
+            if let Some(seen) = seen(root, &dent, old) {
+                batch.0.push(seen);
             }
-        };
-        entries.push(IndexEntry {
-            path: rel,
-            dir: false,
-            size,
-            mtime,
-            sampled,
-        });
+            ignore::WalkState::Continue
+        })
+    });
+    let found = found.into_inner().expect("walk");
+
+    // New and changed files: hashed on the same number of threads.
+    let to_hash: Vec<usize> = found
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !s.dir && s.kept.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let hashes: Vec<(usize, String)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.min(to_hash.len()).max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(&i) = to_hash.get(k) else { break };
+                        let hash = crate::hash::sampled(&root.join(&found[i].path)).unwrap_or_default();
+                        out.push((i, hash));
+                    }
+                    out
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().expect("a hashing thread"))
+            .collect()
+    });
+    let mut hashed: Vec<Option<String>> = (0..found.len()).map(|_| None).collect();
+    for (i, h) in hashes {
+        hashed[i] = Some(h);
     }
+
+    let mut stats = WalkStats::default();
+    let mut entries: Vec<IndexEntry> = found
+        .into_iter()
+        .zip(hashed)
+        .map(|(s, h)| {
+            if s.dir {
+                stats.dirs += 1;
+            } else {
+                stats.files += 1;
+                stats.bytes += s.size;
+                if h.is_some() {
+                    stats.hashed += 1;
+                }
+            }
+            IndexEntry {
+                path: s.path,
+                dir: s.dir,
+                size: s.size,
+                mtime: s.mtime,
+                sampled: if s.dir { String::new() } else { s.kept.or(h).unwrap_or_default() },
+            }
+        })
+        .collect();
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     let index = LocationIndex {
         location: location.to_string(),
@@ -159,6 +229,40 @@ pub fn walk(
         entries,
     };
     (index, stats)
+}
+
+/// One walked entry as the index keeps it (`None`: the root, a path that
+/// is not UTF-8, something unreadable, or neither a file nor a folder).
+fn seen<'p>(
+    root: &Path,
+    dent: &ignore::DirEntry,
+    old: &impl Fn(&str) -> Option<&'p IndexEntry>,
+) -> Option<Seen> {
+    let rel = dent.path().strip_prefix(root).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    let rel = rel.to_str()?.replace('\\', "/");
+    let meta = dent.metadata().ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as i64);
+    if meta.is_dir() {
+        return Some(Seen { path: rel, dir: true, size: 0, mtime, kept: None });
+    }
+    if !meta.is_file() {
+        return None;
+    }
+    let size = meta.len();
+    let kept = match old(&rel) {
+        Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
+            Some(o.sampled.clone())
+        }
+        _ => None,
+    };
+    Some(Seen { path: rel, dir: false, size, mtime, kept })
 }
 
 /// Walk a location that is in a storage (an S3 bucket, a WebDAV share),
