@@ -117,7 +117,7 @@ pub(crate) fn save_me(json: &str) {
 }
 
 pub(crate) async fn load_doc(id: &str) -> Option<Vec<u8>> {
-    let path = dir()?.join("docs").join(drive_native::file_name(id));
+    let path = drive_native::copy_path(&dir()?.join("docs"), id);
     tokio::fs::read(path).await.ok()
 }
 
