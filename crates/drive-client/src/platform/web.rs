@@ -77,26 +77,26 @@ pub(crate) struct Socket(WebSocket);
 
 impl Socket {
     /// Open it, its events going to `drive`.
-    pub(crate) fn open(url: &str, drive: Drive) -> Option<Socket> {
+    pub(crate) fn open(url: &str, drive: Drive, generation: u32) -> Option<Socket> {
         let ws = WebSocket::new(url).ok()?;
         ws.set_binary_type(BinaryType::Arraybuffer);
 
         let me = drive.clone();
-        let onopen = Closure::<dyn FnMut()>::new(move || me.socket_opened());
+        let onopen = Closure::<dyn FnMut()>::new(move || me.socket_opened(generation));
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
 
         let me = drive.clone();
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
             if let Ok(buf) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
-                me.socket_message(&js_sys::Uint8Array::new(&buf).to_vec());
+                me.socket_message(generation, &js_sys::Uint8Array::new(&buf).to_vec());
             }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
         onmessage.forget();
 
         let me = drive;
-        let onclose = Closure::<dyn FnMut()>::new(move || me.socket_closed());
+        let onclose = Closure::<dyn FnMut()>::new(move || me.socket_closed(generation));
         ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
         onclose.forget();
 

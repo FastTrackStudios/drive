@@ -137,6 +137,9 @@ struct Inner {
     docs: Mutex<HashMap<DocId, OpenDoc>>,
     events: mpsc::UnboundedSender<Event>,
     retry_ms: AtomicU32,
+    /// Which socket is the current one: each opened bumps it, and what an
+    /// older socket or its retry timer says is ignored.
+    generation: AtomicU32,
     /// The issuer's access token, sent in the handshake (none: the node
     /// is open, or this is its own computer).
     token: Mutex<Option<String>>,
@@ -190,6 +193,7 @@ impl Drive {
             docs: Mutex::new(HashMap::new()),
             events: tx,
             retry_ms: AtomicU32::new(500),
+            generation: AtomicU32::new(0),
             token: Mutex::new(token),
             author: Mutex::new(String::new()),
         }));
@@ -481,16 +485,38 @@ impl Drive {
         }
     }
 
+    /// Open a socket in place of the current one (closed, its callbacks
+    /// and pending retry ignored from now on).
     fn open_socket(&self) {
+        let generation = self
+            .0
+            .generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
         self.set_status(Status::Connecting);
-        match platform::Socket::open(&self.0.url, self.clone()) {
-            Some(s) => *lock(&self.0.ws) = Some(s),
-            None => self.retry(),
+        let mut ws = lock(&self.0.ws);
+        if let Some(old) = ws.take() {
+            old.close();
+        }
+        match platform::Socket::open(&self.0.url, self.clone(), generation) {
+            Some(s) => *ws = Some(s),
+            None => {
+                drop(ws);
+                self.retry(generation);
+            }
         }
     }
 
+    /// Whether `generation` is the current socket's.
+    fn is_current(&self, generation: u32) -> bool {
+        self.0.generation.load(Ordering::SeqCst) == generation
+    }
+
     /// The socket opened: say who this is.
-    pub(crate) fn socket_opened(&self) {
+    pub(crate) fn socket_opened(&self, generation: u32) {
+        if !self.is_current(generation) {
+            return;
+        }
         self.0.retry_ms.store(500, Ordering::Relaxed);
         let name = lock(&self.0.me).name.clone();
         let token = lock(&self.0.token).clone();
@@ -502,24 +528,36 @@ impl Drive {
     }
 
     /// The socket closed (or never opened): offline, and try again.
-    pub(crate) fn socket_closed(&self) {
+    pub(crate) fn socket_closed(&self, generation: u32) {
+        if !self.is_current(generation) {
+            return;
+        }
         *lock(&self.0.peer) = None;
         self.set_status(Status::Offline);
-        self.retry();
+        self.retry(generation);
     }
 
     /// A message from the node, as bytes off the socket.
-    pub(crate) fn socket_message(&self, bytes: &[u8]) {
+    pub(crate) fn socket_message(&self, generation: u32, bytes: &[u8]) {
+        if !self.is_current(generation) {
+            return;
+        }
         if let Ok(msg) = drive_proto::decode::<ToClient>(bytes) {
             self.receive(msg);
         }
     }
 
-    fn retry(&self) {
+    /// Open a new socket a while after `generation`'s closed, unless another
+    /// was opened meanwhile.
+    fn retry(&self, generation: u32) {
         let ms = self.0.retry_ms.load(Ordering::Relaxed);
         self.0.retry_ms.store((ms * 2).min(8000), Ordering::Relaxed);
         let me = self.clone();
-        platform::after(ms, move || me.open_socket());
+        platform::after(ms, move || {
+            if me.is_current(generation) {
+                me.open_socket();
+            }
+        });
     }
 
     fn receive(&self, msg: ToClient) {
@@ -634,5 +672,52 @@ mod tests {
         doc.get_map("song").insert("title", "Know Me").unwrap();
         drive.commit(id);
         assert_eq!(pending(&drive, id), 1, "the update waits to be sent");
+    }
+
+    async fn node() -> (String, tempfile::TempDir) {
+        let data = tempfile::tempdir().unwrap();
+        let opts = drive_node::Options {
+            no_backfill: true,
+            ..Default::default()
+        };
+        let app = drive_node::router(data.path(), Vec::new(), opts).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
+        (format!("ws://{addr}/sync"), data)
+    }
+
+    async fn online(drive: &Drive) {
+        for _ in 0..100 {
+            if drive.status() == Status::Online {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("never online");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_superseded_socket_closing_leaves_the_connection_alone() {
+        let copies = tempfile::tempdir().unwrap();
+        set_data_dir(copies.path());
+        let (url, _data) = node().await;
+        let (drive, _events) = Drive::connect(Some(url));
+        online(&drive).await;
+        let peer = drive.peer();
+
+        // A socket from before this one says it closed.
+        let current = drive.0.generation.load(Ordering::SeqCst);
+        drive.socket_closed(current.wrapping_sub(1));
+        assert_eq!(drive.status(), Status::Online);
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(drive.peer(), peer, "no second socket was opened");
     }
 }
