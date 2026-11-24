@@ -93,8 +93,42 @@ fn entry(row: &turso::Row, at: usize) -> turso::Result<IndexEntry> {
 }
 
 impl IndexDb {
+    /// Open (or make) the database at `path`, shared with the agent's other
+    /// processes (the daemon and a `drive` command run beside it).
+    ///
+    /// Everything in it can be built again (a walk, a download from the
+    /// node), so a file that will not open after a few tries is set aside
+    /// and a fresh one made: a missing index is rebuilt, never fatal.
     pub async fn open(path: &Path) -> turso::Result<IndexDb> {
+        let mut last = None;
+        for attempt in 0..5u64 {
+            match Self::open_once(path).await {
+                Ok(db) => return Ok(db),
+                // Two processes creating it at the same moment race on its
+                // coordination file: the loser opens it a moment later.
+                Err(e) => {
+                    last = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
+                }
+            }
+        }
+        let aside = path.with_extension(format!("db.broken-{}", drive_files::now_ms()));
+        tracing::warn!(
+            path = %path.display(),
+            error = %last.map(|e| e.to_string()).unwrap_or_default(),
+            "the index database would not open: set aside, starting a new one"
+        );
+        for suffix in ["", "-wal", "-shm", "-tshm"] {
+            let from = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+            let to = std::path::PathBuf::from(format!("{}{suffix}", aside.display()));
+            let _ = std::fs::rename(from, to);
+        }
+        Self::open_once(path).await
+    }
+
+    async fn open_once(path: &Path) -> turso::Result<IndexDb> {
         let db = turso::Builder::new_local(&path.to_string_lossy())
+            .experimental_multiprocess_wal(true)
             .build()
             .await?;
         let conn = db.connect()?;

@@ -291,6 +291,7 @@ impl Agent {
         std::fs::write(&cache, &bytes).map_err(|e| e.to_string())?;
         // The cache gets the index just built, not a decode of the file
         // (which would hold a second copy of millions of entries a while).
+        self.index_db.put(&idx).await.map_err(|e| format!("the index database: {e}"))?;
         if let Ok(meta) = std::fs::metadata(&cache) {
             self.indexes.lock().expect("indexes").insert(
                 loc.id.clone(),
@@ -367,7 +368,13 @@ impl Agent {
                             .lock()
                             .expect("fetched")
                             .insert(loc.id.clone(), loc.built);
-                        self.cached_index(&loc.id)
+                        let got = self.cached_index(&loc.id);
+                        if let Some(i) = &got
+                            && let Err(e) = self.index_db.put(i).await
+                        {
+                            tracing::warn!(location.id = %loc.id, error = %e, "a downloaded index was not put in the index database");
+                        }
+                        got
                     }
                     Err(e) => {
                         tracing::debug!(location.id = %loc.id, error = %e, "an index could not be fetched");
@@ -549,5 +556,33 @@ mod reindex_tests {
                 .any(|e| e.path.ends_with("new take.wav")),
             "and cached without decoding it back"
         );
+        assert!(
+            a.index_db.get(&loc.id, "new take.wav").await.unwrap().is_some(),
+            "and kept in the index database"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn index_files_move_into_the_database_and_a_removed_location_leaves_it() {
+        let (url, _node_dir) = node().await;
+        let (dir, disk) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&url, dir.path(), "studio", "Studio PC").await;
+        let songs = songs(disk.path());
+        let loc = a.add_location("Songs", &songs).unwrap();
+        a.index_location(&loc).await.unwrap();
+        // An agent from before the database: only the file.
+        a.index_db.remove(&loc.id).await.unwrap();
+        drop(a);
+        let again = device(&url, dir.path(), "studio", "Studio PC").await;
+        assert!(again.index_db.meta(&loc.id).await.unwrap().is_some(), "imported at start");
+
+        again.remove_location("Songs", false).await.unwrap();
+        for _ in 0..100 {
+            if again.index_db.meta(&loc.id).await.unwrap().is_none() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("a removed location's index stayed in the database");
     }
 }

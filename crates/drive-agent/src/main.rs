@@ -105,7 +105,7 @@ mod daemon;
 mod devices;
 #[cfg(feature = "mount")]
 mod fs;
-// Not read yet: the agent moves onto it in the next changes (drive#47).
+// Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]
 mod index_db;
 mod kache;

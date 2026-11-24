@@ -117,6 +117,18 @@ async fn the_index_outlives_the_process() {
 }
 
 #[tokio::test]
+async fn two_handles_share_one_database() {
+    // As the daemon and a `drive` command do (each its own process: this
+    // is the closest one test gets).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("indexes.db");
+    let (a, b) = tokio::join!(IndexDb::open(&path), IndexDb::open(&path));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    a.put(&songs()).await.unwrap();
+    assert_eq!(b.list("loc", "").await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 #[ignore = "timing, by hand: cargo test --release -p drive-agent index_db_timing -- --ignored --nocapture"]
 async fn index_db_timing() {
     let (db, _dir) = db().await;

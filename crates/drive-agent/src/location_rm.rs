@@ -148,6 +148,12 @@ impl Agent {
     /// memory and its file in Drive's own folder (`indexes/<id>.idx`).
     pub(crate) fn forget_index(&self, location: &str) {
         self.indexes.lock().expect("indexes").remove(location);
+        let (db, id) = (self.index_db.clone(), location.to_string());
+        tokio::spawn(async move {
+            if let Err(e) = db.remove(&id).await {
+                tracing::warn!(location.id = %id, error = %e, "an index stayed in the index database");
+            }
+        });
         self.fetched.lock().expect("fetched").remove(location);
         if let Ok(p) = self.index_cache(location) {
             let _ = std::fs::remove_file(p);
