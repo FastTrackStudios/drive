@@ -90,14 +90,86 @@ jobs:
       - run: just dist dist
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: dist-linux
+          path: dist/*.tar.gz
           retention-days: 7
+
+  dist-macos:
+    name: Binaries (macOS)
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [tests, lint, wasm]
+    # airlock, the M4 Mac mini: Apple silicon natively, Intel (the Mac Pro)
+    # cross-compiled; the agent without the FUSE mount (docs/fileprovider.md).
+    runs-on: [self-hosted, airlock]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash -e {0}
+    env:
+      CARGO_TARGET_DIR: /Volumes/build-disk/development/targets/drive-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Stamp
+        run: bash scripts/release.sh stamp "${GITHUB_REF_NAME#v}"
+      - name: Guard
+        run: bash scripts/release.sh guard
+      - name: Build
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          bash scripts/dist.sh aarch64-apple-darwin dist
+          bash scripts/dist.sh x86_64-apple-darwin dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*.tar.gz
+          retention-days: 7
+
+  nix:
+    name: Nix packages to Cachix (${{ matrix.system }})
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [tests, lint, wasm]
+    # The packages machines install (`github:FastTrackStudios/drive/<tag>`),
+    # built exactly as a machine evaluates them: from the tag on GitHub,
+    # unstamped (a stamped tree would be another store path, and every
+    # machine would miss the cache and build it again). Pushed to
+    # fasttrackstudio.cachix.org, which every fleet machine trusts.
+    #
+    # Linux only. The Macs install the release's own macOS tarballs through
+    # Nix instead (a fetchurl package in the fleet config, pinned to the
+    # tarball's SHA-256): airlock's internal disk, where its Nix store is,
+    # cannot hold this build (over 2,000 derivations; 1.5 GB free,
+    # 2026-11-24), and the Mac Pro would build another store path anyway
+    # (its own darwin nixpkgs).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: [self-hosted, thebattleship-release]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash -e {0}
+    steps:
+      - name: Build and push
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          export PATH="/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:$PATH"
+          ref="github:FastTrackStudios/drive/$GITHUB_REF_NAME"
+          paths=$(nix build --no-link --print-out-paths "$ref#drive" "$ref#drive-node")
+          echo "$paths"
+          # cachix from the nixpkgs Drive's flake pins.
+          nix run github:NixOS/nixpkgs/8ce4ef6cb6f871616146b9fe26d2a5ae594e94fe#cachix -- \
+            push fasttrackstudio $paths
 
   publish:
     name: GitHub Release
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    needs: [dist]
+    needs: [dist, dist-macos, nix]
     runs-on: [self-hosted, thebattleship-release]
     timeout-minutes: 10
     permissions:
@@ -111,8 +183,11 @@ jobs:
           kind: publish
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: dist-*
           path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum ./*.tar.gz > SHA256SUMS && cat SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -129,7 +129,7 @@ cmd_release() {
 }
 
 workspace_version() {
-  sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml | head -1
+  sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml | head -1
 }
 
 cmd_stamp() {
