@@ -19,6 +19,10 @@ use turso::Value;
 /// Read connections kept open.
 const READERS: usize = 4;
 
+/// Rows written in one transaction: well inside what the multi-process
+/// log can hold (64 x 4096 pages, about 1 GB) whatever the rows are.
+const BATCH: usize = 10_000;
+
 /// What the database knows of a location's index as a whole.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Meta {
@@ -171,43 +175,80 @@ impl IndexDb {
 
     /// Keep `index` as its location's: only the rows that differ are
     /// written. Returns how many were (deleted, updated and inserted).
+    ///
+    /// The differences go in [`BATCH`] rows a transaction, the log folded
+    /// into the database after each: in the multi-process mode the log
+    /// holds at most about 1 GB of pages, and one transaction larger than
+    /// that (a first index of a million files) can never commit. The
+    /// location's totals go last, so until they do it reads as the index
+    /// it was, only partly replaced, and the next `put` finishes the work.
     pub async fn put(&self, index: &LocationIndex) -> turso::Result<usize> {
         let conn = self.write.lock().await;
+        self.abandon(&conn).await;
+        let ops = diff_rows(&conn, index).await?;
+        for batch in ops.chunks(BATCH) {
+            self.in_tx(&conn, apply(&conn, index.location.as_str(), batch)).await?;
+            checkpoint(&conn).await;
+        }
+        self.in_tx(&conn, put_meta(&conn, index)).await?;
+        if !ops.is_empty() {
+            checkpoint(&conn).await;
+        }
+        Ok(ops.len())
+    }
+
+    /// Forget a location's index ([`BATCH`] rows a transaction, as `put`).
+    pub async fn remove(&self, location: &str) -> turso::Result<()> {
+        let conn = self.write.lock().await;
+        self.abandon(&conn).await;
+        conn.execute(
+            "DELETE FROM locations WHERE location = ?1",
+            vec![t(location)],
+        )
+        .await?;
+        loop {
+            let gone = conn
+                .execute(
+                    &format!(
+                        "DELETE FROM entries WHERE rowid IN \
+                         (SELECT rowid FROM entries WHERE location = ?1 LIMIT {BATCH})"
+                    ),
+                    vec![t(location)],
+                )
+                .await?;
+            checkpoint(&conn).await;
+            if gone == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Roll back a write transaction a cancelled writer left open.
+    async fn abandon(&self, conn: &turso::Connection) {
         if self.tx_open.swap(false, Ordering::AcqRel) {
             let _ = conn.execute("ROLLBACK", ()).await;
         }
+    }
+
+    /// Run `writes` in one transaction: committed if they all succeed,
+    /// rolled back otherwise.
+    async fn in_tx(
+        &self,
+        conn: &turso::Connection,
+        writes: impl std::future::Future<Output = turso::Result<()>>,
+    ) -> turso::Result<()> {
         conn.execute("BEGIN", ()).await?;
         self.tx_open.store(true, Ordering::Release);
-        let result = put_rows(&conn, index).await;
-        let done = match result {
-            Ok(n) => conn.execute("COMMIT", ()).await.map(|_| n),
+        let done = match writes.await {
+            Ok(()) => conn.execute("COMMIT", ()).await.map(|_| ()),
             Err(e) => Err(e),
         };
         if done.is_err() {
             let _ = conn.execute("ROLLBACK", ()).await;
         }
         self.tx_open.store(false, Ordering::Release);
-        if done.as_ref().is_ok_and(|n| *n > 0) {
-            checkpoint(&conn).await;
-        }
         done
-    }
-
-    /// Forget a location's index.
-    pub async fn remove(&self, location: &str) -> turso::Result<()> {
-        let conn = self.write.lock().await;
-        if self.tx_open.swap(false, Ordering::AcqRel) {
-            let _ = conn.execute("ROLLBACK", ()).await;
-        }
-        conn.execute("DELETE FROM entries WHERE location = ?1", vec![t(location)])
-            .await?;
-        conn.execute(
-            "DELETE FROM locations WHERE location = ?1",
-            vec![t(location)],
-        )
-        .await?;
-        checkpoint(&conn).await;
-        Ok(())
     }
 
     pub async fn meta(&self, location: &str) -> turso::Result<Option<Meta>> {
@@ -511,109 +552,142 @@ impl Pages {
 
 /// Fold the write-ahead log into the database and empty it. Without this
 /// nothing did, in the multi-process mode: indexing 208k files left an
-/// 852 MB log beside a 134 MB database. Best effort: another process
-/// reading just then leaves it for the next write.
+/// 852 MB log beside a 134 MB database. A reader in the way (this process
+/// or another) is waited for a moment; past that it is left for the next
+/// write.
 async fn checkpoint(conn: &turso::Connection) {
-    match conn.query("PRAGMA wal_checkpoint(TRUNCATE)", ()).await {
-        Ok(mut rows) => while let Ok(Some(_)) = rows.next().await {},
-        Err(e) => tracing::debug!(error = %e, "the index database's log was not checkpointed"),
+    for attempt in 0..20u64 {
+        match conn.query("PRAGMA wal_checkpoint(TRUNCATE)", ()).await {
+            Ok(mut rows) => {
+                // (busy, log frames, frames checkpointed)
+                let busy = match rows.next().await {
+                    Ok(Some(row)) => matches!(row.get_value(0), Ok(Value::Integer(b)) if b != 0),
+                    _ => false,
+                };
+                while let Ok(Some(_)) = rows.next().await {}
+                if !busy {
+                    return;
+                }
+            }
+            Err(e) => tracing::debug!(error = %e, "the index database's log was not checkpointed"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt + 1))).await;
     }
+    tracing::debug!("the index database's log was not checkpointed: a reader stayed");
 }
 
-/// [`IndexDb::put`]'s writes, inside its transaction.
-async fn put_rows(conn: &turso::Connection, index: &LocationIndex) -> turso::Result<usize> {
-    let loc = index.location.as_str();
+/// One row's change, from [`diff_rows`].
+enum Op<'a> {
+    Gone(String),
+    Changed(&'a IndexEntry),
+    Added(&'a IndexEntry),
+}
+
+/// How the rows there differ from `index`'s entries, found by reading
+/// them beside the entries in the same (path) order: only the differences
+/// are kept, never the rows.
+async fn diff_rows<'a>(conn: &turso::Connection, index: &'a LocationIndex) -> turso::Result<Vec<Op<'a>>> {
     let mut order: Vec<u32> = (0..index.entries.len() as u32).collect();
     if !index.entries.is_sorted_by(|a, b| a.path <= b.path) {
         order.sort_by(|a, b| index.entries[*a as usize].path.cmp(&index.entries[*b as usize].path));
     }
-    // The rows there, beside the new entries in the same (path) order:
-    // only the differences are kept for writing, never the rows.
-    let mut gone: Vec<String> = Vec::new();
-    let mut changed: Vec<u32> = Vec::new();
+    let mut ops = Vec::new();
     let mut added: Vec<u32> = Vec::new();
-    {
-        let mut rows = conn
-            .query(
-                &format!("SELECT {ENTRY} FROM entries WHERE location = ?1 ORDER BY path"),
-                vec![t(loc)],
-            )
-            .await?;
-        let mut next = order.iter().copied().peekable();
-        while let Some(row) = rows.next().await? {
-            let have = entry(&row, 0)?;
-            while let Some(&i) = next.peek() {
-                if index.entries[i as usize].path < have.path {
-                    added.push(i);
-                    next.next();
-                } else {
-                    break;
-                }
-            }
-            match next.peek() {
-                Some(&i) if index.entries[i as usize].path == have.path => {
-                    next.next();
-                    if index.entries[i as usize] != have {
-                        changed.push(i);
-                    }
-                }
-                _ => gone.push(have.path),
-            }
-        }
-        added.extend(next);
-    }
-    for path in &gone {
-        conn.execute(
-            "DELETE FROM entries WHERE location = ?1 AND path = ?2",
-            vec![t(loc), t(path)],
+    let mut rows = conn
+        .query(
+            &format!("SELECT {ENTRY} FROM entries WHERE location = ?1 ORDER BY path"),
+            vec![t(&index.location)],
         )
         .await?;
+    let mut next = order.iter().copied().peekable();
+    while let Some(row) = rows.next().await? {
+        let have = entry(&row, 0)?;
+        while let Some(&i) = next.peek() {
+            if index.entries[i as usize].path < have.path {
+                added.push(i);
+                next.next();
+            } else {
+                break;
+            }
+        }
+        match next.peek() {
+            Some(&i) if index.entries[i as usize].path == have.path => {
+                next.next();
+                if index.entries[i as usize] != have {
+                    ops.push(Op::Changed(&index.entries[i as usize]));
+                }
+            }
+            _ => ops.push(Op::Gone(have.path)),
+        }
     }
+    added.extend(next);
+    // Two entries with one path (never from a walk): the first is kept.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for i in added {
+        let e = &index.entries[i as usize];
+        if seen.insert(e.path.as_str()) {
+            ops.push(Op::Added(e));
+        }
+    }
+    Ok(ops)
+}
+
+/// A batch of [`diff_rows`]'s changes, inside a transaction.
+async fn apply(conn: &turso::Connection, loc: &str, ops: &[Op<'_>]) -> turso::Result<()> {
     let mut update = conn
         .prepare(
             "UPDATE entries SET dir = ?3, size = ?4, mtime = ?5, sampled = ?6 \
              WHERE location = ?1 AND path = ?2",
         )
         .await?;
-    for i in &changed {
-        let e = &index.entries[*i as usize];
-        update
-            .execute(vec![
-                t(loc),
-                t(&e.path),
-                Value::Integer(e.dir as i64),
-                Value::Integer(e.size as i64),
-                Value::Integer(e.mtime),
-                t(&e.sampled),
-            ])
-            .await?;
-    }
     let mut insert = conn
         .prepare(
             "INSERT INTO entries (location, path, parent, lname, dir, size, mtime, sampled) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .await?;
-    // Two entries with one path (never from a walk): the first is kept.
-    let mut seen: HashMap<&str, ()> = HashMap::new();
-    for i in &added {
-        let e = &index.entries[*i as usize];
-        if seen.insert(e.path.as_str(), ()).is_some() {
-            continue;
+    for op in ops {
+        match op {
+            Op::Gone(path) => {
+                conn.execute(
+                    "DELETE FROM entries WHERE location = ?1 AND path = ?2",
+                    vec![t(loc), t(path)],
+                )
+                .await?;
+            }
+            Op::Changed(e) => {
+                update
+                    .execute(vec![
+                        t(loc),
+                        t(&e.path),
+                        Value::Integer(e.dir as i64),
+                        Value::Integer(e.size as i64),
+                        Value::Integer(e.mtime),
+                        t(&e.sampled),
+                    ])
+                    .await?;
+            }
+            Op::Added(e) => {
+                insert
+                    .execute(vec![
+                        t(loc),
+                        t(&e.path),
+                        t(e.parent()),
+                        t(&e.name().to_lowercase()),
+                        Value::Integer(e.dir as i64),
+                        Value::Integer(e.size as i64),
+                        Value::Integer(e.mtime),
+                        t(&e.sampled),
+                    ])
+                    .await?;
+            }
         }
-        insert
-            .execute(vec![
-                t(loc),
-                t(&e.path),
-                t(e.parent()),
-                t(&e.name().to_lowercase()),
-                Value::Integer(e.dir as i64),
-                Value::Integer(e.size as i64),
-                Value::Integer(e.mtime),
-                t(&e.sampled),
-            ])
-            .await?;
     }
+    Ok(())
+}
+
+/// The location's totals, written after its rows.
+async fn put_meta(conn: &turso::Connection, index: &LocationIndex) -> turso::Result<()> {
     let (mut files, mut dirs, mut bytes) = (0u64, 0u64, 0u64);
     for e in &index.entries {
         if e.dir {
@@ -627,7 +701,7 @@ async fn put_rows(conn: &turso::Connection, index: &LocationIndex) -> turso::Res
         "INSERT OR REPLACE INTO locations (location, root, built, files, dirs, bytes) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         vec![
-            t(loc),
+            t(&index.location),
             t(&index.root),
             Value::Integer(index.built),
             Value::Integer(files as i64),
@@ -636,7 +710,7 @@ async fn put_rows(conn: &turso::Connection, index: &LocationIndex) -> turso::Res
         ],
     )
     .await?;
-    Ok(gone.len() + changed.len() + added.len())
+    Ok(())
 }
 
 #[cfg(test)]

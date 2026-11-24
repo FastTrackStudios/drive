@@ -143,6 +143,59 @@ async fn a_write_leaves_no_log_behind() {
 }
 
 #[tokio::test]
+async fn an_index_larger_than_a_batch_is_written_changed_and_removed() {
+    let (db, _dir) = db().await;
+    let n = BATCH * 2 + 500;
+    let mut entries: Vec<IndexEntry> =
+        (0..n).map(|i| e(&format!("f{i:06}.wav"), false, i as u64, &format!("{i:064x}"))).collect();
+    assert_eq!(db.put(&index("loc", entries.clone())).await.unwrap(), n);
+    assert_eq!(db.meta("loc").await.unwrap().unwrap().files, n as u64);
+    // One changed, one gone, one new: three rows written.
+    entries[7].size += 1;
+    entries.remove(BATCH + 3);
+    entries.push(e("zz-new.wav", false, 1, "hz"));
+    assert_eq!(db.put(&index("loc", entries)).await.unwrap(), 3);
+    assert_eq!(db.list("loc", "").await.unwrap().len(), n);
+    assert_eq!(db.get("loc", "f000007.wav").await.unwrap().unwrap().size, 8);
+    assert!(db.get("loc", &format!("f{:06}.wav", BATCH + 3)).await.unwrap().is_none());
+    db.remove("loc").await.unwrap();
+    assert!(db.meta("loc").await.unwrap().is_none());
+    assert!(db.list("loc", "").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "about a minute in release: cargo test --release -p drive-agent a_million -- --ignored --nocapture"]
+async fn a_million_files_fit_where_one_transaction_would_not() {
+    // One location this size was more than the multi-process log holds
+    // (64 x 4096 pages) in one transaction, and its first index could
+    // never be put (THEBATTLESHIP, 2026-11-24: "database is locked").
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("indexes.db");
+    let db = IndexDb::open(&path).await.unwrap();
+    let n = 1_200_000usize;
+    let entries: Vec<IndexEntry> = (0..n)
+        .map(|i| {
+            e(
+                &format!("Library {:03}/Pack {:05}/Some Long Sample Name {i:08}.wav", i / 50_000, i / 40),
+                false,
+                i as u64,
+                &format!("{i:064x}"),
+            )
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    assert_eq!(db.put(&index("big", entries)).await.unwrap(), n);
+    eprintln!("put {n}: {:?}", t0.elapsed());
+    let wal = std::fs::metadata(dir.path().join("indexes.db-wal")).map_or(0, |m| m.len());
+    eprintln!("log after: {wal} bytes");
+    assert_eq!(db.meta("big").await.unwrap().unwrap().files, n as u64);
+    let t0 = std::time::Instant::now();
+    db.remove("big").await.unwrap();
+    eprintln!("remove: {:?}", t0.elapsed());
+    assert!(db.meta("big").await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn two_handles_share_one_database() {
     // As the daemon and a `drive` command do (each its own process: this
     // is the closest one test gets).
