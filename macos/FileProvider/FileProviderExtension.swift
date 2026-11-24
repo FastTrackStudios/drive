@@ -86,14 +86,33 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let got = try Agent.fetch(id)
+                let file = try self.handOver(URL(fileURLWithPath: got.path))
                 progress.completedUnitCount = 100
-                completionHandler(URL(fileURLWithPath: got.path), Item(got.item), nil)
+                completionHandler(file, Item(got.item), nil)
             } catch {
                 log.error("fetch \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, nil, self.fail(error))
             }
         }
         return progress
+    }
+
+    /// The agent stages fetched bytes in its own folder, which the system
+    /// will not take a file from: move them into this domain's temporary
+    /// folder (the extension's container, the domain's volume), where it
+    /// does.
+    private func handOver(_ staged: URL) throws -> URL {
+        let tmp = try NSFileProviderManager(for: domain)?.temporaryDirectoryURL()
+            ?? FileManager.default.temporaryDirectory
+        let file = tmp.appendingPathComponent("fetch-\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: staged, to: file)
+        } catch {
+            // Another volume: copy, then drop the staged bytes.
+            try FileManager.default.copyItem(at: staged, to: file)
+            try? FileManager.default.removeItem(at: staged)
+        }
+        return file
     }
 
     // ── Writing: what the mount does, through the agent ──────────────
