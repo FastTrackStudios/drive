@@ -176,17 +176,21 @@ pub fn ProjectView(space: String, id: String) -> Element {
                                     .flatten()
                                     .map(|e| drive_files::tree::id_string(e.id)),
                             )
-                        } else if foreign {
-                            Place::Overview
                         } else {
                             Place::Location { loc: part.location.clone(), path: part.path.clone() }
                         };
+                        // A lent part is browsed in its own org, the way a
+                        // project another org shared is (drive#64).
+                        let go_org = foreign.then(|| part.space_in(&space).to_string());
                         let (reg_a, reg_r) = (reg.clone(), reg.clone());
                         let (pa, pr) = (pid.clone(), pid.clone());
                         let (ia, ir) = (part.id.clone(), part.id.clone());
                         rsx! {
                             div { key: "{part.id}", class: "part",
-                                button { class: "partmain", onclick: move |_| nav.go(go.clone()),
+                                button { class: "partmain", onclick: move |_| match &go_org {
+                                        Some(org) => nav.go_in(org, go.clone()),
+                                        None => nav.go(go.clone()),
+                                    },
                                     img { src: icon("Folder"), alt: "" }
                                     div { class: "pmain",
                                         b { "{part.label}" }
