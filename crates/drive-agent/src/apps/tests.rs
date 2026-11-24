@@ -996,3 +996,53 @@ async fn warming_a_project_takes_its_drive_tree_parts() {
         ]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unpinning_keeps_bytes_other_files_and_apps_still_need() {
+    let (url, _node) = node().await;
+    let d = device(&url, "dev-1", "Voyager").await;
+    d.a.cfg.lock().unwrap().allow_evict = true;
+    let src = d.disk.path().join("take.wav");
+    std::fs::write(&src, pattern(4096, 7)).unwrap();
+    let folder = tree::mkdir(&d.a.files, None, "Live").unwrap();
+    let a = d.a.put(&src, None, "a.wav").await.unwrap();
+    let b = d.a.put(&src, Some(folder), "b.wav").await.unwrap();
+    assert_eq!(a.hash, b.hash);
+    let h = a.hash.clone();
+    // A storage holds them, so unpinning may let the bytes go.
+    space::set_held(&d.a.space, "storage-1", &h, Some("stored")).unwrap();
+    d.a.pin(&a, true).await.unwrap();
+    d.a.pin(&b, true).await.unwrap();
+
+    // `b` is still pinned: its bytes stay.
+    d.a.pin(&a, false).await.unwrap();
+    assert!(d.a.is_cached(&h), "another pinned file has the same bytes");
+
+    // An app holds them: they stay.
+    d.a.leases.open(7, "studio");
+    d.a.leases.hold(
+        7,
+        leases::Item {
+            target: "drive:b.wav".into(),
+            path: d.a.cache_path(&h),
+            hash: Some(h.clone()),
+            size: 4096,
+            how: How::Cached,
+            why: "open".into(),
+            since: 0,
+        },
+    );
+    d.a.pin(&b, false).await.unwrap();
+    assert!(d.a.is_cached(&h), "an app holds the bytes");
+    d.a.leases.end(7);
+
+    // In an active folder: they stay.
+    space::set_active(&d.a.space, "dev-1", "Live", true).unwrap();
+    d.a.pin(&b, false).await.unwrap();
+    assert!(d.a.is_cached(&h), "the file is in an active folder");
+
+    // Wanted by nothing: they go.
+    space::set_active(&d.a.space, "dev-1", "Live", false).unwrap();
+    d.a.pin(&b, false).await.unwrap();
+    assert!(!d.a.is_cached(&h));
+}

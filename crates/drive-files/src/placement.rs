@@ -62,7 +62,8 @@ pub struct Inputs<'a> {
     pub grace_ms: i64,
 }
 
-fn under(path: &str, folder: &str) -> bool {
+/// Whether `path` is in `folder` (an active folder; empty: everything).
+pub fn under(path: &str, folder: &str) -> bool {
     let folder = folder.trim_matches('/');
     folder.is_empty() || path == folder || path.starts_with(&format!("{folder}/"))
 }

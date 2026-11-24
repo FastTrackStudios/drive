@@ -457,13 +457,33 @@ impl Agent {
                 .iter()
                 .any(|(_, how)| how == "stored");
             let allowed = self.cfg.lock().expect("cfg").allow_evict;
-            if stored && allowed {
+            if stored && allowed && !self.still_wanted(e) {
                 let _ = std::fs::remove_file(self.cache_path(&e.hash));
                 let _ = space::set_held(&self.space, &me, &e.hash, None);
             }
         }
         self.commit_space();
         Ok(())
+    }
+
+    /// Whether a blob `e` was pinned for must stay here anyway: an app
+    /// holds it, or another file with the same bytes is pinned or in one
+    /// of this device's active folders.
+    fn still_wanted(&self, e: &Entry) -> bool {
+        if self.leases.holds_hash(&e.hash) {
+            return true;
+        }
+        let me = self.device_id();
+        let active = space::active(&self.space, &me);
+        let mut pins = space::pins(&self.space, &me);
+        pins.extend(self.cfg.lock().expect("cfg").pins.iter().cloned());
+        tree::files(&self.files).iter().any(|(path, f)| {
+            f.hash == e.hash
+                && (active
+                    .iter()
+                    .any(|a| drive_files::placement::under(path, a))
+                    || (f.id != e.id && pins.contains(&tree::id_string(f.id))))
+        })
     }
 
     /// Add a file from this computer into the space.
