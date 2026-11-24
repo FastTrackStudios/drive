@@ -98,7 +98,8 @@ impl Agent {
         {
             return Err(format!("{} is not a folder", real.display()));
         }
-        if real.starts_with(&self.dir) {
+        let own = std::fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        if real.starts_with(&own) {
             return Err("that folder is the agent's own".into());
         }
         if on_drive_mount(&real) {

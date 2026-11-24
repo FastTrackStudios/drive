@@ -39,12 +39,23 @@ const NEVER: &[&str] = &["/proc", "/sys", "/dev"];
 /// one would ask the mount, which may be asking this).
 static NEVER_BROWSED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
-/// Never browse these (Drive's own mount points).
+/// Never browse these (Drive's own mount points), known both by the name
+/// given and by where they really are (found now, before they are
+/// mounted: once mounted, resolving one would ask the mount).
 pub fn never_browse(paths: &[PathBuf]) {
-    NEVER_BROWSED
-        .lock()
-        .expect("never")
-        .extend(paths.iter().cloned());
+    let mut never = NEVER_BROWSED.lock().expect("never");
+    for p in paths {
+        never.push(p.clone());
+        let real = std::fs::canonicalize(p).ok().or_else(|| {
+            let parent = std::fs::canonicalize(p.parent()?).ok()?;
+            Some(parent.join(p.file_name()?))
+        });
+        if let Some(real) = real
+            && real != *p
+        {
+            never.push(real);
+        }
+    }
 }
 
 /// What this device lets be browsed now: its volumes (as the registry
@@ -156,6 +167,54 @@ impl Rules {
     }
 }
 
+/// Where `path` really leads, its symlinks read one at a time and nothing
+/// under a path in `deny` ever looked at (not even its type: one may be
+/// Drive's own mount, which would ask this). `None` when it leads into
+/// one, or round in circles; a path that is not there comes back as far
+/// as it got, for the caller to find missing.
+pub(crate) fn follow(path: &Path, deny: &[PathBuf]) -> Option<PathBuf> {
+    let mut real = PathBuf::new();
+    let mut rest: Vec<PathBuf> = path
+        .components()
+        .rev()
+        .map(|c| PathBuf::from(c.as_os_str()))
+        .collect();
+    let mut links = 0;
+    while let Some(c) = rest.pop() {
+        match c.components().next() {
+            Some(Component::Normal(name)) => {
+                let next = real.join(name);
+                if deny.iter().any(|d| next.starts_with(d)) {
+                    return None;
+                }
+                match std::fs::symlink_metadata(&next) {
+                    Ok(m) if m.file_type().is_symlink() => {
+                        links += 1;
+                        if links > 40 {
+                            return None;
+                        }
+                        let to = std::fs::read_link(&next).ok()?;
+                        rest.extend(to.components().rev().map(|c| PathBuf::from(c.as_os_str())));
+                    }
+                    Ok(_) => real = next,
+                    Err(_) => {
+                        real = next;
+                        while let Some(c) = rest.pop() {
+                            real.push(c);
+                        }
+                    }
+                }
+            }
+            Some(Component::ParentDir) => {
+                real.pop();
+            }
+            Some(Component::CurDir) | None => {}
+            Some(root) => real.push(root.as_os_str()),
+        }
+    }
+    Some(real)
+}
+
 /// Whether an entry is hidden by default: a dot file, or a system folder
 /// (`.Spotlight-V100`, `.fseventsd`, `.Trashes` are dot files; Windows'
 /// and fsck's are named).
@@ -180,7 +239,7 @@ pub fn list(
     hidden: bool,
 ) -> Result<Listing, String> {
     let limit = limit.clamp(1, LIST_MAX) as usize;
-    let mut names: Vec<(bool, String, PathBuf)> = Vec::new();
+    let mut names: Vec<(bool, String, PathBuf, PathBuf)> = Vec::new();
     let mut left_out = 0u32;
     for e in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
         let Ok(e) = e else { continue };
@@ -190,13 +249,20 @@ pub fn list(
             left_out += 1;
             continue;
         }
-        // A link counts as what it points at (a folder or a file).
-        let is_dir = match e.file_type() {
-            Ok(t) if t.is_symlink() => path.is_dir(),
-            Ok(t) => t.is_dir(),
-            Err(_) => false,
+        // A link counts as what it points at (a folder or a file), unless
+        // it points somewhere never shown: then it is not followed at all.
+        let (is_dir, target) = match e.file_type() {
+            Ok(t) if t.is_symlink() => match follow(&path, &rules.deny) {
+                Some(to) => (to.is_dir(), to),
+                None => {
+                    left_out += 1;
+                    continue;
+                }
+            },
+            Ok(t) => (t.is_dir(), path.clone()),
+            Err(_) => (false, path.clone()),
         };
-        names.push((is_dir, name, path));
+        names.push((is_dir, name, path, target));
     }
     names.sort_by(|a, b| {
         b.0.cmp(&a.0)
@@ -208,9 +274,9 @@ pub fn list(
         .into_iter()
         .skip(offset as usize)
         .take(limit)
-        .map(|(dir, name, path)| {
-            let link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
-            let meta = std::fs::metadata(&path).or_else(|_| std::fs::symlink_metadata(&path));
+        .map(|(dir, name, path, target)| {
+            let link = target != path;
+            let meta = std::fs::metadata(&target).or_else(|_| std::fs::symlink_metadata(&path));
             let (size, mtime) = match &meta {
                 Ok(m) => (if dir { 0 } else { m.len() }, ms(m.modified())),
                 Err(_) => (0, 0),
@@ -488,6 +554,44 @@ mod tests {
         assert_eq!(p2.entries.len(), 500);
         assert_eq!(p2.entries[0].name, "f02000.txt");
         assert_eq!(p2.offset, LIST_MAX);
+    }
+
+    /// A link into somewhere never shown (the agent's folder, Drive's own
+    /// mount) is not followed to see what it is: it is left out.
+    #[cfg(unix)]
+    #[test]
+    fn links_into_what_is_never_shown_are_not_followed() {
+        let (t, rules) = tree();
+        let root = t.path().join("dev-drive");
+        std::os::unix::fs::symlink(root.join("agent-data"), root.join("agent-link")).unwrap();
+        std::os::unix::fs::symlink(root.join("agent-link"), root.join("link-to-link")).unwrap();
+        std::os::unix::fs::symlink("agent-data/../agent-data", root.join("relative")).unwrap();
+        let mut mount_rules = rules.clone();
+        let mount = t.path().join("mnt");
+        std::fs::create_dir_all(&mount).unwrap();
+        mount_rules.deny.push(mount.clone());
+        std::os::unix::fs::symlink(&mount, root.join("mount-link")).unwrap();
+        let dir = rules.resolve(&root_of(&t), "").unwrap();
+        let l = list(&mount_rules, &dir, 0, 100, false).unwrap();
+        let names: Vec<&str> = l.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["Songs", "songs-link", "up", "out.txt"]);
+    }
+
+    /// Drive's own mount points are kept by their name and by where they
+    /// really are, so a path spelled either way is refused before anything
+    /// under them is looked at.
+    #[cfg(unix)]
+    #[test]
+    fn never_browsed_mounts_are_known_by_their_real_path_too() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, t.path().join("alias")).unwrap();
+        let named = t.path().join("alias/Drive");
+        never_browse(std::slice::from_ref(&named));
+        let kept = NEVER_BROWSED.lock().unwrap().clone();
+        assert!(kept.contains(&named));
+        assert!(kept.contains(&std::fs::canonicalize(&real).unwrap().join("Drive")));
     }
 
     #[cfg(target_os = "linux")]

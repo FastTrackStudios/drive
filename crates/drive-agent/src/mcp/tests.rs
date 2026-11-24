@@ -714,3 +714,29 @@ async fn a_plan_refuses_what_destroys_and_turns_device_moves_into_rules() {
             .starts_with("refused")
     );
 }
+
+#[tokio::test]
+async fn a_local_file_is_never_the_agents_own_or_the_systems() {
+    let w = world(10).await;
+    let agent = w._agent.path();
+    for name in [
+        agent.join("config.json"),
+        agent.join(".").join("config.json"),
+        w.disk
+            .path()
+            .join("..")
+            .join(agent.file_name().unwrap())
+            .join("config.json"),
+        std::path::PathBuf::from("/proc/self/status"),
+    ] {
+        let name = name.to_string_lossy().into_owned();
+        assert!(w.ctx().thing(&name).await.is_err(), "{name} was probed");
+    }
+    // A symlink to it from elsewhere.
+    let link = w.disk.path().join("cfg");
+    std::os::unix::fs::symlink(agent.join("config.json"), &link).unwrap();
+    assert!(w.ctx().thing(&link.to_string_lossy()).await.is_err());
+    // An ordinary file still is one.
+    let mix = w.disk.path().join("Mixes/mix.wav");
+    assert!(w.ctx().thing(&mix.to_string_lossy()).await.is_ok());
+}
