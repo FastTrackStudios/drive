@@ -200,6 +200,11 @@ impl Drive {
         drive.save_me();
         platform::drop_old_copies();
         drive.open_socket();
+        {
+            // A page being hidden may be closed next: save what is not yet.
+            let me = drive.clone();
+            platform::on_hide(move || me.save_now());
+        }
         (drive, rx)
     }
 
@@ -363,6 +368,20 @@ impl Drive {
         }
     }
 
+    /// Save this device's copy of every document changed since it was last
+    /// saved, now rather than a moment later: before an app quits (a
+    /// browser page does it itself when it is hidden).
+    pub fn save_now(&self) {
+        let ids: Vec<DocId> = lock(&self.0.docs)
+            .iter()
+            .filter(|(_, d)| d.save_pending)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.save_local(&id);
+        }
+    }
+
     /// Whether the node has answered this document's join yet (so an empty
     /// document is really empty, not just not arrived).
     pub fn is_synced(&self, id: &str) -> bool {
@@ -476,6 +495,9 @@ impl Drive {
         let snapshot = {
             let mut docs = lock(&self.0.docs);
             let Some(d) = docs.get_mut(id) else { return };
+            if !d.save_pending {
+                return;
+            }
             d.save_pending = false;
             d.doc.export(ExportMode::Snapshot).ok()
         };
