@@ -16,6 +16,10 @@
          container to the agent (TCC's App Data protection), so the
          extension comes to the agent instead. A temporary exception, which
          a Developer ID build may carry (no App Store build is planned). -->
+    <!-- connect() to that socket: the sandbox counts a Unix socket as the
+         network (outbound), not as a file. Nothing else is dialled. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
     <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
     <array>
         <string>/.local/share/drive-agent/</string>

@@ -182,6 +182,14 @@ pub async fn serve(apps: Arc<Apps>) -> Result<(), String> {
     let dir = apps.a.dir.clone();
     #[allow(unused_mut)]
     let mut port = apps.a.cfg.lock().expect("cfg").apps.port;
+    // On macOS also a loopback port: Drive's File Provider extension is
+    // sandboxed, and its sandbox refuses connect() to a Unix socket outside
+    // its app group's container (EPERM), which macOS 15 in turn refuses to
+    // the agent. It reads app.port (port and token) through its
+    // home-relative exception and dials the port instead.
+    if cfg!(target_os = "macos") {
+        port = port.or(Some(0));
+    }
     #[cfg(unix)]
     {
         let sock = dir.join(drive_local::SOCKET);
