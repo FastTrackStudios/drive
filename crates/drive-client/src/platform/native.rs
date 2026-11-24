@@ -132,13 +132,20 @@ fn saves(id: &str) -> Arc<tokio::sync::Mutex<u64>> {
     saves.entry(id.to_string()).or_default().clone()
 }
 
-/// Save a document's copy soon, in the order the saves are asked for.
+/// Save a document's copy soon, in the order the saves are asked for;
+/// while the process exits, now (its runtime's tasks will not run again).
 pub(crate) fn save_doc(id: &str, bytes: Vec<u8>) {
     static STAMP: AtomicU64 = AtomicU64::new(0);
     let Some(d) = dir() else { return };
+    let path = d.join("docs").join(drive_native::file_name(id));
+    if EXITING.load(Ordering::SeqCst) {
+        if let Err(e) = write_whole_now(&path, &bytes) {
+            tracing::warn!(path = %path.display(), error = %e, "a document's copy was not saved");
+        }
+        return;
+    }
     let stamp = STAMP.fetch_add(1, Ordering::SeqCst) + 1;
     let newest = saves(id);
-    let path = d.join("docs").join(drive_native::file_name(id));
     spawn(async move {
         let mut newest = newest.lock().await;
         if *newest > stamp {
@@ -174,8 +181,64 @@ async fn write_whole(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()
     written
 }
 
-/// Nothing hides natively (an app calls `Drive::save_now` before it quits).
-pub(crate) fn on_hide(_f: impl Fn()) {}
+/// [`write_whole`], blocking: for the exit hook.
+fn write_whole_now(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{:016x}.tmp", (random() * u64::MAX as f64) as u64));
+    let tmp = path.with_file_name(name);
+    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// Set once the process is exiting: saves are written at once.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+type Hook = Box<dyn Fn() + Send>;
+
+fn exit_hooks() -> &'static Mutex<Vec<Hook>> {
+    static HOOKS: OnceLock<Mutex<Vec<Hook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+extern "C" fn run_exit_hooks() {
+    EXITING.store(true, Ordering::SeqCst);
+    let hooks = std::mem::take(&mut *exit_hooks().lock().unwrap_or_else(|e| e.into_inner()));
+    // On a thread of their own: by now this thread's thread-locals may be
+    // gone, and a panic here could not unwind.
+    let _ = std::thread::Builder::new()
+        .name("drive-client-exit".into())
+        .spawn(move || {
+            for h in hooks {
+                h();
+            }
+        })
+        .map(|t| t.join());
+}
+
+/// Nothing hides natively; a native app's last moment is its exit. `f`
+/// runs then (`exit`, or returning from `main`), so edits from just
+/// before quitting are kept even when the app never calls
+/// `Drive::save_now` (drive#62).
+pub(crate) fn on_hide(f: impl Fn() + Send + 'static) {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    exit_hooks()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Box::new(f));
+    REGISTERED.call_once(|| {
+        // SAFETY: `run_exit_hooks` is a plain `extern "C" fn()` that lives
+        // as long as the process.
+        unsafe {
+            libc::atexit(run_exit_hooks);
+        }
+    });
+}
 
 /// Nothing older to drop natively.
 pub(crate) fn drop_old_copies() {}

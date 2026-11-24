@@ -33,6 +33,7 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 futures-util = { version = "0.3", features = ["sink"] }
 getrandom = "0.3"
+libc = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 drive-node = { path = "../drive-node" }
