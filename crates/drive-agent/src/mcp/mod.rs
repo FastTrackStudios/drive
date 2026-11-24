@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use tracing::Instrument;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 pub use ctx::Ctx;
@@ -217,16 +218,18 @@ impl Server {
             mcp.writes = tracing::field::Empty,
             mcp.ms = tracing::field::Empty,
         );
-        let _enter = span.enter();
+        // Entered only around code that does not await: a guard held across
+        // an `.await` would put whatever else runs on this thread meanwhile
+        // in the span (drive#63). The awaits carry it with `instrument`.
         span.record("mcp.client", self.client.lock().expect("client").as_str());
         let Some(tool) = tools::find(&name) else {
             span.record("mcp.outcome", "unknown");
             return error_result(&format!("no tool {name}; tools/list names them"));
         };
-        let answer = match self.ctx().await {
+        let answer = match self.ctx().instrument(span.clone()).await {
             Err(e) => Err(format!("Drive is not set up on this computer: {e}")),
             Ok(ctx) => {
-                match tokio::time::timeout(self.opts.timeout, tools::run(&ctx, tool, &args)).await {
+                match tokio::time::timeout(self.opts.timeout, tools::run(&ctx, tool, &args).instrument(span.clone())).await {
                     Ok(r) => {
                         span.record("mcp.writes", ctx.writes_used());
                         r
@@ -239,6 +242,7 @@ impl Server {
             }
         };
         span.record("mcp.ms", started.elapsed().as_millis() as u64);
+        let _enter = span.enter();
         match answer {
             Ok(v) => {
                 span.record("mcp.outcome", "ok");
