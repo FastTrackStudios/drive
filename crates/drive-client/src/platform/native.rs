@@ -149,7 +149,7 @@ pub(crate) struct Socket {
 
 impl Socket {
     /// Open it, its events going to `drive`.
-    pub(crate) fn open(url: &str, drive: Drive) -> Option<Socket> {
+    pub(crate) fn open(url: &str, drive: Drive, generation: u32) -> Option<Socket> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Out>();
         let open = Arc::new(AtomicBool::new(false));
         let flag = open.clone();
@@ -162,13 +162,13 @@ impl Socket {
                 Ok((ws, _)) => ws,
                 Err(e) => {
                     tracing::debug!(drive.url = %url, error = %e, "connect failed");
-                    drive.socket_closed();
+                    drive.socket_closed(generation);
                     return;
                 }
             };
             let (mut sink, mut stream) = ws.split();
             flag.store(true, Ordering::SeqCst);
-            drive.socket_opened();
+            drive.socket_opened(generation);
             loop {
                 tokio::select! {
                     out = rx.recv() => match out {
@@ -183,14 +183,14 @@ impl Socket {
                         }
                     },
                     msg = stream.next() => match msg {
-                        Some(Ok(Message::Binary(b))) => drive.socket_message(&b),
+                        Some(Ok(Message::Binary(b))) => drive.socket_message(generation, &b),
                         Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                         Some(Ok(_)) => {}
                     },
                 }
             }
             flag.store(false, Ordering::SeqCst);
-            drive.socket_closed();
+            drive.socket_closed(generation);
         });
         Some(Socket { tx, open })
     }
