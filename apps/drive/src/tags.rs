@@ -149,7 +149,8 @@ pub fn TargetTags(space: String, target: Target, note: Option<String>) -> Elemen
 }
 
 /// Type a tag: Enter adds the top match (or makes the tag), Enter on
-/// nothing closes, arrows pick another match, Escape closes.
+/// nothing closes, arrows pick another match, Escape or leaving the field
+/// (a tap elsewhere, on a phone) closes.
 #[component]
 fn TagAdder(space: String, target: Target, on_close: EventHandler<()>) -> Element {
     let doc = use_doc(tags::tags_doc(&space));
@@ -214,6 +215,9 @@ fn TagAdder(space: String, target: Target, on_close: EventHandler<()>) -> Elemen
                     text.set(e.value());
                     pick.set(0);
                 },
+                // The suggestions keep the focus here (their mousedown is
+                // prevented), so this is a click or tap anywhere else.
+                onblur: move |_| on_close.call(()),
                 onkeydown: move |e: KeyboardEvent| {
                     match e.key().to_string().as_str() {
                         "Enter" => {
@@ -361,6 +365,31 @@ fn Fields(space: String, target: Target, by: String) -> Element {
                     for k in FieldKind::ALL {
                         option { key: "{k.id()}", value: "{k.id()}", selected: k == custom_kind(), "{k.label()}" }
                     }
+                }
+                // Buttons, not blur: the kind picker beside the name takes
+                // the focus, and a phone has no Enter or Escape to press.
+                button {
+                    class: "primary ghost",
+                    disabled: custom().trim().is_empty(),
+                    onclick: {
+                        let add = add.clone();
+                        move |_| {
+                            if !custom().trim().is_empty() {
+                                add(custom().trim().to_string(), custom_kind());
+                                custom.set(String::new());
+                                naming.set(false);
+                            }
+                        }
+                    },
+                    "Add"
+                }
+                button {
+                    class: "ghost",
+                    onclick: move |_| {
+                        custom.set(String::new());
+                        naming.set(false);
+                    },
+                    "Cancel"
                 }
             }
         } else {
