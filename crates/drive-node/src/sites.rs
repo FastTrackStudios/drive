@@ -33,6 +33,23 @@ pub async fn file(
     serve(&c, &space, &id, &path).await
 }
 
+/// Every site response: a sandbox without `allow-same-origin`, so a
+/// published site's scripts run in an opaque origin and cannot read the
+/// node's `localStorage` (`drive:auth`) or its `drive_token` cookie, nor
+/// call the node's API as the visitor; and never sniffed.
+pub async fn isolate(mut resp: Response) -> Response {
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox allow-scripts allow-forms allow-popups allow-downloads"),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    resp
+}
+
 /// Long-lived for files whose name carries their hash (`main.5c21d1ce01ec.css`,
 /// `search/asset/<v>/…`); pages are checked every time.
 fn cache_control(name: &str) -> &'static str {
@@ -117,5 +134,46 @@ mod tests {
         );
         assert_eq!(cache_control("search/meta"), "no-cache");
         assert_eq!(cache_control("robots.txt"), "no-cache");
+    }
+
+    /// A published site runs in an opaque origin: its scripts cannot read
+    /// the node's `localStorage` or cookies (drive#57).
+    #[tokio::test]
+    async fn every_site_response_is_sandboxed() {
+        use tower::ServiceExt;
+        let data = tempfile::tempdir().unwrap();
+        let opts = crate::Options {
+            no_iroh: true,
+            no_backfill: true,
+            ..Default::default()
+        };
+        let app = crate::router(data.path(), Vec::new(), opts).await;
+        for url in [
+            "/sites/home/wiki",
+            "/sites/home/wiki/",
+            "/sites/home/wiki/a.js",
+        ] {
+            let r = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::get(url)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let h = r.headers();
+            assert_eq!(
+                h.get("content-security-policy")
+                    .map(|v| v.to_str().unwrap()),
+                Some("sandbox allow-scripts allow-forms allow-popups allow-downloads"),
+                "{url}"
+            );
+            assert_eq!(
+                h.get("x-content-type-options").map(|v| v.to_str().unwrap()),
+                Some("nosniff"),
+                "{url}"
+            );
+        }
     }
 }
