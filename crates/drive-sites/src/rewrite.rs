@@ -70,10 +70,20 @@ impl Placement {
     fn shim(&self) -> String {
         format!(
             "<script>(function(){{var B={b},X={x};function f(u,x){{if(typeof u!==\"string\"||u.charAt(0)!==\"/\"||u.charAt(1)===\"/\")return u;if(B&&(u===B||u.indexOf(B+\"/\")===0))return u;var i=u.search(/[?#]/),p=i<0?u:u.slice(0,i),r=i<0?\"\":u.slice(i);if(x){{var l=p.slice(p.lastIndexOf(\"/\")+1);if(p.charAt(p.length-1)===\"/\")p+=\"index.html\";else if(l.indexOf(\".\")<0)p+=\"/index.html\";}}return B+p+r}}var F=window.fetch;window.fetch=function(i,o){{return F.call(this,f(i,false),o)}};function fix(n){{if(!n.querySelectorAll)return;var a=[].slice.call(n.querySelectorAll(\"a[href]\"));if(n.matches&&n.matches(\"a[href]\"))a.push(n);a.forEach(function(e){{var h=e.getAttribute(\"href\"),g=f(h,X);if(g!==h)e.setAttribute(\"href\",g)}})}}new MutationObserver(function(m){{m.forEach(function(r){{r.addedNodes.forEach(fix)}})}}).observe(document.documentElement,{{childList:true,subtree:true}})}})();</script>",
-            b = serde_json::to_string(&self.prefix).unwrap_or_else(|_| "\"\"".into()),
+            b = script_str(&self.prefix),
             x = self.explicit_index,
         )
     }
+}
+
+/// A JSON string literal that is safe inside an inline `<script>`: `<`
+/// cannot start `</script>`, and U+2028/2029 cannot end a line.
+fn script_str(s: &str) -> String {
+    serde_json::to_string(s)
+        .unwrap_or_else(|_| "\"\"".into())
+        .replace('<', "\\u003c")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 static ATTR: LazyLock<Regex> = LazyLock::new(|| {
@@ -205,5 +215,18 @@ mod tests {
             String::from_utf8(file(&p, "main.css", b"a{background:url('/x.png')}")).unwrap();
         assert_eq!(sheet, "a{background:url('/s/w/x.png')}");
         assert_eq!(file(&p, "search/meta", b"/x"), b"/x");
+    }
+
+    #[test]
+    fn shim_prefix_cannot_close_the_script() {
+        let p = Placement {
+            prefix: "/sites/a</script><script>alert(1)</script>\u{2028}".into(),
+            explicit_index: false,
+        };
+        let shim = p.shim();
+        assert_eq!(shim.matches("</script>").count(), 1, "{shim}");
+        assert!(shim.ends_with("</script>"), "{shim}");
+        assert!(!shim.contains('\u{2028}'), "{shim}");
+        assert!(shim.contains(r#"var B="/sites/a\u003c/script>"#), "{shim}");
     }
 }
