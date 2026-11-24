@@ -37,9 +37,15 @@ mkdir -p "$OUT_DIR"
 LIB="$OUT_DIR/libdrive_fileprovider.a"
 if [ "${#LIBS[@]}" -gt 1 ]; then lipo -create "${LIBS[@]}" -output "$LIB"; else cp "${LIBS[0]}" "$LIB"; fi
 
+# The Swift is compiled for the targets' architecture (one target: the
+# Mac Pro's x86_64 is built on airlock, an arm64 Mac); with several, lipo
+# made the library universal and the Swift is this Mac's.
+set -- $TARGETS
+if [ "$#" -eq 1 ]; then arch="${1%%-*}"; else arch="$(uname -m)"; fi
+arch="${arch/aarch64/arm64}"
 SWIFT=(
     -swift-version 5
-    -target "$(uname -m)-apple-macos$MACOSX_DEPLOYMENT_TARGET"
+    -target "$arch-apple-macos$MACOSX_DEPLOYMENT_TARGET"
     -import-objc-header "$ROOT/crates/drive-fileprovider/include/drive_fileprovider.h"
     -framework FileProvider -framework Foundation
     -Xlinker -force_load -Xlinker "$LIB"
