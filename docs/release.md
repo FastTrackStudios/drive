@@ -37,13 +37,23 @@ Other.
 1. **Checks**, in parallel on THEBATTLESHIP's `thebattleship` runners: the
    tests (`just ci-tests`), clippy and the release script's self-test
    (`just ci-lint`), and the browser build (`just ci-wasm`).
-2. **Binaries**, only if every check passed, on a `thebattleship-release`
-   runner:
-   1. Stamp the tag's version into the checkout.
-   2. Guard: the tag is on `main` and the version matches.
-   3. `just dist`: `drive` and `drive-node` for `x86_64-unknown-linux-gnu`,
-      as a tarball plus `SHA256SUMS`.
-3. **GitHub Release**: the tag's notes and those files.
+2. **Binaries**, only if every check passed. Each build stamps the tag's
+   version into its checkout, checks that the tag is on `main` and matches,
+   and runs `scripts/dist.sh`:
+   - `x86_64-unknown-linux-gnu` on a `thebattleship-release` runner;
+   - `aarch64-apple-darwin` and `x86_64-apple-darwin` on airlock (`airlock`
+     runner), with the agent built without the FUSE mount.
+3. **Nix packages** for Linux, built on THEBATTLESHIP from
+   `github:FastTrackStudios/drive/<tag>` (`#drive`, `#drive-node`) exactly as
+   a machine evaluates them, unstamped, and pushed to
+   `fasttrackstudio.cachix.org`. The Macs install the release's macOS
+   tarballs through Nix instead: a package in the fleet config that fetches
+   the tarball, pinned to its SHA-256. airlock's Nix store has no room for
+   Drive's build.
+4. **GitHub Release**: the tag's notes, every tarball, and one `SHA256SUMS`.
+
+Machines run the release from Nix, pinned to its tag (the fleet's Drive
+modules). Development builds stay in dev checkouts.
 
 If any check fails, the tag gets no Release. Fix forward on `main` and
 release the next version. A tag is never moved, deleted or reused.
