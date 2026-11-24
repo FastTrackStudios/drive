@@ -49,6 +49,13 @@ cp -R "$app" "$final"
 plist="$final/Contents/Info.plist"
 # The program desktop.rs runs is Contents/MacOS/DriveFileProviderDomains.
 cp "$work/fileprovider/DriveFileProviderDomains" "$final/Contents/MacOS/"
+# The agent, run from here (`Drive.app/Contents/MacOS/drive serve`, a
+# LaunchAgent): macOS 15 lets only Drive.app's own code, in the user's
+# session, into the app group's folder, where the agent serves the socket
+# the File Provider extension uses. A binary outside the app, or a
+# LaunchDaemon, is refused (TCC's App Data protection, which never asks).
+(cd "$ROOT" && cargo build --release --locked --target "$target" -p drive-agent --no-default-features)
+cp "${CARGO_TARGET_DIR:-$ROOT/target}/$target/release/drive" "$final/Contents/MacOS/drive"
 mkdir -p "$final/Contents/PlugIns"
 cp -R "$work/fileprovider/DriveFileProvider.appex" "$final/Contents/PlugIns/"
 # In the menu bar, not the Dock; the release's version.
@@ -66,6 +73,7 @@ sign() { codesign --force --timestamp --options runtime --keychain "$KEYCHAIN" -
 sign --entitlements "$HERE/FileProvider/DriveFileProvider.entitlements" \
     "$final/Contents/PlugIns/DriveFileProvider.appex"
 sign --entitlements "$HERE/Drive.entitlements" "$final/Contents/MacOS/DriveFileProviderDomains"
+sign --entitlements "$HERE/Drive.entitlements" "$final/Contents/MacOS/drive"
 sign --entitlements "$HERE/Drive.entitlements" "$final"
 codesign --verify --deep --strict "$final"
 
