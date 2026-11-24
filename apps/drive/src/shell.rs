@@ -222,7 +222,12 @@ fn PlaceTab(pane: String, active: bool) -> Element {
                 mobile::InspectorSheet { nav, space: view.clone(), open: picked && !(nav.preview)() }
             }
             if (nav.preview)() && picked {
-                Preview { key: "{view}", space: view.clone() }
+                // Keyed by the file too: another file's preview starts
+                // without the last one's "Saved" or comment anchor (drive#64).
+                Preview {
+                    key: "{view}/{(nav.selected)().map(|i| i.key()).unwrap_or_default()}",
+                    space: view.clone(),
+                }
             }
             TabTitle { key: "{view}", pane: pane.clone(), space: view.clone() }
         }
