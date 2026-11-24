@@ -88,11 +88,34 @@ struct Inner {
     /// The issuer's token for the handshake (a device signed in as its
     /// person); none on the node's own computer.
     token: Option<String>,
+    /// Set when the last [`Drive`] handed out is dropped: the connection
+    /// and saver tasks end.
+    stop: watch::Sender<bool>,
 }
 
 /// A connection to a Drive node and the documents open on it.
+///
+/// The second field is held by every handle given to callers, not by the
+/// background tasks: when the last caller's handle goes, the tasks stop
+/// and the connection closes, instead of running (and holding every open
+/// document) for as long as the process does (drive#63).
 #[derive(Clone)]
-pub struct Drive(Arc<Inner>);
+pub struct Drive(
+    Arc<Inner>,
+    #[expect(dead_code, reason = "held for its Drop")] Option<Arc<Life>>,
+);
+
+/// Ends the background tasks when dropped.
+struct Life(std::sync::Weak<Inner>);
+
+impl Drop for Life {
+    fn drop(&mut self) {
+        if let Some(inner) = self.0.upgrade() {
+            inner.stop.send_replace(true);
+            *inner.tx.lock().expect("tx") = None;
+        }
+    }
+}
 
 /// The file a document's copy is kept in (also how `drive-client` names
 /// a native app's copies): lowercase letters, digits and `-` as they are,
@@ -154,7 +177,7 @@ impl Drive {
         let dir = dir.into();
         let _ = tokio::fs::create_dir_all(dir.join("docs")).await;
         let (events, _) = broadcast::channel(1024);
-        let drive = Drive(Arc::new(Inner {
+        let inner = Arc::new(Inner {
             name: name.to_string(),
             dir,
             docs: Mutex::new(HashMap::new()),
@@ -164,10 +187,19 @@ impl Drive {
             save: Notify::new(),
             agent: Mutex::new(None),
             token,
-        }));
-        tokio::spawn(drive.clone().run(url.to_string()));
-        tokio::spawn(drive.clone().saver());
-        drive
+            stop: watch::channel(false).0,
+        });
+        let tasks = Drive(inner.clone(), None);
+        tokio::spawn(tasks.clone().run(url.to_string()));
+        tokio::spawn(tasks.saver());
+        let life = Arc::new(Life(Arc::downgrade(&inner)));
+        Drive(inner, Some(life))
+    }
+
+    /// Until the last caller's handle is dropped.
+    async fn stopped(&self) {
+        let mut rx = self.0.stop.subscribe();
+        let _ = rx.wait_for(|s| *s).await;
     }
 
     pub fn events(&self) -> broadcast::Receiver<Event> {
@@ -189,9 +221,16 @@ impl Drive {
         if let Some(d) = self.0.docs.lock().expect("docs").get(id) {
             return d.doc.clone();
         }
+        let bytes = tokio::fs::read(copy_path(&self.0.dir.join("docs"), id)).await;
+        let mut docs = self.0.docs.lock().expect("docs");
+        // Another open of the same id may have finished while this one
+        // read the copy: both get its document, not one each (drive#63).
+        if let Some(d) = docs.get(id) {
+            return d.doc.clone();
+        }
         let doc = LoroDoc::new();
         drive_spine::history::prepare(&doc, &self.0.name);
-        if let Ok(bytes) = tokio::fs::read(copy_path(&self.0.dir.join("docs"), id)).await {
+        if let Ok(bytes) = bytes {
             let _ = doc.import(&bytes);
         }
         let outbox = Arc::new(Mutex::new(Vec::new()));
@@ -203,7 +242,7 @@ impl Drive {
             true
         }));
         let vv = doc.oplog_vv().encode();
-        self.0.docs.lock().expect("docs").insert(
+        docs.insert(
             id.to_string(),
             OpenDoc {
                 doc: doc.clone(),
@@ -214,6 +253,7 @@ impl Drive {
                 others: HashMap::new(),
             },
         );
+        drop(docs);
         self.send(ToNode::Join {
             doc: id.to_string(),
             version_vector: vv,
@@ -318,7 +358,10 @@ impl Drive {
     /// Save every open document's copy, a moment after changes.
     async fn saver(self) {
         loop {
-            self.0.save.notified().await;
+            tokio::select! {
+                _ = self.0.save.notified() => {}
+                _ = self.stopped() => return,
+            }
             tokio::time::sleep(Duration::from_millis(400)).await;
             let snapshots: Vec<(String, Vec<u8>)> = {
                 let docs = self.0.docs.lock().expect("docs");
@@ -348,10 +391,20 @@ impl Drive {
             // wss:// to a node behind TLS (the tailnet, a domain): rustls
             // has two crypto backends compiled in here, so name one.
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-            match tokio_tungstenite::connect_async(url.as_str()).await {
+            let connected = tokio::select! {
+                c = tokio_tungstenite::connect_async(url.as_str()) => c,
+                _ = self.stopped() => return,
+            };
+            match connected {
                 Ok((ws, _)) => {
                     wait = 500;
-                    self.session(ws).await;
+                    tokio::select! {
+                        _ = self.session(ws) => {}
+                        _ = self.stopped() => {
+                            *self.0.tx.lock().expect("tx") = None;
+                            return;
+                        }
+                    }
                     tracing::debug!(drive.url = %url, "connection closed");
                 }
                 Err(e) => tracing::debug!(drive.url = %url, error = %e, "connect failed"),
@@ -363,7 +416,10 @@ impl Drive {
                 d.synced.send_replace(false);
                 d.others.clear();
             }
-            tokio::time::sleep(Duration::from_millis(wait)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
+                _ = self.stopped() => return,
+            }
             wait = (wait * 2).min(8000);
         }
     }
@@ -574,4 +630,34 @@ mod tests {
         std::fs::write(dir.path().join(file_name(id)), b"new").unwrap();
         assert_eq!(std::fs::read(copy_path(dir.path(), id)).unwrap(), b"new");
     }
+
+    #[tokio::test]
+    async fn opening_one_id_twice_at_once_gives_one_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = Drive::connect("ws://127.0.0.1:1/sync", "t", dir.path()).await;
+        let (a, b) = tokio::join!(drive.open("me/x"), drive.open("me/x"));
+        a.get_map("m").insert("k", 1).unwrap();
+        drive.commit("me/x");
+        assert!(b.get_map("m").get("k").is_some(), "both opens share the document");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_last_handle_stops_the_background_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = Drive::connect("ws://127.0.0.1:1/sync", "t", dir.path()).await;
+        let other = drive.clone();
+        let inner = Arc::downgrade(&drive.0);
+        drop(drive);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(inner.upgrade().is_some(), "a handle is still held");
+        drop(other);
+        for _ in 0..100 {
+            if inner.upgrade().is_none() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the connection and saver tasks kept the drive alive");
+    }
+
 }
