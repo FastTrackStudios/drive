@@ -196,6 +196,25 @@ fn Inbox() -> Element {
                                                 doc.set_presence(&serde_json::json!({}));
                                             }
                                         },
+                                        // Left unchanged (no change event) or with
+                                        // Escape: stop editing, and stop showing
+                                        // others "is editing" (drive#64).
+                                        onblur: {
+                                            let doc = doc.clone();
+                                            move |_| {
+                                                editing.set(None);
+                                                doc.set_presence(&serde_json::json!({}));
+                                            }
+                                        },
+                                        onkeydown: {
+                                            let doc = doc.clone();
+                                            move |e: KeyboardEvent| {
+                                                if e.key().to_string() == "Escape" {
+                                                    editing.set(None);
+                                                    doc.set_presence(&serde_json::json!({}));
+                                                }
+                                            }
+                                        },
                                     }
                                 } else {
                                     span {
