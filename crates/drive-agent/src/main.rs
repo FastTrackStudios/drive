@@ -1290,7 +1290,8 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     kept += 1;
                     continue;
                 }
-                let from = places::inside(Path::new(&src.path), &e.path).ok_or("a bad path")?;
+                let from = places::confined(Path::new(&src.path), &e.path, &a.dir)
+                    .ok_or("a bad path")?;
                 let data = tokio::fs::read(&from)
                     .await
                     .map_err(|x| format!("{}: {x}", e.path))?;

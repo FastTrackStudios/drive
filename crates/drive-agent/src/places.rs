@@ -116,6 +116,33 @@ pub fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(root.join(rel))
 }
 
+/// A path inside a location as it really is on disk (symlinks resolved),
+/// or `None` when it leads out of the location or into the agent's own
+/// folder (its credentials and keys). A path not there yet is judged by
+/// the deepest folder of it that is. The agent's mirrors live in its
+/// folder and are locations too: a path in one is confined to the mirror.
+pub fn confined(root: &Path, rel: &str, agent_dir: &Path) -> Option<PathBuf> {
+    let named = inside(root, rel)?;
+    let base = std::fs::canonicalize(root).ok()?;
+    let mut real = None;
+    let mut rest = Vec::new();
+    for p in named.ancestors() {
+        if let Ok(c) = std::fs::canonicalize(p) {
+            real = Some(rest.iter().rev().fold(c, |acc: PathBuf, n| acc.join(n)));
+            break;
+        }
+        if std::fs::symlink_metadata(p).is_ok() {
+            // A dangling symlink: where it points is unknown.
+            return None;
+        }
+        rest.push(p.file_name()?.to_owned());
+    }
+    let real = real?;
+    let agent = std::fs::canonicalize(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
+    let in_agent = real.starts_with(&agent) && !base.starts_with(agent.join("mirror"));
+    (real.starts_with(&base) && !in_agent).then_some(real)
+}
+
 /// Decoded indexes by location, with the file's stamp (modified, length)
 /// they were read at.
 pub(crate) type IndexCache =
@@ -347,7 +374,8 @@ impl Agent {
             .find(|l| l.id == location)
             .ok_or("not one of this device's locations")?;
         let bytes = if loc.storage.is_empty() {
-            let p = inside(Path::new(&loc.path), path).ok_or("a path outside the location")?;
+            let p = confined(Path::new(&loc.path), path, &self.dir)
+                .ok_or("a path outside the location")?;
             tokio::fs::read(&p)
                 .await
                 .map_err(|e| format!("{path}: {e}"))?
@@ -412,5 +440,51 @@ impl Agent {
             .find(|l| l.id == location)
             .map(|l| l.files as usize)
             .filter(|n| *n > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confined_paths_resolve_inside_the_location_and_never_into_the_agent() {
+        let t = tempfile::tempdir().unwrap();
+        let loc = t.path().join("loc");
+        let agent = t.path().join("agent");
+        let outside = t.path().join("outside");
+        for d in [&loc, &agent, &outside] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(loc.join("a.wav"), "A").unwrap();
+        std::fs::write(outside.join("secret"), "S").unwrap();
+        std::fs::write(agent.join("config.json"), "{}").unwrap();
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(confined(&loc, "a.wav", &agent), Some(canon(&loc.join("a.wav"))));
+        // Not there yet: judged by the folder it would be in.
+        assert_eq!(
+            confined(&loc, "new/b.wav", &agent),
+            Some(canon(&loc).join("new/b.wav"))
+        );
+        assert_eq!(confined(&loc, "../outside/secret", &agent), None);
+        // A symlink inside the location pointing out of it.
+        std::os::unix::fs::symlink(&outside, loc.join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret"), loc.join("s")).unwrap();
+        assert_eq!(confined(&loc, "out/secret", &agent), None);
+        assert_eq!(confined(&loc, "s", &agent), None);
+        assert_eq!(confined(&loc, "out/new", &agent), None);
+        // A location over the agent's own folder never reaches it.
+        assert_eq!(confined(t.path(), "agent/config.json", &agent), None);
+        std::os::unix::fs::symlink(&agent, loc.join("ag")).unwrap();
+        assert_eq!(confined(t.path(), "loc/ag/config.json", &agent), None);
+        // The agent's mirrors are locations too, confined to themselves.
+        let mirror = agent.join("mirror/m1");
+        std::fs::create_dir_all(&mirror).unwrap();
+        std::fs::write(mirror.join("c.wav"), "C").unwrap();
+        assert_eq!(
+            confined(&mirror, "c.wav", &agent),
+            Some(canon(&mirror.join("c.wav")))
+        );
+        assert_eq!(confined(&mirror, "../../config.json", &agent), None);
     }
 }
