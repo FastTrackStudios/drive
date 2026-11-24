@@ -510,8 +510,13 @@ impl Part {
         self.location == TREE
     }
 
-    /// Whether a path of its location is inside this part.
+    /// Whether a path of its location is inside this part. A path with
+    /// `.` or `..` in it, or a leading `/`, is never inside: it could name
+    /// a place outside the part while starting with the part's path.
     pub fn contains(&self, path: &str) -> bool {
+        if path.starts_with('/') || path.split('/').any(|s| s == "." || s == "..") {
+            return false;
+        }
         self.path.is_empty() || path == self.path || path.starts_with(&format!("{}/", self.path))
     }
 
@@ -631,6 +636,17 @@ mod tests {
         };
         assert!(part.contains("Song A/Mixes/v3.wav"));
         assert!(!part.contains("Song A/Mixes2/v3.wav"));
+        // `..` or `.` never makes a path outside the part count as in it.
+        assert!(!part.contains("Song A/Mixes/../../secret.wav"));
+        assert!(!part.contains("Song A/Mixes/./v3.wav"));
+        assert!(!part.contains("Song A/Mixes/.."));
+        let whole = Part {
+            path: String::new(),
+            ..part.clone()
+        };
+        assert!(whole.contains("Song A/v3.wav"));
+        assert!(!whole.contains("../secret.wav"));
+        assert!(!whole.contains("/etc/passwd"));
         assert_eq!(part.relative("Song A/Mixes/sub/v3.wav"), "sub/v3.wav");
     }
 
