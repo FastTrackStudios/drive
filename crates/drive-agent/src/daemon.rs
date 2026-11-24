@@ -32,27 +32,12 @@ pub fn online_devices(a: &Agent) -> HashSet<String> {
     on
 }
 
-#[tracing::instrument(name = "drive.view.refresh", skip_all, fields(view.rebuilt = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
+#[tracing::instrument(name = "drive.view.refresh", skip_all, fields(process.rss_mb = tracing::field::Empty))]
 pub async fn refresh_view(a: &Agent, view: &RwLock<View>) {
-    let indexes = a.refresh_indexes().await;
-    let devices = space::devices(&a.space)
-        .into_iter()
-        .map(|d| (d.id, d.name))
-        .collect();
-    let (me, locations, online) = (a.device_id(), space::locations(&a.space), online_devices(a));
-    let volumes = space::volumes(&a.space);
-    // The trees of millions of entries are rebuilt only when an index has
-    // changed; who is online changes far more often.
-    let unchanged = view.read().expect("view").built_from(&indexes);
-    tracing::Span::current().record("view.rebuilt", !unchanged);
-    if unchanged {
-        view.write()
-            .expect("view")
-            .set_devices(&me, devices, locations, online, &volumes);
-    } else {
-        let built = View::build(&me, devices, locations, indexes, online, &volumes);
-        *view.write().expect("view") = built;
-    }
+    // Other devices' newer indexes into the index database, where the
+    // mount reads them; the view itself holds no entries.
+    a.sync_indexes().await;
+    refresh_devices(a, view);
     crate::telemetry::mark_rss();
 }
 
