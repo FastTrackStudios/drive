@@ -107,6 +107,17 @@ fn NewSite(space: String, on_done: EventHandler<()>) -> Element {
     let mut storage = use_signal(String::new);
     let mut error = use_signal(String::new);
     let taken = sites::listed(&r);
+    // The theme picked, or the one the picker shows first when the starter
+    // `Base` is not among the space's themes (drive#64).
+    let chosen = {
+        let t = theme();
+        if themes.is_empty() || themes.contains(&t) {
+            t
+        } else {
+            themes[0].clone()
+        }
+    };
+    let chosen_theme = chosen.clone();
     let create = move |_| {
         let t = title().trim().to_string();
         let src = source();
@@ -127,7 +138,7 @@ fn NewSite(space: String, on_done: EventHandler<()>) -> Element {
             id: id.clone(),
             title: t.clone(),
             source: src,
-            theme: theme(),
+            theme: chosen_theme.clone(),
             storage: storage(),
             auto: true,
             created: drive_files::now_ms(),
@@ -165,7 +176,7 @@ fn NewSite(space: String, on_done: EventHandler<()>) -> Element {
                         option { value: "{THEMES}/Base", "The starter theme" }
                     }
                     for f in themes {
-                        option { key: "{f}", value: "{f}", selected: theme() == f, "{f.trim_start_matches(THEMES).trim_start_matches('/')}" }
+                        option { key: "{f}", value: "{f}", selected: chosen == f, "{f.trim_start_matches(THEMES).trim_start_matches('/')}" }
                     }
                 }
             }
@@ -239,23 +250,29 @@ fn SiteCard(space: String, id: String) -> Element {
             doc.edit(|d| sites::request_build(d).ok());
         }
     };
+    // Each change reads the site as it is now, in the edit: the copy this
+    // card rendered from may be older than someone else's change, and
+    // writing it back would undo theirs (drive#64).
     let set_theme = {
         let doc = doc.clone();
-        let site = site.clone();
         move |e: FormEvent| {
-            let mut s = site.clone();
-            s.theme = e.value();
-            s.requested = drive_files::now_ms();
-            doc.edit(|d| sites::write(d, &s).ok());
+            let theme = e.value();
+            doc.edit(|d| {
+                let mut s = sites::read(d)?;
+                s.theme = theme.clone();
+                s.requested = drive_files::now_ms();
+                sites::write(d, &s).ok()
+            });
         }
     };
     let toggle_auto = {
         let doc = doc.clone();
-        let site = site.clone();
         move |_| {
-            let mut s = site.clone();
-            s.auto = !s.auto;
-            doc.edit(|d| sites::write(d, &s).ok());
+            doc.edit(|d| {
+                let mut s = sites::read(d)?;
+                s.auto = !s.auto;
+                sites::write(d, &s).ok()
+            });
         }
     };
     rsx! {
