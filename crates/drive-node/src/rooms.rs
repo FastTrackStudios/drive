@@ -829,6 +829,15 @@ pub(crate) async fn session(
                 });
                 break;
             }
+            // One sign-in per connection: a second would change who this is
+            // while the documents the first could open stay joined. Clients
+            // reconnect with a new token instead (drive#56).
+            if who.is_some() {
+                let _ = out.send(ToClient::Error {
+                    message: "already signed in: reconnect".into(),
+                });
+                break;
+            }
             match rooms.auth.principal(t.as_deref(), local).await {
                 Some(p) => {
                     who = Some(p);
