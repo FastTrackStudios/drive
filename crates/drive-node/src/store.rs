@@ -831,6 +831,47 @@ impl Store {
     }
 
     /// Every location holding this content.
+    /// How many locations of a space hold each `(sampled, size)` content:
+    /// one query per few hundred contents instead of one per file. A
+    /// content no location holds is not in the map.
+    #[tracing::instrument(name = "drive.store.copy_counts", skip_all, fields(copies.asked = keys.len(), store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
+    pub async fn copy_counts(
+        &self,
+        space: &str,
+        keys: &[(String, i64)],
+    ) -> turso::Result<HashMap<(String, i64), usize>> {
+        let wanted: std::collections::HashSet<(&str, i64)> =
+            keys.iter().map(|(s, n)| (s.as_str(), *n)).collect();
+        let mut sampled: Vec<&str> = wanted.iter().map(|(s, _)| *s).collect();
+        sampled.sort_unstable();
+        sampled.dedup();
+        let mut out = HashMap::new();
+        let conn = self.reader().await;
+        for chunk in sampled.chunks(500) {
+            let marks: Vec<String> = (0..chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+            let mut params = vec![Value::Text(space.into())];
+            params.extend(chunk.iter().map(|s| Value::Text((*s).into())));
+            let mut rows = conn
+                .query(
+                    &format!(
+                        "SELECT sampled, size, count(DISTINCT location) FROM entries \
+                         WHERE space = ?1 AND dir = 0 AND sampled IN ({}) GROUP BY sampled, size",
+                        marks.join(", ")
+                    ),
+                    params,
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                let s = text(row.get_value(0)?);
+                let size = int(row.get_value(1)?);
+                if wanted.contains(&(s.as_str(), size)) {
+                    out.insert((s, size), int(row.get_value(2)?).max(0) as usize);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     #[tracing::instrument(name = "drive.store.copies", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
     pub async fn copies(&self, space: &str, sampled: &str, size: i64) -> turso::Result<Vec<Found>> {
         let conn = self.reader().await;
@@ -867,6 +908,54 @@ mod tests {
             mtime: 1,
             sampled: sampled.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn copy_counts_match_asking_for_each_files_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("node.db")).await.unwrap();
+        let entries = |n: usize| -> Vec<IndexEntry> {
+            (0..n)
+                .map(|i| file(&format!("f{i}.wav"), &format!("h{i}")))
+                .collect()
+        };
+        // h0..h599 in l1, h0..h299 in l2 too (twice in l2: one location),
+        // and h0 again with another size (another content).
+        store
+            .put_index("home", &index("l1", entries(600)))
+            .await
+            .unwrap();
+        let mut l2 = entries(300);
+        l2.push(file("dup/f0.wav", "h0"));
+        l2.push(sized("other.wav", 99));
+        l2.last_mut().unwrap().sampled = "h0".into();
+        store.put_index("home", &index("l2", l2)).await.unwrap();
+        store
+            .put_index("work", &index("l3", entries(5)))
+            .await
+            .unwrap();
+
+        let mut keys: Vec<(String, i64)> = (0..650).map(|i| (format!("h{i}"), 10)).collect();
+        keys.push(("h0".into(), 99));
+        keys.push(("h0".into(), 10)); // asked twice
+        let counts = store.copy_counts("home", &keys).await.unwrap();
+        for (sampled, size) in &keys {
+            let mut locs: Vec<String> = store
+                .copies("home", sampled, *size)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|f| f.location)
+                .collect();
+            locs.sort();
+            locs.dedup();
+            let got = counts.get(&(sampled.clone(), *size)).copied().unwrap_or(0);
+            assert_eq!(got, locs.len(), "{sampled} {size}");
+        }
+        assert_eq!(counts[&("h0".to_string(), 10)], 2);
+        assert_eq!(counts[&("h0".to_string(), 99)], 1);
+        assert_eq!(counts[&("h400".to_string(), 10)], 1);
+        assert!(!counts.contains_key(&("h640".to_string(), 10)));
     }
 
     #[tokio::test]
