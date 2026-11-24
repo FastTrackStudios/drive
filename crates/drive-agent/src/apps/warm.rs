@@ -156,7 +156,7 @@ async fn project_files(apps: &Apps, p: &str) -> Result<Vec<(String, Source)>, St
         let Some(loc) = apps.location(&part.location) else {
             continue;
         };
-        out.extend(location_folder(apps, &loc, &part.path)?);
+        out.extend(location_folder(apps, &loc, &part.path).await?);
     }
     Ok(out)
 }
@@ -191,7 +191,7 @@ async fn expand_target(apps: &Apps, t: &str) -> Result<Vec<(String, Source)>, St
     if let Some((name, rest)) = t.split_once(':')
         && let Some(loc) = apps.location(name)
     {
-        let files = location_folder(apps, &loc, rest)?;
+        let files = location_folder(apps, &loc, rest).await?;
         if !files.is_empty() {
             return Ok(files);
         }
@@ -202,20 +202,25 @@ async fn expand_target(apps: &Apps, t: &str) -> Result<Vec<(String, Source)>, St
 
 /// The files of a location under `path` (all of it when empty), from its
 /// index (so another computer's folder lists while it is off).
-fn location_folder(
+async fn location_folder(
     apps: &Apps,
     loc: &drive_files::space::Location,
     path: &str,
 ) -> Result<Vec<(String, Source)>, String> {
     let path = path.trim_matches('/');
-    let Some(idx) = apps.a.cached_index(&loc.id) else {
-        return Ok(Vec::new());
-    };
-    let prefix = format!("{path}/");
     let mut out = Vec::new();
-    for e in idx.entries.iter().filter(|e| !e.dir) {
-        if path.is_empty() || e.path.starts_with(&prefix) {
-            match apps.location_source(loc, &e.path) {
+    let mut after = String::new();
+    loop {
+        let page = apps
+            .a
+            .index_db
+            .page_under(&loc.id, path, &after, 2000)
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some(last) = page.last() else { break };
+        after = last.path.clone();
+        for e in page.iter().filter(|e| !e.dir) {
+            match apps.location_source(loc, &e.path).await {
                 Ok(src) => out.push((format!("{}:{}", loc.name, e.path), src)),
                 Err(err) => tracing::debug!(error = %err, "a file of a warmed folder is skipped"),
             }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use drive_files::index::{self, LocationIndex, WalkStats};
+use drive_files::index::{self, IndexEntry, LocationIndex, WalkStats};
 use drive_files::space::{self, Location, Volume};
 
 use crate::agent::Agent;
@@ -340,6 +340,22 @@ impl Agent {
         tracing::Span::current().record("index.files", stats.files);
         crate::telemetry::mark_rss();
         Ok(stats)
+    }
+
+    /// One entry of a location's index, from the index database.
+    pub async fn index_entry(&self, location: &str, path: &str) -> Option<IndexEntry> {
+        self.index_db.get(location, path).await.ok().flatten()
+    }
+
+    /// A folder of a location's index (`""`: its root), folders first.
+    pub async fn index_list(&self, location: &str, dir: &str) -> Vec<IndexEntry> {
+        self.index_db.list(location, dir).await.unwrap_or_default()
+    }
+
+    /// Download every index the registry has newer than this device's
+    /// copy into the index database, without holding any of them after.
+    pub async fn sync_indexes(&self) {
+        let _ = self.refresh_indexes().await;
     }
 
     /// Every location's index, downloaded when the registry has a newer

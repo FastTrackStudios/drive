@@ -234,10 +234,8 @@ pub async fn add_to_project(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         return Err("refused: a path may not climb out with ..".into());
     }
     if !path.is_empty()
-        && let Ok(idx) = ctx.index_of(&loc).await
-        && drive_files::index::Tree::new(idx)
-            .get(&path)
-            .is_none_or(|e| !e.dir)
+        && ctx.has_index(&loc).await.is_ok()
+        && ctx.a.index_entry(&loc.id, &path).await.is_none_or(|e| !e.dir)
     {
         return Err(format!(
             "{path} is not a folder of {} (as of its last index)",

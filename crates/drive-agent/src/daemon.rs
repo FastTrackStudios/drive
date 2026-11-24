@@ -155,7 +155,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     // `places::watch_refusal`); the others are rescanned every ten minutes.
     let (changed_tx, mut changed) = mpsc::unbounded_channel::<String>();
     let mut watchers = Watchers::default();
-    watchers.add_new(&a, &changed_tx);
+    watchers.add_new(&a, &changed_tx).await;
     // The registry's locations as last seen: one gone (`drive location
     // rm`, here or on another device) is unwatched and forgotten at once.
     let mut known: HashSet<String> = space::locations(&a.space)
@@ -262,7 +262,7 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                     }
                     // A location made here by another process (`drive
                     // adopt`, `drive location add`): watched from now on.
-                    watchers.add_new(&a, &changed_tx);
+                    watchers.add_new(&a, &changed_tx).await;
                     if changed_set {
                         refresh_devices(&a, &view);
                         last_view = tokio::time::Instant::now() - Duration::from_secs(30);
@@ -462,7 +462,7 @@ impl Watchers {
     /// Watch every local location of this device not watched yet. Only
     /// small locations on local disks are watched live (see
     /// `places::watch_refusal`); the others are rescanned every ten minutes.
-    fn add_new(&mut self, a: &Agent, tx: &mpsc::UnboundedSender<String>) {
+    async fn add_new(&mut self, a: &Agent, tx: &mpsc::UnboundedSender<String>) {
         let new: Vec<_> = a
             .my_locations()
             .into_iter()
@@ -477,8 +477,12 @@ impl Watchers {
                 continue;
             }
             let dirs = a
-                .cached_index(&loc.id)
-                .map(|i| i.entries.iter().filter(|e| e.dir).count());
+                .index_db
+                .meta(&loc.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.dirs as usize);
             if let Some(why) = crate::places::watch_refusal(std::path::Path::new(&loc.path), dirs) {
                 if dirs.is_some() {
                     self.refused.insert(loc.id.clone());
