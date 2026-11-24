@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use drive_files::blob::BlobStore;
 use drive_files::space::{self, Device};
@@ -173,6 +173,9 @@ pub struct Agent {
     /// changes: a big disk's index is millions of entries, and placement,
     /// the view, the rules and the tags each read every index often.
     pub(crate) indexes: crate::places::IndexCache,
+    /// Every location's index on disk (drive#47), shared with this
+    /// device's other agent processes.
+    pub(crate) index_db: Arc<crate::index_db::IndexDb>,
     /// Each other device's location: the published index (its registry
     /// `built`) this device last downloaded, so it is not fetched again.
     pub(crate) fetched: Mutex<std::collections::HashMap<String, i64>>,
@@ -214,6 +217,12 @@ impl Agent {
         // sync connection does: a node reached from another computer refuses
         // uploads (an index, a blob) without it.
         let http = http_client(cfg.token.as_deref());
+        let index_db = Arc::new(
+            crate::index_db::IndexDb::open(&dir.join("indexes.db"))
+                .await
+                .expect("the index database opens in the agent's folder"),
+        );
+        import_index_files(dir, &index_db).await;
         Agent {
             dir: dir.to_path_buf(),
             cfg: Mutex::new(cfg),
@@ -229,6 +238,7 @@ impl Agent {
             provider: std::sync::OnceLock::new(),
             leases: Default::default(),
             indexes: Default::default(),
+            index_db,
             fetched: Default::default(),
         }
     }
@@ -532,6 +542,38 @@ pub fn this_device(id: &str, name: &str) -> Device {
         roles: vec!["client".into()],
         approved_by: String::new(),
         added: drive_files::now_ms(),
+    }
+}
+
+/// Indexes kept as files (`indexes/<location>.idx`) before the database:
+/// put in it once, each, the first time an agent starts with it.
+async fn import_index_files(dir: &Path, db: &crate::index_db::IndexDb) {
+    let have: HashSet<String> = db.locations().await.unwrap_or_default().into_iter().collect();
+    let Ok(files) = std::fs::read_dir(dir.join("indexes")) else {
+        return;
+    };
+    for f in files.flatten() {
+        let path = f.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".idx"))
+        else {
+            continue;
+        };
+        if have.contains(id) {
+            continue;
+        }
+        let Some(index) = std::fs::read(&path).ok().and_then(|b| drive_files::index::decode(&b)) else {
+            continue;
+        };
+        if index.location != id {
+            continue;
+        }
+        match db.put(&index).await {
+            Ok(n) => tracing::info!(location.id = %id, index.entries = n, "an index file was put in the index database"),
+            Err(e) => tracing::warn!(location.id = %id, error = %e, "an index file could not be put in the index database"),
+        }
     }
 }
 
