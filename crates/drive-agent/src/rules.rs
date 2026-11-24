@@ -750,8 +750,10 @@ impl Engine {
             let result = async {
                 let root = self.root_of(a, &location)?;
                 let bytes = a.fetch_bytes(&e.blob).await?;
+                rules_fs::under(&root, &path)?;
                 let (folder, name) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
-                let fin = rules_fs::write_verified(&bytes, &e.blob, &root.join(folder), name)?;
+                let dir = rules_fs::under(&root, folder)?;
+                let fin = rules_fs::write_verified(&bytes, &e.blob, &dir, name)?;
                 Ok::<String, String>(rel(&root, &fin))
             }
             .await;
@@ -804,7 +806,11 @@ impl Engine {
                 continue;
             };
             e.tries += 1;
-            match self.upload(a, &root.join(path)).await {
+            let uploaded = match rules_fs::under(&root, path) {
+                Ok(src) => self.upload(a, &src).await,
+                Err(err) => Err(err),
+            };
+            match uploaded {
                 Ok(h) => {
                     e.blob = h;
                     e.error.clear();
@@ -888,7 +894,7 @@ impl Engine {
                 }
                 Undo::DeviceCopy { location, path, full } => {
                     let root = self.root_of(a, location)?;
-                    let now_hash = rules_fs::full_hash(&root.join(path))
+                    let now_hash = rules_fs::full_hash(&rules_fs::under(&root, path)?)
                         .map_err(|_| format!("the copy {path} is no longer there"))?;
                     if now_hash != *full {
                         return Err(format!("the copy {path} changed since; it stays"));
@@ -914,7 +920,7 @@ impl Engine {
                     }
                     let root = self.root_of(a, location)?;
                     let to_root = self.root_of(a, to_location)?;
-                    let now_hash = rules_fs::full_hash(&to_root.join(to))
+                    let now_hash = rules_fs::full_hash(&rules_fs::under(&to_root, to)?)
                         .map_err(|_| format!("the moved file {to} is no longer there"))?;
                     if now_hash != *full {
                         return Err(format!("{to} changed since it was moved; it stays"));

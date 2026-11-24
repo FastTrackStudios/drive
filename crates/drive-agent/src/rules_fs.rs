@@ -56,6 +56,28 @@ pub fn full_hash(p: &Path) -> io::Result<String> {
     Ok(h.finalize().to_hex().to_string())
 }
 
+/// `root/rel` for a relative path that came from elsewhere (the synced
+/// journal): refused unless it is plain names only (no `..`, `.`, root
+/// or drive prefix) and nothing along it under `root` is a symlink, so it
+/// can never lead outside `root`.
+pub fn under(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let mut p = root.to_path_buf();
+    for c in Path::new(rel).components() {
+        let std::path::Component::Normal(name) = c else {
+            return Err(format!("{rel} is not a path inside the folder"));
+        };
+        p.push(name);
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(format!("{rel} goes through a symlink; it is left alone"));
+        }
+    }
+    // `components()` drops a lone `.` in the middle; refuse it too.
+    if rel.split('/').any(|s| s == "." || s == "..") {
+        return Err(format!("{rel} is not a path inside the folder"));
+    }
+    Ok(p)
+}
+
 fn exists(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok()
 }
@@ -194,12 +216,12 @@ pub fn write_verified(bytes: &[u8], hash: &str, dir: &Path, name: &str) -> Resul
 /// Renames only: if that cannot be done (another file system), it stays
 /// where it is and this says so. Returns the path inside `root`.
 pub fn to_trash(root: &Path, rel: &str) -> Result<String, String> {
-    let src = root.join(rel);
+    let src = under(root, rel)?;
     if !exists(&src) {
         return Err(format!("{rel} is not there"));
     }
     let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
-    let dir = root.join(TRASH_DIR).join(folder);
+    let dir = under(root, &format!("{TRASH_DIR}/{folder}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let free = free_name(name, |n| exists(&dir.join(n)));
     std::fs::rename(&src, dir.join(&free))
@@ -214,12 +236,13 @@ pub fn to_trash(root: &Path, rel: &str) -> Result<String, String> {
 /// Put `root/from` back at `root/to` (or a free name beside it). Returns
 /// where it went (inside `root`).
 pub fn restore(root: &Path, from: &str, to: &str) -> Result<String, String> {
-    let src = root.join(from);
+    let src = under(root, from)?;
     if !exists(&src) {
         return Err(format!("{from} is no longer there"));
     }
+    under(root, to)?;
     let (folder, name) = to.rsplit_once('/').unwrap_or(("", to));
-    let dir = root.join(folder);
+    let dir = under(root, folder)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let free = free_name(name, |n| exists(&dir.join(n)));
     std::fs::rename(&src, dir.join(&free)).map_err(|e| format!("putting {to} back: {e}"))?;
@@ -310,6 +333,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read(&p), "abc");
+    }
+
+    #[test]
+    fn synced_paths_stay_under_the_root() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("loc");
+        let outside = t.path().join("outside");
+        write(&root.join("in/a.wav"), "A");
+        write(&outside.join("secret"), "S");
+        assert_eq!(under(&root, "in/a.wav").unwrap(), root.join("in/a.wav"));
+        assert_eq!(under(&root, "").unwrap(), root);
+        for bad in [
+            "../outside/secret",
+            "in/../../outside/secret",
+            "./in/a.wav",
+            "/etc/passwd",
+            &outside.join("secret").to_string_lossy(),
+        ] {
+            assert!(under(&root, bad).is_err(), "{bad} was let through");
+        }
+        // A symlink inside the root does not lead out of it.
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        assert!(under(&root, "link/secret").is_err());
+        assert!(under(&root, "link").is_err());
+        // Trash and restore refuse the same paths and touch nothing.
+        assert!(to_trash(&root, "../outside/secret").is_err());
+        assert!(to_trash(&root, "link/secret").is_err());
+        assert!(restore(&root, "../outside/secret", "in/s").is_err());
+        assert!(restore(&root, "in/a.wav", "../outside/a.wav").is_err());
+        assert!(restore(&root, "in/a.wav", "link/a.wav").is_err());
+        assert_eq!(read(&outside.join("secret")), "S");
+        assert_eq!(read(&root.join("in/a.wav")), "A");
+        assert!(!outside.join("a.wav").exists());
+        // A trash folder replaced by a symlink is not followed either.
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(TRASH_DIR)).unwrap();
+        assert!(to_trash(&root, "in/a.wav").is_err());
+        assert_eq!(read(&root.join("in/a.wav")), "A");
     }
 
     #[test]
