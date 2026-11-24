@@ -379,13 +379,16 @@ impl Ctx {
         }
         let local = Path::new(name);
         if local.is_absolute() {
-            if !local.is_file() {
-                return Err(format!("{name} is not a file on this computer"));
-            }
-            let sampled = drive_files::hash::sampled(local).map_err(|e| format!("{name}: {e}"))?;
-            let size = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
+            // Never the agent's own folder, the system's or Drive's mounts,
+            // however it is spelled: resolved without looking inside them.
+            let rules = self.a.browse_rules();
+            let local = crate::browse::follow(local, &rules.deny)
+                .filter(|p| p.is_file())
+                .ok_or_else(|| format!("{name} is not a file on this computer"))?;
+            let sampled = drive_files::hash::sampled(&local).map_err(|e| format!("{name}: {e}"))?;
+            let size = std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0);
             return Ok(Thing::Local {
-                path: local.to_path_buf(),
+                path: local,
                 sampled,
                 size,
             });

@@ -259,3 +259,17 @@ async fn adopt_in_place_shows_at_the_logical_path_and_unadopt_keeps_every_file()
     assert_eq!(snapshot(&songs), before, "unadopting touched a file");
     wait_until("the laptop sees them gone", || b.adoptions().is_empty()).await;
 }
+
+#[tokio::test]
+async fn the_agents_own_folder_is_refused_however_it_is_named() {
+    let (url, _node_dir) = node().await;
+    let t = tempfile::tempdir().unwrap();
+    let real = t.path().join("real");
+    std::fs::create_dir_all(real.join("songs")).unwrap();
+    let alias = t.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    // The agent knows its folder by the symlink's name.
+    let a = device(&url, &alias, "studio", "Studio PC").await;
+    let err = a.adopt(&real.join("songs"), "/Songs").await.err();
+    assert_eq!(err.as_deref(), Some("that folder is the agent's own"));
+}
