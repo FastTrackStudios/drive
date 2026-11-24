@@ -1,6 +1,8 @@
 //! In a browser: the page's WebSocket, its timers, `localStorage` for who
 //! this is and IndexedDB for the documents' copies.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::future::Future;
 
 use wasm_bindgen::JsCast;
@@ -105,8 +107,24 @@ pub(crate) fn drop_old_copies() {
     }
 }
 
-/// The page's WebSocket to the node.
-pub(crate) struct Socket(WebSocket);
+/// A socket's handlers, which live as long as it does (dropped, it stops
+/// calling them). Kept here rather than in the socket, so that the client
+/// stays `Send` (a closure is not).
+struct Handlers {
+    _onopen: Closure<dyn FnMut()>,
+    _onmessage: Closure<dyn FnMut(MessageEvent)>,
+    _onclose: Closure<dyn FnMut()>,
+}
+
+thread_local! {
+    static HANDLERS: RefCell<HashMap<u32, Handlers>> = RefCell::new(HashMap::new());
+}
+
+/// The page's WebSocket to the node (its handlers under its generation).
+pub(crate) struct Socket {
+    ws: WebSocket,
+    generation: u32,
+}
 
 impl Socket {
     /// Open it, its events going to `drive`.
@@ -117,7 +135,6 @@ impl Socket {
         let me = drive.clone();
         let onopen = Closure::<dyn FnMut()>::new(move || me.socket_opened(generation));
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
-        onopen.forget();
 
         let me = drive.clone();
         let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
@@ -126,25 +143,42 @@ impl Socket {
             }
         });
         ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-        onmessage.forget();
 
         let me = drive;
         let onclose = Closure::<dyn FnMut()>::new(move || me.socket_closed(generation));
         ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
-        onclose.forget();
 
-        Some(Socket(ws))
+        let handlers = Handlers {
+            _onopen: onopen,
+            _onmessage: onmessage,
+            _onclose: onclose,
+        };
+        HANDLERS.with(|h| h.borrow_mut().insert(generation, handlers));
+        Some(Socket { ws, generation })
     }
 
     pub(crate) fn is_open(&self) -> bool {
-        self.0.ready_state() == WebSocket::OPEN
+        self.ws.ready_state() == WebSocket::OPEN
     }
 
     pub(crate) fn send(&self, bytes: Vec<u8>) -> bool {
-        self.0.send_with_u8_array(&bytes).is_ok()
+        self.ws.send_with_u8_array(&bytes).is_ok()
     }
 
     pub(crate) fn close(&self) {
-        let _ = self.0.close();
+        let _ = self.ws.close();
+    }
+}
+
+impl Drop for Socket {
+    /// A socket is dropped when another replaces it (it was closed then):
+    /// the browser must not call its handlers once they are gone.
+    fn drop(&mut self) {
+        self.ws.set_onopen(None);
+        self.ws.set_onmessage(None);
+        self.ws.set_onclose(None);
+        let _ = self.ws.close();
+        let gone = HANDLERS.with(|h| h.borrow_mut().remove(&self.generation));
+        drop(gone);
     }
 }

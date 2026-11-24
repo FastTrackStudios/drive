@@ -4,11 +4,11 @@
 //! where `localStorage` stopped at a few megabytes.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
-use js_sys::{Promise, Uint8Array};
+use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
 use web_sys::{IdbDatabase, IdbRequest, IdbTransactionMode};
 
 const DB: &str = "drive";
@@ -18,24 +18,27 @@ thread_local! {
     static OPEN: RefCell<Option<IdbDatabase>> = const { RefCell::new(None) };
 }
 
-/// Wait for a request: its result, or `None` when it failed.
+/// Wait for a request: its result, or `None` when it failed. Its handlers
+/// live until it has answered, then are taken off it and dropped.
 async fn done(r: &IdbRequest) -> Option<JsValue> {
-    let req = r.clone();
-    let p = Promise::new(&mut |resolve, reject| {
-        let ok_req = req.clone();
-        let ok = Closure::once_into_js(move |_e: web_sys::Event| {
-            let _ = resolve.call1(
-                &JsValue::NULL,
-                &ok_req.result().unwrap_or(JsValue::UNDEFINED),
-            );
-        });
-        let err = Closure::once_into_js(move |_e: web_sys::Event| {
-            let _ = reject.call0(&JsValue::NULL);
-        });
-        req.set_onsuccess(Some(ok.unchecked_ref()));
-        req.set_onerror(Some(err.unchecked_ref()));
-    });
-    JsFuture::from(p).await.ok()
+    let (tx, rx) = futures_channel::oneshot::channel::<bool>();
+    let tx = Rc::new(RefCell::new(Some(tx)));
+    let answer = |ok: bool| {
+        let tx = tx.clone();
+        Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            if let Some(tx) = tx.borrow_mut().take() {
+                let _ = tx.send(ok);
+            }
+        })
+    };
+    let ok = answer(true);
+    let err = answer(false);
+    r.set_onsuccess(Some(ok.as_ref().unchecked_ref()));
+    r.set_onerror(Some(err.as_ref().unchecked_ref()));
+    let succeeded = rx.await.unwrap_or(false);
+    r.set_onsuccess(None);
+    r.set_onerror(None);
+    if succeeded { r.result().ok() } else { None }
 }
 
 async fn db() -> Option<IdbDatabase> {
@@ -44,7 +47,7 @@ async fn db() -> Option<IdbDatabase> {
     }
     let factory = web_sys::window()?.indexed_db().ok()??;
     let open = factory.open_with_u32(DB, 1).ok()?;
-    let upgrade = Closure::once_into_js(move |e: web_sys::Event| {
+    let upgrade = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
         let made = e
             .target()
             .and_then(|t| t.dyn_into::<IdbRequest>().ok())
@@ -56,8 +59,12 @@ async fn db() -> Option<IdbDatabase> {
             let _ = d.create_object_store(STORE);
         }
     });
-    open.set_onupgradeneeded(Some(upgrade.unchecked_ref()));
-    let d: IdbDatabase = done(&open).await?.dyn_into().ok()?;
+    open.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
+    // An upgrade comes before success, so it is done with by then.
+    let opened = done(&open).await;
+    open.set_onupgradeneeded(None);
+    drop(upgrade);
+    let d: IdbDatabase = opened?.dyn_into().ok()?;
     OPEN.with(|o| *o.borrow_mut() = Some(d.clone()));
     Some(d)
 }
