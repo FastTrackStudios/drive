@@ -124,3 +124,61 @@ async fn a_room_someone_has_open_is_kept() {
     rooms.evict_idle(Duration::ZERO).await;
     assert_eq!(open_rooms(&rooms).await, 0, "left and saved: let go");
 }
+
+#[tokio::test]
+async fn listing_documents_opens_no_room_for_other_orgs() {
+    use drive_files::projects;
+    use drive_proto::{ToClient, ToNode};
+    let dir = tempfile::tempdir().unwrap();
+    let rooms = rooms(dir.path()).await;
+    // Their org: a registry lending one song to ours; another org with
+    // nothing for us.
+    let theirs = drive_files::space_doc("theirs");
+    rooms
+        .edit(&theirs, "t", |d| {
+            let p = projects::add_project(d, "Song", "song").unwrap();
+            projects::link_doc(d, &p, "notes:shared", true).unwrap();
+            projects::share_with_org(d, &p, "ours", true).unwrap();
+        })
+        .await;
+    rooms
+        .edit(&drive_files::space_doc("else"), "t", |_| ())
+        .await;
+    for id in [
+        "ours/notes:a",
+        "theirs/notes:shared",
+        "theirs/notes:private",
+        "else/notes:x",
+    ] {
+        rooms.edit(id, "t", |_| ()).await;
+    }
+    rooms.flush_now().await;
+    rooms.evict_idle(Duration::ZERO).await;
+    assert_eq!(open_rooms(&rooms).await, 0);
+
+    let who = crate::auth::Principal {
+        who: "me".into(),
+        orgs: vec!["ours".into()],
+        all: false,
+    };
+    let (out, mut recv) = tokio::sync::mpsc::unbounded_channel();
+    let mut joined = std::collections::HashSet::new();
+    rooms
+        .handle(
+            1,
+            "me",
+            &who,
+            &out,
+            &mut joined,
+            ToNode::List {
+                prefix: "*/notes:".into(),
+            },
+        )
+        .await;
+    let ToClient::Docs { docs, .. } = recv.recv().await.unwrap() else {
+        panic!("expected the documents");
+    };
+    let ids: Vec<&str> = docs.iter().map(|d| d.id.as_str()).collect();
+    assert_eq!(ids, ["ours/notes:a", "theirs/notes:shared"]);
+    assert_eq!(open_rooms(&rooms).await, 0, "no registry was opened");
+}
