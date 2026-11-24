@@ -1,0 +1,122 @@
+# Release: the only workflow. Nothing runs on a push or a pull request;
+# development checks are local (`just ci`). Two ways in:
+#
+#   push of a v* tag     `just release` (docs/release.md): the full checks,
+#                        then, only if every one passes, the binaries and
+#                        the GitHub Release. A tag whose checks fail gets no
+#                        Release; fix forward and tag the next version (a
+#                        tag is never moved or reused).
+#   workflow_dispatch    `just ci-remote <branch>`: the same checks on any
+#                        branch, nothing published.
+#
+# Every job runs on THEBATTLESHIP (`thebattleship` for checks,
+# `thebattleship-release` for the release build), whose job gate accepts a
+# public repo's v* tags and dispatches only. kache is each runner's
+# RUSTC_WRAPPER and the dev shell's rustc is the same store path as a local
+# `devenv shell`, so crates built on this machine are not built again.
+# The checks build the tag's commit unstamped, exactly as a local build of
+# it, for that reason; only the release build stamps the version.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: devenv shell -- bash -e {0}
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: [self-hosted, thebattleship]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/battleship
+        with:
+          kind: tests
+      - run: just ci-tests
+
+  lint:
+    name: Clippy
+    runs-on: [self-hosted, thebattleship]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/battleship
+        with:
+          kind: lint
+      - run: just ci-lint
+
+  wasm:
+    name: Browser build
+    runs-on: [self-hosted, thebattleship]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/battleship
+        with:
+          kind: wasm
+      - run: just ci-wasm
+
+  dist:
+    name: Binaries
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [tests, lint, wasm]
+    runs-on: [self-hosted, thebattleship-release]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/battleship
+        with:
+          kind: dist
+      # Releases commit no version: the tag's goes into this checkout.
+      - name: Stamp
+        run: bash scripts/release.sh stamp "${GITHUB_REF_NAME#v}"
+      - name: Guard
+        run: bash scripts/release.sh guard
+      - run: just dist dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  publish:
+    name: GitHub Release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: [dist]
+    runs-on: [self-hosted, thebattleship-release]
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/battleship
+        with:
+          kind: publish
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The tag's annotation (its notes) is not fetched by a plain checkout.
+          git fetch -f origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          bash scripts/release.sh publish dist

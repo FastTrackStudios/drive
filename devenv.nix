@@ -3,7 +3,8 @@
 # comes from the prototype's tools (see README). ffmpeg makes video
 # thumbnails (the sidecars' video producer); without it videos get none.
 # fontconfig and freetype: the native app's text (Blitz), as in Studio.
+# gh, jq and python3: scripts/release.sh, here and on the release runners.
 { pkgs, ... }:
 {
-  packages = [ pkgs.pkg-config pkgs.fuse3 pkgs.openssl pkgs.ffmpeg-headless pkgs.fontconfig pkgs.freetype ];
+  packages = [ pkgs.pkg-config pkgs.fuse3 pkgs.openssl pkgs.ffmpeg-headless pkgs.fontconfig pkgs.freetype pkgs.gh pkgs.jq pkgs.python3 ];
 }
