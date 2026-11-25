@@ -11,11 +11,14 @@
 //! | `parent` | a tag → its parent tag | `<org>/drive:tags` |
 //! | `task`, `event` | a task or event → the document it links | the spine |
 //! | `part` | a project → its documents and Drive folders | the space's registry |
+//! | `linked` | a thing → a thing an app or agent linked it to | `<org>/drive:links` |
+//! | `in` | a file or folder → the folder holding it | the Drive tree |
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use drive_files::projects::{Project, TREE};
 use drive_spine::kinds::Kinds;
+use drive_spine::links::Link as AppLink;
 use drive_spine::tags::{Library, Target};
 use drive_spine::{Event, Task};
 use serde::{Deserialize, Serialize};
@@ -104,10 +107,14 @@ pub enum EdgeKind {
     Task,
     Event,
     Part,
+    /// An app's or agent's link (`drive:links`); `raw` holds its kind.
+    Linked,
+    /// Inside a folder.
+    In,
 }
 
 impl EdgeKind {
-    pub const ALL: [EdgeKind; 9] = [
+    pub const ALL: [EdgeKind; 11] = [
         EdgeKind::Link,
         EdgeKind::Embed,
         EdgeKind::Related,
@@ -117,6 +124,8 @@ impl EdgeKind {
         EdgeKind::Task,
         EdgeKind::Event,
         EdgeKind::Part,
+        EdgeKind::Linked,
+        EdgeKind::In,
     ];
 
     #[must_use]
@@ -131,6 +140,8 @@ impl EdgeKind {
             EdgeKind::Task => "task",
             EdgeKind::Event => "event",
             EdgeKind::Part => "part",
+            EdgeKind::Linked => "linked",
+            EdgeKind::In => "in",
         }
     }
 
@@ -198,6 +209,8 @@ pub struct Inputs<'a> {
     pub kinds: &'a Kinds,
     /// App documents known some other way (a listing, with titles).
     pub docs: &'a [DocRef],
+    /// `<org>/drive:links`.
+    pub links: &'a [AppLink],
 }
 
 /// Work out the graph.
@@ -208,6 +221,7 @@ pub fn build(i: &Inputs) -> Graph {
     add_projects(&mut g, i.projects, i.tree);
     add_tags(&mut g, i.tags);
     add_spine(&mut g, i.tasks, i.events, i.kinds);
+    add_links(&mut g, i.links);
     let docs = known_docs(&g, i.docs);
     let space = Space::new(i.tree, i.extracts, &docs, i.kinds);
     add_notes(&mut g, i, &space);
@@ -268,6 +282,11 @@ impl Graph {
 }
 
 fn add_tree(g: &mut Graph, tree: &[TreeItem], extracts: &HashMap<String, Extract>) {
+    let parents: HashMap<&str, String> = tree
+        .iter()
+        .filter(|t| t.dir)
+        .map(|t| (t.path.as_str(), t.node()))
+        .collect();
     for t in tree.iter().filter(|t| !t.is_hidden()) {
         let name = split_dir(&t.path).1;
         let kind = if t.dir {
@@ -281,6 +300,9 @@ fn add_tree(g: &mut Graph, tree: &[TreeItem], extracts: &HashMap<String, Extract
             .and_then(|e| e.title.clone())
             .unwrap_or_else(|| name.to_string());
         g.node(t.node(), kind, &label, &t.path);
+        if let Some(parent) = parents.get(split_dir(&t.path).0) {
+            g.edge(&t.node(), parent, EdgeKind::In);
+        }
         g.alias(name, &t.node());
         if let Some(stem) = name.strip_suffix(".md") {
             g.alias(stem, &t.node());
@@ -290,6 +312,18 @@ fn add_tree(g: &mut Graph, tree: &[TreeItem], extracts: &HashMap<String, Extract
                 g.alias(a, &t.node());
             }
         }
+    }
+}
+
+fn add_links(g: &mut Graph, links: &[AppLink]) {
+    for l in links {
+        g.edges.push(Edge {
+            src: target_node(&l.from),
+            dst: target_node(&l.to),
+            kind: EdgeKind::Linked,
+            raw: l.kind.clone(),
+            anchor: String::new(),
+        });
     }
 }
 

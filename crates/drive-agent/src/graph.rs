@@ -9,6 +9,8 @@
 //! drive graph path THING THING [--max N]    # a shortest path between them
 //! drive graph tag TAG                  # everything under a tag (child tags too)
 //! drive graph refresh                  # bring the graph up to date, and say what it read
+//! drive graph link FROM TO [--kind K]  # an app's kind of link (uses, built-on), in drive:links
+//! drive graph unlink FROM TO [--kind K]
 //! ```
 //!
 //! A THING is what `drive tag` takes (a file here, `drive:PATH`,
@@ -64,9 +66,20 @@ pub fn tree_items(files: &LoroDoc) -> Vec<TreeItem> {
     out
 }
 
+/// The space's `drive:links`, with the other peers' copy when they answer
+/// within a few seconds (this device's own, offline).
+pub async fn links_doc(a: &Agent) -> (String, LoroDoc) {
+    let id = drive_spine::links::links_doc(&a.cfg.lock().expect("cfg").space);
+    let doc = a.drive.open(&id).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(4), a.drive.synced(&id)).await;
+    (id, doc)
+}
+
 /// This peer's graph, brought up to date from its documents (`tags`: the
 /// space's `drive:tags`) and the notes it can read.
 pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), String> {
+    let (_, links) = links_doc(a).await;
+    let links = drive_spine::links::all(&links);
     let db = GraphDb::open(&a.dir.join("graph.db"))
         .await
         .map_err(|e| e.to_string())?;
@@ -84,6 +97,7 @@ pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), 
         projects: &projects,
         kinds: &kinds,
         docs: &[],
+        links: &links,
     };
     let misses = AtomicU32::new(0);
     let report = refresh(&db, &sources, |hash| {
@@ -223,14 +237,17 @@ fn words(rest: &[String]) -> Vec<&str> {
 pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-    let usage = "graph backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh";
+    let usage = "graph backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
     if !matches!(
         sub,
-        "backlinks" | "neighbors" | "neighbours" | "path" | "tag" | "refresh"
+        "backlinks" | "neighbors" | "neighbours" | "path" | "tag" | "refresh" | "link" | "unlink"
     ) {
         return Err(usage.into());
     }
     let t = Tags::open(dir).await?;
+    if matches!(sub, "link" | "unlink") {
+        return link_command(&t, sub == "link", &rest).await;
+    }
     let (db, report) = up_to_date(&t.a, &t.doc).await?;
     let w = words(&rest);
     match (sub, w.as_slice()) {
@@ -302,6 +319,34 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
             ));
         }
         _ => return Err(usage.into()),
+    }
+    Ok(())
+}
+
+/// `graph link|unlink FROM TO [--kind K]`.
+async fn link_command(t: &Tags, add: bool, rest: &[String]) -> Result<(), String> {
+    let [from, to] = words(rest)[..] else {
+        return Err("graph link|unlink FROM TO [--kind K]".into());
+    };
+    let kind = flag(rest, "--kind").unwrap_or_default();
+    let (from, to) = (t.target(from).await?, t.target(to).await?);
+    let (id, doc) = links_doc(&t.a).await;
+    let now = drive_files::now_ms();
+    if add {
+        drive_spine::links::link(&doc, &from, &to, &kind, &t.by, now)
+    } else {
+        drive_spine::links::unlink(&doc, &from, &to, &kind)
+    }
+    .map_err(|e| e.to_string())?;
+    t.a.drive.commit(&id);
+    crate::settle(&t.a).await;
+    for l in drive_spine::links::from(&doc, &from) {
+        let kind = if l.kind.is_empty() {
+            "link".into()
+        } else {
+            l.kind
+        };
+        out(format!("{} --{kind}--> {}", l.from.key(), l.to.key()));
     }
     Ok(())
 }

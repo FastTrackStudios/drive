@@ -34,7 +34,7 @@ pub(crate) struct Tags {
     pub(crate) a: Agent,
     id: String,
     pub(crate) doc: LoroDoc,
-    by: String,
+    pub(crate) by: String,
 }
 
 impl Tags {

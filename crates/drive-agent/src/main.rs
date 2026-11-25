@@ -56,6 +56,7 @@
 //! The graph (docs/graph.md; this peer's own, from what it has synced):
 //! drive [--dir DIR] graph backlinks THING | neighbors THING [--depth N]
 //! drive [--dir DIR] graph path THING THING [--max N] | tag TAG | refresh
+//! drive [--dir DIR] graph link|unlink FROM TO [--kind K]   # an app's kind of link, in drive:links
 //!
 //! File rules (docs/rules.md; every rule starts off and as a dry run):
 //! drive [--dir DIR] rules ls | show NAME | journal [NAME] | undo ID

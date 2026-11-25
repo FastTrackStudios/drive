@@ -17,6 +17,7 @@
 pub mod comments;
 pub mod history;
 pub mod kinds;
+pub mod links;
 pub mod recur;
 pub mod schema;
 pub mod tags;

@@ -16,6 +16,7 @@ use std::future::Future;
 
 use drive_files::projects::Project;
 use drive_spine::kinds::Kinds;
+use drive_spine::links::Link as AppLink;
 use drive_spine::tags::Library;
 use drive_spine::{Event, Task};
 
@@ -36,6 +37,7 @@ pub struct Sources<'a> {
     pub projects: &'a [Project],
     pub kinds: &'a Kinds,
     pub docs: &'a [DocRef],
+    pub links: &'a [AppLink],
 }
 
 /// What a peer could get for a note's content.
@@ -143,6 +145,7 @@ fn inputs<'a>(s: &Sources<'a>, extracts: &'a HashMap<String, Extract>) -> Inputs
         projects: s.projects,
         kinds: s.kinds,
         docs: s.docs,
+        links: s.links,
     }
 }
 
@@ -161,6 +164,7 @@ mod tests {
             projects: &[],
             kinds,
             docs: &[],
+            links: &[],
         }
     }
 

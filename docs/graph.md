@@ -50,6 +50,8 @@ documents builds the same graph.
 | `parent` | a tag → its parent | `<org>/drive:tags` (the hierarchy with cycles dropped) | Loro, already synced |
 | `task`, `event` | a spine task or event → the document its `link` opens | the spine | Loro, already synced |
 | `part` | a project → its documents and its Drive folders | the space's registry | Loro, already synced |
+| `linked` | a thing → what an app or agent linked it to (its kind in `written`: `uses`, `built-on`) | `<org>/drive:links` | Loro, already synced |
+| `in` | a file or folder → the Drive folder holding it | the Drive tree | Loro, already synced |
 
 **Nodes** use the tags' keys wherever there is one, so a node and its tags
 are the same thing: `file:<tree id>` (a file or folder of the Drive tree),
@@ -62,6 +64,24 @@ for every `[[Nowhere]]` in any case).
 A task's or event's `link` is a path in an app (`/studio/song/amazing-grace`).
 It is read back to a document through the kinds' `open` paths
 (`/studio/song/{id}` with prefix `studio:song:`, `drive_spine::kinds`).
+
+## Links between things (apps and agents)
+
+Apps' things refer to each other: an episode uses a song, a preset is
+built on another, a chart belongs to a setlist. `drive_spine::links` keeps
+these in one document per org, `<org>/drive:links`, keyed by what things
+are (the tags' keys: `file:<tree id>`, `content:<hash>`, `doc:<id>`,
+`project:<id>`), so a link follows its thing through moves, renames and
+copies.
+
+| Map | Holds |
+|---|---|
+| `from` | source key → { `<kind>\t<target key>` → { to, kind, by, at } } |
+
+One (source, kind, target) is one entry: two devices making the same link
+at once leave one link. The kind is the app's own word, one line; empty is
+a plain reference. Every app writes the same shape (`links::link`,
+`links::unlink`), so an agent needs one tool for every app's links.
 
 ## Notes: what one file says
 
@@ -151,6 +171,8 @@ drive graph neighbors THING [--depth N]
 drive graph path THING THING [--max N]
 drive graph tag TAG
 drive graph refresh                # and what it read: kept, read now, from a peer, out of reach
+drive graph link FROM TO [--kind K]  # in drive:links (synced)
+drive graph unlink FROM TO [--kind K]
 ```
 
 A THING is what `drive tag` takes (a file here, `drive:PATH`,
@@ -168,7 +190,8 @@ asking and keeps the extracts it had.
 
 `drive mcp` has four read-only tools, `graph_backlinks`,
 `graph_neighbors`, `graph_path` and `graph_tag` ([agents.md](agents.md)),
-taking the same THINGs. Each answer has `coverage`: how many notes this
+taking the same THINGs, and two that write `drive:links`, `link` and
+`unlink` (with `dry_run`, counted against the session's write cap). Each answer has `coverage`: how many notes this
 peer could read, so an agent knows when some were out of reach.
 
 ## Not yet
@@ -184,6 +207,6 @@ peer could read, so an agent knows when some were out of reach.
 - Inline `#tags` in a note's body, and block references as their own nodes.
 - Markdown on computers' locations (not in the Drive tree): their bytes are
   on one computer, so other peers would know them only by shared sidecars.
-- App documents' own links (a song's setlists): Studio and the other apps
-  need to say them in the spine first.
+- Apps writing their links: Studio, Season and Signal call `links::link`
+  for what their documents refer to.
 - Tags on folders inside computers' locations (see tags.md's "Not yet").
