@@ -11,7 +11,7 @@
 //! drive graph refresh                  # bring the graph up to date, and say what it read
 //! drive graph search WORDS… [--tag TAG] [--near THING] [--limit N]
 //!                                      # by words and meaning, fused; near a thing first
-//! drive graph model fetch              # the embedding model (once per device)
+//! drive graph model fetch [--clip]     # the embedding model (once per device); --clip: images
 //! drive graph adopt-tags [--apply]     # notes' frontmatter tags as Drive tags (a dry run without --apply)
 //! drive graph link FROM TO [--kind K]  # an app's kind of link (uses, built-on), in drive:links
 //! drive graph unlink FROM TO [--kind K]
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use drive_files::tree;
 use drive_graph::db::GraphDb;
-use drive_graph::embed::{Embedder, MODEL_FILES, StaticModel};
+use drive_graph::embed::{Embedder, ImageEmbedder, MODEL_FILES, StaticModel};
 use drive_graph::graph::{EdgeKind, Node, NodeKind, tag_node, target_node};
 use drive_graph::index::{Hit, Index, MAX_PATH};
 use drive_graph::refresh::{Got, Report, Sources, refresh};
@@ -123,18 +123,79 @@ pub fn model(agent_dir: &Path) -> Option<&'static StaticModel> {
         .as_ref()
 }
 
-/// Download the model's files (once; `drive graph model fetch`).
-async fn fetch_model(a: &Agent) -> Result<std::path::PathBuf, String> {
-    let dir = model_dir(&a.dir);
+/// The image model (CLIP): its id, where it is fetched from, where kept.
+pub const CLIP_ID: &str = "image:clip-vit-b32@1";
+const CLIP_URL: &str = "https://huggingface.co/openai/clip-vit-base-patch32/resolve/refs%2Fpr%2F15";
+
+/// Where this device keeps CLIP: `$DRIVE_CLIP_MODEL`, else
+/// `models/clip-vit-base-patch32` in the agent's folder.
+pub fn clip_dir(agent_dir: &Path) -> std::path::PathBuf {
+    std::env::var_os("DRIVE_CLIP_MODEL")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| agent_dir.join("models").join("clip-vit-base-patch32"))
+}
+
+/// The image model, when this build has it and this device fetched it.
+pub fn image_model(agent_dir: &Path) -> Option<&'static dyn ImageEmbedder> {
+    #[cfg(feature = "clip")]
+    {
+        static CLIP: std::sync::OnceLock<Option<drive_graph::clip::Clip>> =
+            std::sync::OnceLock::new();
+        CLIP.get_or_init(|| drive_graph::clip::Clip::load(CLIP_ID, &clip_dir(agent_dir)).ok())
+            .as_ref()
+            .map(|c| c as &dyn ImageEmbedder)
+    }
+    #[cfg(not(feature = "clip"))]
+    {
+        let _ = agent_dir;
+        None
+    }
+}
+
+/// Images embedded in one pass at most (the rest in the next).
+const IMAGES_A_PASS: usize = 200;
+
+/// The largest image read for its picture (bigger ones keep their names).
+const MAX_IMAGE: usize = 32 * 1024 * 1024;
+
+/// Embed the images this device can read that have no picture vector yet
+/// (with CLIP, when it has it). Returns how many were embedded.
+pub async fn embed_images(a: &Agent, db: &GraphDb) -> Result<usize, String> {
+    let Some(m) = image_model(&a.dir) else {
+        return Ok(0);
+    };
+    let (done, _) =
+        drive_graph::search::embed_missing_images(db, m, IMAGES_A_PASS, |key| async move {
+            Blobs::get(a, &key)
+                .await
+                .ok()
+                .filter(|b| b.len() <= MAX_IMAGE)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(done)
+}
+
+/// Download a model's files (once; `drive graph model fetch [--clip]`).
+async fn fetch_model(a: &Agent, clip: bool) -> Result<std::path::PathBuf, String> {
+    let (dir, url, files): (_, _, &[&str]) = if clip {
+        (
+            clip_dir(&a.dir),
+            CLIP_URL,
+            &["model.safetensors", "tokenizer.json"],
+        )
+    } else {
+        (model_dir(&a.dir), MODEL_URL, &MODEL_FILES)
+    };
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for f in MODEL_FILES {
+    for f in files {
         let to = dir.join(f);
         if to.exists() {
             continue;
         }
         let resp = a
             .http
-            .get(format!("{MODEL_URL}/{f}"))
+            .get(format!("{url}/{f}"))
             .send()
             .await
             .map_err(|e| format!("{f}: {e}"))?;
@@ -146,7 +207,9 @@ async fn fetch_model(a: &Agent) -> Result<std::path::PathBuf, String> {
         std::fs::write(&part, &bytes).map_err(|e| format!("{}: {e}", part.display()))?;
         std::fs::rename(&part, &to).map_err(|e| format!("{}: {e}", to.display()))?;
     }
-    StaticModel::load(MODEL_ID, &dir)?;
+    if !clip {
+        StaticModel::load(MODEL_ID, &dir)?;
+    }
     Ok(dir)
 }
 
@@ -253,8 +316,13 @@ pub async fn keep_up(a: std::sync::Arc<Agent>) {
             // Quiet for a while after a change: now.
             None => {
                 let tags = a.drive.open(&tags_id).await;
-                if let Err(e) = up_to_date(&a, &tags).await {
-                    tracing::warn!(error = %e, "the graph was not brought up to date");
+                match up_to_date(&a, &tags).await {
+                    Ok((db, _)) => {
+                        if let Err(e) = embed_images(&a, &db).await {
+                            tracing::warn!(error = %e, "images were not embedded");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "the graph was not brought up to date"),
                 }
                 dirty = false;
             }
@@ -458,7 +526,7 @@ fn words(rest: &[String]) -> Vec<&str> {
 pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-    let usage = "graph search WORDS… [--tag TAG] [--near THING] [--limit N] | model fetch | adopt-tags [--apply] | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
+    let usage = "graph search WORDS… [--tag TAG] [--near THING] [--limit N] | model fetch [--clip] | adopt-tags [--apply] | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
     if !matches!(
         sub,
         "search"
@@ -486,6 +554,10 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 report.notes, report.cached, report.parsed, report.shared, report.unread
             ));
             out(format!("{} nodes, {} edges", report.nodes, report.edges));
+            let images = embed_images(&t.a, &db).await?;
+            if images > 0 {
+                out(format!("{images} images embedded by what they show"));
+            }
         }
         ("search", words) if !words.is_empty() => {
             let limit = depth_flag(&rest, "--limit", 20)? as usize;
@@ -500,6 +572,7 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 words: &words.join(" "),
                 tag: tag.as_deref(),
                 near: near.as_deref(),
+                images: image_model(&t.a.dir),
                 limit,
             };
             let found = search(&db, m, &lib, &q).await?;
@@ -547,8 +620,16 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
             }
         }
         ("model", ["fetch"]) => {
-            let dir = fetch_model(&t.a).await?;
-            out(format!("{MODEL_ID} in {}", dir.display()));
+            let clip = rest.iter().any(|a| a == "--clip");
+            if clip && !cfg!(feature = "clip") {
+                return Err("this build has no image model (built without `clip`)".into());
+            }
+            let dir = fetch_model(&t.a, clip).await?;
+            out(format!(
+                "{} in {}",
+                if clip { CLIP_ID } else { MODEL_ID },
+                dir.display()
+            ));
         }
         ("backlinks", [thing]) => {
             let id = node_key(&t, &db, thing).await?;
@@ -645,6 +726,7 @@ pub async fn search(
     let ask = drive_graph::search::Ask {
         query: q.words,
         model,
+        images: q.images,
         near: q.near,
         limit: wide,
     };
@@ -662,6 +744,8 @@ pub struct Query<'a> {
     pub tag: Option<&'a str>,
     /// A node id to rank things near it higher.
     pub near: Option<&'a str>,
+    /// The image model, to find pictures by what they show.
+    pub images: Option<&'a dyn ImageEmbedder>,
     pub limit: usize,
 }
 

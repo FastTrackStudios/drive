@@ -33,6 +33,30 @@ pub trait Embedder: Send + Sync {
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String>;
 }
 
+/// Turns images, and the words that describe them, into vectors of one
+/// space (CLIP): a search's words find pictures of what they say.
+pub trait ImageEmbedder: Send + Sync {
+    /// The model and its version, starting `image:` (`image:clip-vit-b32@1`).
+    fn id(&self) -> &str;
+
+    /// One unit vector per image (encoded bytes: PNG, JPEG, …).
+    ///
+    /// # Errors
+    ///
+    /// An image could not be decoded, or the model failed.
+    fn embed_images(&self, images: &[Vec<u8>]) -> Result<Vec<Vec<f32>>, String>;
+
+    /// The unit vector of a description, in the images' space.
+    ///
+    /// # Errors
+    ///
+    /// The model failed.
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, String>;
+}
+
+/// The extensions of images an [`ImageEmbedder`] reads.
+pub const IMAGE_EXTENSIONS: [&str; 6] = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+
 /// A Model2Vec static model: a tokenizer and a token → vector table.
 pub struct StaticModel {
     id: String,

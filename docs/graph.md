@@ -250,9 +250,23 @@ meet. They are derived data like extracts: a peer that has the text can
 always make them itself.
 
 Machines with more to give (the always-on box, starcommand, thebattleship)
-run the same model over everything they can read; heavier models (a
-transformer for text, CLIP for images) are other `Embedder`s, kept under
-their own model id beside it, so a peer uses them only when it has them.
+run the same model over everything they can read; heavier models are other
+embedders, kept under their own model id beside it, so a peer uses them
+only when it has them.
+
+### Images by what they show
+
+**CLIP** (OpenAI's ViT-B/32, through candle; `drive_graph::clip`, the
+`clip` feature, in the agent by default) puts images and the words that
+describe them in one space: "a drum kit on a stage" finds the photo. It is
+about 600 MB, so it runs where there is room for it: `drive graph model
+fetch --clip` on a machine, and from then on its `drive serve` embeds the
+images it can read (JPEG, PNG, WebP, GIF, BMP up to 32 MB; 200 a pass), and
+every search on it adds the pictures' ranking to the words' and the
+meaning's. Image vectors are kept by **content** (the file's hash, model
+`image:clip-vit-b32@1`), so an image is embedded once wherever its copies
+are. A device without the model finds images by their names, tags and
+links.
 
 ## Frontmatter tags as Drive tags (when asked)
 
@@ -274,7 +288,7 @@ drive graph path THING THING [--max N]
 drive graph tag TAG
 drive graph refresh                # and what it read: kept, read now, from a peer, out of reach
 drive graph search WORDS… [--tag TAG] [--near THING] [--limit N]
-drive graph model fetch              # the embedding model, once per device
+drive graph model fetch [--clip]     # the embedding model, once per device; --clip: images
 drive graph adopt-tags [--apply]     # notes' frontmatter tags as Drive tags
 drive graph link FROM TO [--kind K]  # in drive:links (synced)
 drive graph unlink FROM TO [--kind K]
@@ -306,8 +320,8 @@ peer could read, so an agent knows when some were out of reach.
   the transport waits for peer-to-peer sync (`drive-sync`, `drive-net`).
   Vectors cannot be checked as cheaply as extracts; a peer will take them
   only from the owner's own devices, and make its own when it has the model.
-- **Images by what they show**: CLIP image vectors (on the machines that
-  can run it), and OCR text into the full-text index.
+- Images' text (OCR) into the full-text index, and picture vectors handed
+  from the machines that make them to those that cannot.
 - An approximate nearest-neighbour index once vectors run past a few
   hundred thousand pieces (Turso's vector index is not ready yet; the
   search reads every vector of the model).

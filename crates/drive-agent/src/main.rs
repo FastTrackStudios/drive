@@ -57,7 +57,7 @@
 //! drive [--dir DIR] graph backlinks THING | neighbors THING [--depth N]
 //! drive [--dir DIR] graph path THING THING [--max N] | tag TAG | refresh
 //! drive [--dir DIR] graph search WORDS… [--tag TAG] [--near THING] [--limit N]
-//! drive [--dir DIR] graph model fetch             # the embedding model, once per device
+//! drive [--dir DIR] graph model fetch [--clip]     # the embedding model, once per device; --clip: images by what they show
 //! drive [--dir DIR] graph link|unlink FROM TO [--kind K]   # an app's kind of link, in drive:links
 //!
 //! Pages (notes kept as live Loro text, edited by everyone at once):

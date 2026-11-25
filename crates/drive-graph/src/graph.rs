@@ -193,6 +193,9 @@ pub struct Graph {
     /// What each node is searched by: its name, path and other names, and
     /// a note's text.
     pub texts: BTreeMap<String, String>,
+    /// Each Drive file's content key (its full hash), for what is derived
+    /// from its bytes (an image's vector).
+    pub contents: BTreeMap<String, String>,
 }
 
 /// What a graph is built from: everything a peer has in its synced
@@ -235,6 +238,12 @@ pub fn build(i: &Inputs) -> Graph {
     g.aliases.sort();
     g.aliases.dedup();
     g.texts = texts(&g, i);
+    g.contents = i
+        .tree
+        .iter()
+        .filter(|t| !t.dir && !t.hash.is_empty() && !t.is_hidden() && !t.hash.starts_with("page:"))
+        .map(|t| (t.node(), t.hash.clone()))
+        .collect();
     g
 }
 

@@ -165,10 +165,12 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         None => None,
     };
     let model = crate::graph::model(&ctx.a.dir);
+    let images = crate::graph::image_model(&ctx.a.dir);
     let q = crate::graph::Query {
         words: need(args, "query")?,
         tag: opt_str(args, "tag"),
         near: near.as_deref(),
+        images,
         limit: offset + limit,
     };
     let found = crate::graph::search(
@@ -188,10 +190,11 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         .collect();
     let mut v = page(rows, offset, limit);
     v["coverage"] = coverage(&report);
-    v["by"] = json!(if model.is_some() {
-        "words and meaning"
-    } else {
-        "words (no model on this device)"
+    v["by"] = json!(match (model.is_some(), images.is_some()) {
+        (true, true) => "words, meaning and pictures",
+        (true, false) => "words and meaning",
+        (false, true) => "words and pictures",
+        (false, false) => "words (no model on this device)",
     });
     Ok(v)
 }
