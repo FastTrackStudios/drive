@@ -23,10 +23,12 @@ const ROWS: usize = 200;
 
 /// Changes when the tables change: a database of another version is
 /// emptied and made again (everything in it is derived).
-const SCHEMA_VERSION: &str = "3";
+const SCHEMA_VERSION: &str = "4";
 
 /// The tables, dropped when the schema version changes.
-const TABLES: &[&str] = &["nodes", "edges", "aliases", "texts", "vectors", "extracts"];
+const TABLES: &[&str] = &[
+    "nodes", "edges", "aliases", "texts", "contents", "vectors", "extracts",
+];
 
 const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, \
@@ -42,6 +44,8 @@ const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS vectors (key TEXT NOT NULL, model TEXT NOT NULL, chunk INTEGER NOT NULL, \
      vec BLOB NOT NULL)",
     "CREATE INDEX IF NOT EXISTS vectors_key ON vectors (model, key)",
+    "CREATE TABLE IF NOT EXISTS contents (id TEXT PRIMARY KEY, key TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS contents_key ON contents (key)",
     "CREATE INDEX IF NOT EXISTS texts_fts ON texts USING fts (text)",
     "CREATE TABLE IF NOT EXISTS extracts (key TEXT PRIMARY KEY, version INTEGER NOT NULL, \
      data BLOB NOT NULL)",
@@ -180,7 +184,8 @@ impl GraphDb {
         .await
     }
 
-    /// Forget vectors of texts no longer in the graph, and of other models.
+    /// Forget vectors of texts no longer in the graph, and of other text
+    /// models (image models' vectors are kept by content: [`Self::prune_content_vectors`]).
     ///
     /// # Errors
     ///
@@ -189,13 +194,76 @@ impl GraphDb {
         let conn = self.conn.lock().await;
         in_tx(&conn, async {
             conn.execute(
-                "DELETE FROM vectors WHERE model <> ?1 OR key NOT IN (SELECT key FROM texts)",
+                "DELETE FROM vectors WHERE model NOT LIKE 'image:%' \
+                 AND (model <> ?1 OR key NOT IN (SELECT key FROM texts))",
                 vec![t(model)],
             )
             .await
             .map(|_| ())
         })
         .await
+    }
+
+    /// Forget an image model's vectors of contents no longer in the graph.
+    ///
+    /// # Errors
+    ///
+    /// A write failed.
+    pub async fn prune_content_vectors(&self, model: &str) -> Result<()> {
+        let conn = self.conn.lock().await;
+        in_tx(&conn, async {
+            conn.execute(
+                "DELETE FROM vectors WHERE model = ?1 AND key NOT IN (SELECT key FROM contents)",
+                vec![t(model)],
+            )
+            .await
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// Each Drive file's node and content key whose name says it is one of
+    /// `extensions` (lower case, without the dot).
+    ///
+    /// # Errors
+    ///
+    /// A read failed.
+    pub async fn contents_of(&self, extensions: &[&str]) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT c.id, c.key, n.path FROM contents c JOIN nodes n ON n.id = c.id ORDER BY c.key",
+                (),
+            )
+            .await
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(db_err)? {
+            let path = text(row.get_value(2).map_err(db_err)?).to_lowercase();
+            let ext = path.rsplit_once('.').map_or("", |(_, e)| e);
+            if extensions.contains(&ext) {
+                out.push((
+                    text(row.get_value(0).map_err(db_err)?),
+                    text(row.get_value(1).map_err(db_err)?),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The files whose content's vector (of an image `model`) is nearest
+    /// `vector`, best first.
+    ///
+    /// # Errors
+    ///
+    /// A read failed.
+    pub async fn nearest_content(
+        &self,
+        model: &str,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<Found>> {
+        self.nearest_by("contents", model, vector, limit).await
     }
 
     /// The nodes whose text has a chunk nearest `vector` (of `model`), best
@@ -205,13 +273,27 @@ impl GraphDb {
     ///
     /// A read failed.
     pub async fn nearest(&self, model: &str, vector: &[f32], limit: usize) -> Result<Vec<Found>> {
+        self.nearest_by("texts", model, vector, limit).await
+    }
+
+    /// The nodes of `table` (texts or contents: `id`, `key`) whose key's
+    /// vectors come nearest `vector`.
+    async fn nearest_by(
+        &self,
+        table: &str,
+        model: &str,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<Found>> {
         let scored: Vec<(String, f64)> = {
             let conn = self.conn.lock().await;
             let mut rows = conn
                 .query(
-                    "SELECT x.id, MIN(vector_distance_cos(v.vec, vector32(?1))) AS d \
-                     FROM vectors v JOIN texts x ON x.key = v.key WHERE v.model = ?2 \
-                     GROUP BY x.id ORDER BY d, x.id LIMIT ?3",
+                    &format!(
+                        "SELECT x.id, MIN(vector_distance_cos(v.vec, vector32(?1))) AS d \
+                         FROM vectors v JOIN {table} x ON x.key = v.key WHERE v.model = ?2 \
+                         GROUP BY x.id ORDER BY d, x.id LIMIT ?3"
+                    ),
                     vec![
                         t(&vector_text(vector)),
                         t(model),
@@ -486,7 +568,13 @@ async fn write_graph(conn: &turso::Connection, g: &Graph) -> turso::Result<()> {
     sync_rows(conn, &Table::NODES, &nodes).await?;
     sync_rows(conn, &Table::EDGES, &edges).await?;
     sync_rows(conn, &Table::ALIASES, &aliases).await?;
-    sync_rows(conn, &Table::TEXTS, &texts).await
+    sync_rows(conn, &Table::TEXTS, &texts).await?;
+    let contents: Vec<Vec<String>> = g
+        .contents
+        .iter()
+        .map(|(id, key)| vec![id.clone(), key.clone()])
+        .collect();
+    sync_rows(conn, &Table::CONTENTS, &contents).await
 }
 
 /// A table as [`sync_rows`] writes it.
@@ -518,6 +606,12 @@ impl Table {
         columns: &["name", "id"],
         compared: 2,
         delete_by: 2,
+    };
+    const CONTENTS: Table = Table {
+        name: "contents",
+        columns: &["id", "key"],
+        compared: 2,
+        delete_by: 1,
     };
     const TEXTS: Table = Table {
         name: "texts",

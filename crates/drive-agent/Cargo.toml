@@ -60,5 +60,8 @@ axum = "0.8"
 
 [features]
 # The FUSE mount (Linux: libfuse3; macOS: macFUSE). `serve` needs none of it.
-default = ["mount"]
+default = ["mount", "clip"]
 mount = ["dep:fuser"]
+# Images found by what they show (CLIP, docs/graph.md): built in, used only
+# where its model has been fetched (`drive graph model fetch --clip`).
+clip = ["drive-graph/clip"]

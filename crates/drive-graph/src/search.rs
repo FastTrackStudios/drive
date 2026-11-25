@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::db::GraphDb;
-use crate::embed::{Embedder, chunks, fuse};
+use crate::embed::{Embedder, IMAGE_EXTENSIONS, ImageEmbedder, chunks, fuse};
 use crate::index::{Found, Index, Result};
 
 /// The longest piece of a text one vector stands for (characters).
@@ -59,11 +59,78 @@ fn embed_batch(
         .collect())
 }
 
+/// Images embedded in one call.
+const IMAGE_BATCH: usize = 8;
+
+/// Embed up to `max` of the space's images that have no vectors of this
+/// image model yet (`bytes`: an image's bytes by content key, `None` when
+/// this peer cannot have them), and forget vectors of images gone.
+/// Returns how many were embedded and how many could not be read.
+///
+/// # Errors
+///
+/// The database could not be read or written.
+pub async fn embed_missing_images<F, Fut>(
+    db: &GraphDb,
+    model: &dyn ImageEmbedder,
+    max: usize,
+    mut bytes: F,
+) -> Result<(usize, usize)>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Option<Vec<u8>>>,
+{
+    let have = db.vector_keys(model.id()).await?;
+    let mut keys: Vec<String> = db
+        .contents_of(&IMAGE_EXTENSIONS)
+        .await?
+        .into_iter()
+        .map(|(_, k)| k)
+        .filter(|k| !have.contains(k))
+        .collect();
+    keys.dedup();
+    keys.truncate(max);
+    let (mut done, mut unread) = (0, 0);
+    for batch in keys.chunks(IMAGE_BATCH) {
+        let mut got: Vec<(String, Vec<u8>)> = Vec::new();
+        for k in batch {
+            match bytes(k.clone()).await {
+                Some(b) => got.push((k.clone(), b)),
+                None => unread += 1,
+            }
+        }
+        // One at a time when a batch fails, so one bad image costs only itself.
+        let images: Vec<Vec<u8>> = got.iter().map(|(_, b)| b.clone()).collect();
+        let vectors: Vec<(String, Vec<Vec<f32>>)> = match model.embed_images(&images) {
+            Ok(v) => got
+                .iter()
+                .map(|(k, _)| k.clone())
+                .zip(v.into_iter().map(|x| vec![x]))
+                .collect(),
+            Err(_) => got
+                .iter()
+                .filter_map(|(k, b)| {
+                    let v = model.embed_images(std::slice::from_ref(b)).ok()?.pop()?;
+                    Some((k.clone(), vec![v]))
+                })
+                .collect(),
+        };
+        unread += got.len() - vectors.len();
+        done += vectors.len();
+        db.put_vectors(model.id(), &vectors).await?;
+    }
+    db.prune_content_vectors(model.id()).await?;
+    Ok((done, unread))
+}
+
 /// A search.
 pub struct Ask<'a> {
     pub query: &'a str,
     /// The model for the meaning half; none: words only.
     pub model: Option<&'a dyn Embedder>,
+    /// A model that finds images by what they show; none: images by
+    /// their names only.
+    pub images: Option<&'a dyn ImageEmbedder>,
     /// Rank things near this node higher (within two edges), among what
     /// the words and meaning found.
     pub near: Option<&'a str>,
@@ -92,6 +159,11 @@ pub async fn hybrid(db: &GraphDb, ask: &Ask<'_>) -> Result<Vec<Found>> {
             let meaning = db.nearest(model.id(), &q, wide).await?;
             lists.push(ids_of(&meaning, &mut nodes));
         }
+    }
+    if let Some(images) = ask.images {
+        let q = images.embed_query(ask.query).map_err(crate::index::Error)?;
+        let pictures = db.nearest_content(images.id(), &q, wide).await?;
+        lists.push(ids_of(&pictures, &mut nodes));
     }
     if let Some(near) = ask.near {
         let found: HashSet<&String> = lists.iter().flatten().collect();
@@ -147,6 +219,86 @@ mod tests {
         g.texts.insert(id.into(), text.into());
     }
 
+    /// Pictures as one-hot colours: "red" finds the red one.
+    struct Colours;
+
+    impl ImageEmbedder for Colours {
+        fn id(&self) -> &str {
+            "image:colours@1"
+        }
+        fn embed_images(&self, images: &[Vec<u8>]) -> std::result::Result<Vec<Vec<f32>>, String> {
+            images
+                .iter()
+                .map(|b| match b.as_slice() {
+                    b"red" => Ok(vec![1.0, 0.0]),
+                    b"blue" => Ok(vec![0.0, 1.0]),
+                    _ => Err("not an image".into()),
+                })
+                .collect()
+        }
+        fn embed_query(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
+            Ok(if text.contains("red") {
+                vec![1.0, 0.0]
+            } else {
+                vec![0.0, 1.0]
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn images_are_found_by_what_they_show() {
+        let mut g = Graph::default();
+        for (id, path, key) in [
+            ("file:r", "IMG_1.jpg", "kr"),
+            ("file:b", "IMG_2.png", "kb"),
+            ("file:x", "broken.jpg", "kx"),
+            ("file:t", "notes.txt", "kt"),
+        ] {
+            note(&mut g, id, path);
+            g.nodes.get_mut(id).unwrap().path = path.into();
+            g.contents.insert(id.into(), key.into());
+        }
+        let db = GraphDb::memory().await.unwrap();
+        db.replace(&g).await.unwrap();
+        let bytes = |k: String| async move {
+            match k.as_str() {
+                "kr" => Some(b"red".to_vec()),
+                "kb" => Some(b"blue".to_vec()),
+                "kx" => Some(b"garbage".to_vec()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            embed_missing_images(&db, &Colours, 100, bytes)
+                .await
+                .unwrap(),
+            (2, 1)
+        );
+        assert_eq!(
+            embed_missing_images(&db, &Colours, 100, bytes)
+                .await
+                .unwrap(),
+            (0, 1),
+            "each image once; the broken one is asked again"
+        );
+        let found = hybrid(
+            &db,
+            &Ask {
+                query: "a red sunset",
+                model: None,
+                images: Some(&Colours),
+                near: None,
+                limit: 5,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(found[0].node.id, "file:r", "{found:?}");
+        // Text vectors and image vectors are pruned apart.
+        db.prune_vectors("tiny@1").await.unwrap();
+        assert_eq!(db.vector_keys("image:colours@1").await.unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn words_and_meaning_together() {
         let mut g = Graph::default();
@@ -170,6 +322,7 @@ mod tests {
         let ask = |near| Ask {
             query: "song",
             model: Some(&m),
+            images: None,
             near,
             limit: 5,
         };
@@ -179,6 +332,7 @@ mod tests {
             &db,
             &Ask {
                 model: None,
+                images: None,
                 ..ask(None)
             },
         )

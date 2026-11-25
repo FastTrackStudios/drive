@@ -20,6 +20,8 @@
 pub mod adopt_tags;
 #[cfg(feature = "turso")]
 pub mod db;
+#[cfg(feature = "clip")]
+pub mod clip;
 #[cfg(feature = "embed")]
 pub mod embed;
 pub mod extract;

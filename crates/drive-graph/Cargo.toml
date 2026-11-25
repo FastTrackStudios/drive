@@ -24,6 +24,13 @@ tokenizers = { version = "0.22", default-features = false, features = ["fancy-re
 safetensors = { version = "0.7", optional = true }
 half = { version = "2", optional = true }
 
+# Images by what they show (clip.rs): CLIP through candle, on the
+# machines that build with `clip`.
+candle-core = { version = "0.9.2", optional = true }
+candle-nn = { version = "0.9.2", optional = true }
+candle-transformers = { version = "0.9.2", optional = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"], optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 loro.workspace = true
@@ -32,3 +39,4 @@ loro.workspace = true
 default = ["turso", "embed"]
 turso = ["dep:turso", "dep:tokio"]
 embed = ["dep:tokenizers", "dep:safetensors", "dep:half"]
+clip = ["embed", "dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:image"]
