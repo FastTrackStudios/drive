@@ -26,13 +26,18 @@ One document per org, `<org>/drive:tags` (`drive_spine::tags`):
 |---|---|---|
 | A file or folder in the Drive tree | `file:<tree id>` | moves and renames inside the Drive |
 | A file on a computer (a location's index) | `content:<sampled hash>` | moves, renames, copies, other devices: every copy shows the same tags |
+| A folder on a computer (a location's index) | `folder:<location id>:<path>` | moves and renames inside its location: the device that walks it finds the folder holding exactly the same files and moves its tags and links there |
 | An app's document | `doc:<id>` | the document |
 | A project | `project:<id>` | the project |
 
 The sampled hash includes the size (see [files.md](files.md)); two files
 that differ only between the samples share tags, as they share the
-"copies" count. Folders on computers have no content hash and are not
-tagged yet.
+"copies" count. A folder on a computer has no content hash, so it is kept
+by its path, and its tags follow it: when a walk finds a tagged folder
+gone, the folder that now holds exactly the same files (each by its path
+inside the folder and its sampled hash, `index::moved_folders`) gets its
+tags and links. A folder copied to two places, or changed as it moved, is
+not guessed at. An empty folder has nothing to be found by.
 
 **Tags** have a name, a shorthand, aliases, a colour from a fixed palette
 (red, orange, amber, yellow, lime, green, teal, cyan, blue, indigo,
@@ -135,14 +140,14 @@ drive tag search QUERY…
 ```
 
 A THING is a file on this computer (tagged by its content), `drive:PATH`
-(the Drive tree), `LOCATION:PATH` (a file of an indexed location),
+(the Drive tree), `LOCATION:PATH` (a file or folder of an indexed location),
 `project:NAME`, `doc:ID`, or a raw key (`file:<tree id>`,
 `content:<hash>`).
 
 ## Not yet
 
 - Tagging many selected things at once (the browser has single selection).
-- Tags on folders of computers' locations (they have no content hash).
+- A folder's tags across a copy to another computer (its key names its location).
 - A tag search over every file of every computer for `NOT` and
   `special:` (needs the tags beside the node's index rows).
 - Confirming a content key with the full hash, as copies will be.

@@ -1,6 +1,10 @@
 use super::*;
 use loro::ExportMode;
 
+fn new_tag(d: &LoroDoc, name: &str, parents: &[String]) -> String {
+    new(d, name, parents)
+}
+
 fn new(d: &LoroDoc, name: &str, parents: &[String]) -> String {
     create(
         d,
@@ -291,4 +295,41 @@ fn colours_and_kinds_parse_their_names() {
             .iter()
             .any(|(n, k)| *n == "Notes" && *k == FieldKind::Multiline)
     );
+}
+
+#[test]
+fn a_folder_of_a_location_is_a_target_and_its_tags_follow_a_move() {
+    let old = Target::Folder {
+        location: "l1".into(),
+        path: "Presets/Bass: warm".into(),
+    };
+    assert_eq!(old.key(), "folder:l1:Presets/Bass: warm");
+    assert_eq!(
+        Target::parse(&old.key()),
+        Some(old.clone()),
+        "a colon in the path"
+    );
+    assert_eq!(Target::parse("folder::x"), None);
+    let new = Target::Folder {
+        location: "l1".into(),
+        path: "Presets/Bass".into(),
+    };
+    let d = LoroDoc::new();
+    let warm = new_tag(&d, "Warm", &[]);
+    let kept = new_tag(&d, "Kept", &[]);
+    tag(&d, &old, &warm, "a", 5).unwrap();
+    add_field(&d, &old, "Notes", FieldKind::Text, "dark", "a", 6).unwrap();
+    tag(&d, &new, &kept, "b", 7).unwrap();
+    assert!(rekey(&d, &old, &new).unwrap());
+    let lib = Library::load(&d);
+    assert!(lib.on(&old).is_empty());
+    let on = lib.on(&new);
+    let mut ids = on.tag_ids();
+    ids.sort();
+    let mut want = vec![warm.clone(), kept];
+    want.sort();
+    assert_eq!(ids, want, "what the new key had stays");
+    assert_eq!(on.fields[0].value, "dark");
+    assert_eq!(on.tags.iter().find(|a| a.tag == warm).unwrap().at, 5);
+    assert!(!rekey(&d, &old, &new).unwrap(), "nothing left to move");
 }

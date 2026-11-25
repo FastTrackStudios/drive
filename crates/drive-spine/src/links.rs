@@ -142,6 +142,42 @@ pub fn unlink(doc: &LoroDoc, from: &Target, to: &Target, kind: &str) -> Result<(
     Ok(())
 }
 
+/// Move every link out of and into `from` to `to` (a folder that moved).
+/// Returns how many links moved.
+///
+/// # Errors
+///
+/// A write failed.
+pub fn rekey(doc: &LoroDoc, from: &Target, to: &Target) -> Result<usize, LinkError> {
+    if from == to {
+        return Ok(0);
+    }
+    let mut moved = 0;
+    for l in all(doc) {
+        let (f, t) = (
+            if l.from == *from {
+                to.clone()
+            } else {
+                l.from.clone()
+            },
+            if l.to == *from {
+                to.clone()
+            } else {
+                l.to.clone()
+            },
+        );
+        if (f.clone(), t.clone()) == (l.from.clone(), l.to.clone()) {
+            continue;
+        }
+        unlink(doc, &l.from, &l.to, &l.kind)?;
+        if f != t {
+            link(doc, &f, &t, &l.kind, &l.by, l.at)?;
+        }
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 /// The links out of one thing, by target key then kind.
 pub fn from(doc: &LoroDoc, thing: &Target) -> Vec<Link> {
     let mut out = child(&from_map(doc), &thing.key())
@@ -213,6 +249,26 @@ mod tests {
             link(&d, &song(), &episode(), "a\tb", "a", 1),
             Err(LinkError::BadKind(_))
         ));
+    }
+
+    #[test]
+    fn links_follow_a_moved_folder() {
+        let d = LoroDoc::new();
+        let old = Target::Folder {
+            location: "l1".into(),
+            path: "Presets/Old".into(),
+        };
+        let new = Target::Folder {
+            location: "l1".into(),
+            path: "Presets/New".into(),
+        };
+        link(&d, &old, &song(), "uses", "a", 1).unwrap();
+        link(&d, &episode(), &old, "", "a", 2).unwrap();
+        assert_eq!(rekey(&d, &old, &new).unwrap(), 2);
+        assert!(from(&d, &old).is_empty());
+        assert_eq!(from(&d, &new)[0].to, song());
+        assert_eq!(from(&d, &episode())[0].to, new);
+        assert_eq!(from(&d, &episode())[0].at, 2, "who and when kept");
     }
 
     #[test]

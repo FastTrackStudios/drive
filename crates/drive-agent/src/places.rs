@@ -195,9 +195,54 @@ impl Agent {
         Ok(self.dir.join("indexes").join(format!("{id}.idx")))
     }
 
+    /// Move the tags and links of this location's folders that moved since
+    /// the last walk (found by what they hold, `index::moved_folders`) to
+    /// their new paths.
+    async fn carry_folder_keys(&self, location: &str, new: &[drive_files::index::IndexEntry]) -> usize {
+        use drive_spine::tags::Target;
+        let space = self.cfg.lock().expect("cfg").space.clone();
+        let tags_id = drive_spine::tags::tags_doc(&space);
+        let links_id = drive_spine::links::links_doc(&space);
+        let (tags, links) = (self.drive.open(&tags_id).await, self.drive.open(&links_id).await);
+        let lib = drive_spine::tags::Library::load(&tags);
+        let all_links = drive_spine::links::all(&links);
+        let keyed = lib
+            .targets()
+            .map(|(t, _)| t)
+            .chain(all_links.iter().flat_map(|l| [l.from.clone(), l.to.clone()]));
+        let mut wanted: Vec<String> = keyed
+            .filter_map(|t| match t {
+                Target::Folder { location: l, path } if l == location => Some(path),
+                _ => None,
+            })
+            .collect();
+        wanted.sort();
+        wanted.dedup();
+        if wanted.is_empty() {
+            return 0;
+        }
+        let Some(old) = self.index_db.load(location).await.ok().flatten() else {
+            return 0;
+        };
+        let moves = drive_files::index::moved_folders(&old.entries, new, &wanted);
+        for (from, to) in &moves {
+            let (f, t) = (
+                Target::Folder { location: location.into(), path: from.clone() },
+                Target::Folder { location: location.into(), path: to.clone() },
+            );
+            let _ = drive_spine::tags::rekey(&tags, &f, &t);
+            let _ = drive_spine::links::rekey(&links, &f, &t);
+        }
+        if !moves.is_empty() {
+            self.drive.commit(&tags_id);
+            self.drive.commit(&links_id);
+        }
+        moves.len()
+    }
+
     /// Walk one of this device's locations, publish its index to the node
     /// and record it in the registry.
-    #[tracing::instrument(name = "drive.index", skip_all, fields(location.name = %loc.name, index.files = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
+    #[tracing::instrument(name = "drive.index", skip_all, fields(location.name = %loc.name, index.files = tracing::field::Empty, process.rss_mb = tracing::field::Empty, folders.moved = tracing::field::Empty))]
     pub async fn index_location(&self, loc: &Location) -> Result<WalkStats, String> {
         if space::is_paused(&self.space, &loc.id) {
             tracing::debug!(location.name = %loc.name, "paused: kept the last index");
@@ -253,6 +298,12 @@ impl Agent {
         // published for it.
         if !self.has_location(&loc.id) {
             return Err(format!("{} is no longer a location", loc.name));
+        }
+        // Tagged or linked folders that moved: their tags and links go with
+        // them (this device walks the location, so it alone decides).
+        let moved = self.carry_folder_keys(&loc.id, &idx.entries).await;
+        if moved > 0 {
+            tracing::Span::current().record("folders.moved", moved);
         }
         // Into the index database: only the rows that changed are written.
         let written = self

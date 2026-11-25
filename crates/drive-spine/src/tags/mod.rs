@@ -69,6 +69,10 @@ pub enum Target {
     Doc(String),
     /// A project of the space's registry.
     Project(String),
+    /// A folder of a location (a computer's indexed folder), by its path
+    /// inside it. The device that walks the location moves its tags and
+    /// links to the new path when the folder moves ([`rekey`]).
+    Folder { location: String, path: String },
 }
 
 impl Target {
@@ -79,6 +83,7 @@ impl Target {
             Target::Content(h) => format!("content:{h}"),
             Target::Doc(id) => format!("doc:{id}"),
             Target::Project(id) => format!("project:{id}"),
+            Target::Folder { location, path } => format!("folder:{location}:{path}"),
         }
     }
 
@@ -93,6 +98,16 @@ impl Target {
             "content" => Target::Content(rest.into()),
             "doc" => Target::Doc(rest.into()),
             "project" => Target::Project(rest.into()),
+            "folder" => {
+                let (location, path) = rest.split_once(':')?;
+                if location.is_empty() {
+                    return None;
+                }
+                Target::Folder {
+                    location: location.into(),
+                    path: path.into(),
+                }
+            }
             _ => return None,
         })
     }
@@ -552,6 +567,39 @@ pub fn delete(doc: &LoroDoc, id: &str) -> Result<()> {
 }
 
 // ── assignments ─────────────────────────────────────────────────────────
+
+/// Move everything on `from` (tags and fields) to `to`, as when a folder
+/// moved: what `to` already has stays, `from` is left with nothing.
+/// Returns whether `from` had anything.
+pub fn rekey(doc: &LoroDoc, from: &Target, to: &Target) -> Result<bool> {
+    let targets = targets_map(doc);
+    let Some(old) = child(&targets, &from.key()) else {
+        return Ok(false);
+    };
+    if from != to {
+        copy_map(&old, &target_map(doc, to)?)?;
+        targets.delete(&from.key())?;
+    }
+    Ok(true)
+}
+
+/// Every value and map of `src` written into `dst` (maps merged).
+pub(crate) fn copy_map(src: &LoroMap, dst: &LoroMap) -> loro::LoroResult<()> {
+    for k in src.keys() {
+        match src.get(&k) {
+            Some(ValueOrContainer::Container(c)) => {
+                if let Ok(m) = c.into_map() {
+                    copy_map(&m, &dst.ensure_mergeable_map(&k)?)?;
+                }
+            }
+            Some(ValueOrContainer::Value(v)) => {
+                dst.insert(&k, v)?;
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
 
 fn targets_map(doc: &LoroDoc) -> LoroMap {
     doc.get_map("targets")

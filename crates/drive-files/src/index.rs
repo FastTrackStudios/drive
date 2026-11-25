@@ -510,6 +510,72 @@ impl Tree {
     }
 }
 
+// ── folders that moved ──────────────────────────────────────────────────
+
+/// What a folder holds, as one value: every file under it by its path
+/// inside the folder and its sampled hash. The same after a move or a
+/// rename of the folder; none for a folder with no readable file.
+#[must_use]
+pub fn folder_signature(entries: &[IndexEntry], folder: &str) -> Option<String> {
+    let prefix = format!("{}/", folder.trim_matches('/'));
+    let mut files: Vec<(&str, &str)> = entries
+        .iter()
+        .filter(|e| !e.dir && !e.sampled.is_empty())
+        .filter_map(|e| Some((e.path.strip_prefix(&prefix)?, e.sampled.as_str())))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    files.sort_unstable();
+    let mut h = blake3::Hasher::new();
+    for (path, sampled) in files {
+        h.update(path.as_bytes());
+        h.update(b"\0");
+        h.update(sampled.as_bytes());
+        h.update(b"\n");
+    }
+    Some(h.finalize().to_hex().to_string())
+}
+
+/// Where each of `wanted` (folders of the `old` walk) went in the `new`
+/// one: a folder no longer there is matched to the one new folder holding
+/// exactly the same files. One with no match, or more than one, is left
+/// out (a folder copied twice is not guessed at).
+#[must_use]
+pub fn moved_folders(
+    old: &[IndexEntry],
+    new: &[IndexEntry],
+    wanted: &[String],
+) -> Vec<(String, String)> {
+    let dirs = |entries: &[IndexEntry]| -> std::collections::HashSet<String> {
+        entries
+            .iter()
+            .filter(|e| e.dir)
+            .map(|e| e.path.clone())
+            .collect()
+    };
+    let (was, now) = (dirs(old), dirs(new));
+    let fresh: Vec<&String> = now.iter().filter(|d| !was.contains(*d)).collect();
+    let mut by_sig: HashMap<String, Vec<&String>> = HashMap::new();
+    for d in fresh {
+        if let Some(sig) = folder_signature(new, d) {
+            by_sig.entry(sig).or_default().push(d);
+        }
+    }
+    let mut out: Vec<(String, String)> = wanted
+        .iter()
+        .filter(|w| !now.contains(*w))
+        .filter_map(
+            |w| match by_sig.get(&folder_signature(old, w)?)?.as_slice() {
+                [one] => Some((w.clone(), (*one).clone())),
+                _ => None,
+            },
+        )
+        .collect();
+    out.sort();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,4 +691,52 @@ mod tests {
         assert!(t.get("b/c").is_none());
     }
 
+    fn entry(path: &str, dir: bool, sampled: &str) -> IndexEntry {
+        IndexEntry {
+            path: path.into(),
+            dir,
+            size: 1,
+            mtime: 0,
+            sampled: sampled.into(),
+        }
+    }
+
+    #[test]
+    fn a_moved_folder_is_found_by_what_it_holds() {
+        let old = vec![
+            entry("Presets", true, ""),
+            entry("Presets/Warm", true, ""),
+            entry("Presets/Warm/a.fxp", false, "h1"),
+            entry("Presets/Warm/sub", true, ""),
+            entry("Presets/Warm/sub/b.fxp", false, "h2"),
+            entry("Presets/Copied", true, ""),
+            entry("Presets/Copied/c.fxp", false, "h3"),
+            entry("Empty", true, ""),
+        ];
+        let new = vec![
+            entry("Presets", true, ""),
+            entry("Bass", true, ""),
+            entry("Bass/Warm Bass", true, ""),
+            entry("Bass/Warm Bass/a.fxp", false, "h1"),
+            entry("Bass/Warm Bass/sub", true, ""),
+            entry("Bass/Warm Bass/sub/b.fxp", false, "h2"),
+            entry("X", true, ""),
+            entry("X/c.fxp", false, "h3"),
+            entry("Y", true, ""),
+            entry("Y/c.fxp", false, "h3"),
+        ];
+        let wanted: Vec<String> = ["Presets/Warm", "Presets/Copied", "Empty", "Presets"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            moved_folders(&old, &new, &wanted),
+            [("Presets/Warm".to_string(), "Bass/Warm Bass".to_string())],
+            "a copy made twice is not guessed; an empty folder has nothing to match; one still there did not move"
+        );
+        assert_eq!(
+            folder_signature(&old, "Presets/Warm"),
+            folder_signature(&new, "Bass/Warm Bass")
+        );
+        assert_eq!(folder_signature(&old, "Empty"), None);
+    }
 }
