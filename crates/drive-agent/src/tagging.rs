@@ -15,7 +15,8 @@
 //!
 //! A THING is a file on this computer (tagged by its content, so every copy
 //! anywhere shows the tag), a path in the Drive (`drive:Songs/mix.wav`), a
-//! file of a location (`LOCATION:path/in/it`), a project by name
+//! file or folder of a location (`LOCATION:path/in/it`; a folder's tags
+//! follow it when it moves), a project by name
 //! (`project:NAME`), an app document (`doc:studio:song:x`), or a raw key
 //! (`file:<tree id>`, `content:<hash>`).
 
@@ -124,10 +125,14 @@ impl Tags {
                 .index_entry(&loc.id, path)
                 .await
                 .ok_or(format!("{path} is not in {lname} (or it has no index yet)"))?;
-            if e.dir || e.sampled.is_empty() {
-                return Err(format!(
-                    "{path} has no content hash (a folder, or unreadable): only files can be tagged on a computer"
-                ));
+            if e.dir {
+                return Ok(Target::Folder {
+                    location: loc.id,
+                    path: e.path,
+                });
+            }
+            if e.sampled.is_empty() {
+                return Err(format!("{path} could not be read, so it has no content hash"));
             }
             return Ok(Target::Content(e.sampled));
         }

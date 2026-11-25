@@ -833,3 +833,44 @@ async fn the_graph_tools_read_this_peers_graph() {
         .unwrap();
     assert!(!back["items"].as_array().unwrap().iter().any(|h| h["edge"]["kind"] == "linked"));
 }
+
+#[tokio::test]
+async fn a_computers_folder_is_tagged_and_its_tags_follow_a_move() {
+    let w = world(10).await;
+    w.call(
+        "tag",
+        json!({ "things": ["Scratch:Mixes"], "tags": ["Bounces"], "create_missing": true }),
+    )
+    .await
+    .unwrap();
+    w.call("link", json!({ "from": "doc:season:episode:1", "to": "Scratch:Mixes", "kind": "uses" }))
+        .await
+        .unwrap();
+    let on = w.call("tags", json!({ "thing": "Scratch:Mixes" })).await.unwrap();
+    assert_eq!(on["tags"][0]["tag"], "Bounces", "{on}");
+
+    // Renamed on disk, then walked again by the device that has it.
+    std::fs::rename(w.disk.path().join("Mixes"), w.disk.path().join("Mixes 2026")).unwrap();
+    let a = &w.ctx().a;
+    let loc = space::locations(&a.space)
+        .into_iter()
+        .find(|l| l.name == "Scratch")
+        .unwrap();
+    a.index_location(&loc).await.unwrap();
+
+    let moved = w.call("tags", json!({ "thing": "Scratch:Mixes 2026" })).await.unwrap();
+    assert_eq!(moved["tags"][0]["tag"], "Bounces", "the tag went with it: {moved}");
+    let back = w
+        .call("graph_backlinks", json!({ "thing": "Scratch:Mixes 2026" }))
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = back["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["edge"]["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"linked"), "the link went with it too: {back}");
+    let tagged = w.call("graph_tag", json!({ "tag": "Bounces" })).await.unwrap();
+    assert_eq!(tagged["total"], 1);
+}

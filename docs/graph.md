@@ -55,7 +55,8 @@ documents builds the same graph.
 
 **Nodes** use the tags' keys wherever there is one, so a node and its tags
 are the same thing: `file:<tree id>` (a file or folder of the Drive tree),
-`content:<sampled hash>` (a file on some computer, by content), `doc:<id>`,
+`content:<sampled hash>` (a file on some computer, by content),
+`folder:<location>:<path>` (a folder on some computer, [tags.md](tags.md)), `doc:<id>`,
 `project:<id>`. The rest are `tag:<id>`, `task:<id>`, `event:<id>`,
 `label:<name>` (a frontmatter tag that names no Drive tag) and
 `missing:<name>` (what a link names that does not exist yet, one node
@@ -209,4 +210,3 @@ peer could read, so an agent knows when some were out of reach.
   on one computer, so other peers would know them only by shared sidecars.
 - Apps writing their links: Studio, Season and Signal call `links::link`
   for what their documents refer to.
-- Tags on folders inside computers' locations (see tags.md's "Not yet").

@@ -62,10 +62,14 @@ impl Thing {
     pub fn target(&self) -> Result<Target, String> {
         match self {
             Thing::Drive { entry, .. } => Ok(Target::File(tree::id_string(entry.id))),
+            Thing::Located { loc, entry } if entry.dir => Ok(Target::Folder {
+                location: loc.id.clone(),
+                path: entry.path.clone(),
+            }),
             Thing::Located { loc, entry } => {
-                if entry.dir || entry.sampled.is_empty() {
+                if entry.sampled.is_empty() {
                     Err(format!(
-                        "{}:{} has no content hash (a folder, or unreadable): only files on a computer can be tagged",
+                        "{}:{} could not be read, so it has no content hash",
                         loc.name, entry.path
                     ))
                 } else {
