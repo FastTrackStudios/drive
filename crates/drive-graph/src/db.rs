@@ -135,6 +135,41 @@ impl GraphDb {
         })
     }
 
+    /// The vectors of `model` kept for these keys (each key's, in chunk
+    /// order), to hand to another peer.
+    ///
+    /// # Errors
+    ///
+    /// A read failed.
+    pub async fn vectors_of(
+        &self,
+        model: &str,
+        keys: &[String],
+    ) -> Result<Vec<(String, Vec<Vec<f32>>)>> {
+        let conn = self.conn.lock().await;
+        let mut out: Vec<(String, Vec<Vec<f32>>)> = Vec::new();
+        for key in keys {
+            let mut rows = conn
+                .query(
+                    "SELECT vector_extract(vec) FROM vectors WHERE model = ?1 AND key = ?2 ORDER BY chunk",
+                    vec![t(model), t(key)],
+                )
+                .await
+                .map_err(db_err)?;
+            let mut vecs = Vec::new();
+            while let Some(row) = rows.next().await.map_err(db_err)? {
+                let text = text(row.get_value(0).map_err(db_err)?);
+                let v: Vec<f32> = serde_json::from_str(&text)
+                    .map_err(|e| Error(format!("a kept vector: {e}")))?;
+                vecs.push(v);
+            }
+            if !vecs.is_empty() {
+                out.push((key.clone(), vecs));
+            }
+        }
+        Ok(out)
+    }
+
     /// The content keys with vectors of `model`.
     ///
     /// # Errors

@@ -41,6 +41,9 @@ use crate::agent::Agent;
 use crate::tagging::Tags;
 use crate::{flag, out};
 
+/// Notes a refresh asks other devices about at most (their extracts).
+const PEER_ASKS: u32 = 64;
+
 /// Unreachable notes in a row after which a refresh stops asking for bytes
 /// (offline: the rest keep the extracts they had, or none).
 const GIVE_UP_AFTER: u32 = 3;
@@ -152,6 +155,15 @@ pub fn image_model(agent_dir: &Path) -> Option<&'static dyn ImageEmbedder> {
     }
 }
 
+/// The query as the image model sees it: made here when this device has
+/// CLIP, else asked of a device that has it (none answers: no pictures).
+pub async fn image_query(a: &Agent, words: &str) -> Option<drive_graph::search::ImageQuery> {
+    if let Some(m) = image_model(&a.dir) {
+        return drive_graph::search::ImageQuery::local(m, words).ok();
+    }
+    crate::graph_share::ask_query(a, CLIP_ID, words).await
+}
+
 /// Images embedded in one pass at most (the rest in the next).
 const IMAGES_A_PASS: usize = 200;
 
@@ -247,26 +259,33 @@ pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), 
         links: &links,
     };
     let misses = AtomicU32::new(0);
+    let asked = AtomicU32::new(0);
     let report = refresh(&db, &sources, |hash| {
-        let misses = &misses;
+        let (misses, asked) = (&misses, &asked);
         let page = pages.get(&hash).cloned();
         async move {
             if let Some(text) = page {
                 return Got::Bytes(text.into_bytes());
             }
-            if misses.load(Ordering::Relaxed) >= GIVE_UP_AFTER && !a.is_cached(&hash) {
-                return Got::Nothing;
-            }
-            match Blobs::get(a, &hash).await {
-                Ok(bytes) => {
-                    misses.store(0, Ordering::Relaxed);
-                    Got::Bytes(bytes)
-                }
-                Err(_) => {
-                    misses.fetch_add(1, Ordering::Relaxed);
-                    Got::Nothing
+            if misses.load(Ordering::Relaxed) < GIVE_UP_AFTER || a.is_cached(&hash) {
+                match Blobs::get(a, &hash).await {
+                    Ok(bytes) => {
+                        misses.store(0, Ordering::Relaxed);
+                        return Got::Bytes(bytes);
+                    }
+                    Err(_) => {
+                        misses.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
+            // The bytes are out of reach: perhaps a device that read them
+            // has the extract (checked before it is used).
+            if asked.fetch_add(1, Ordering::Relaxed) < PEER_ASKS
+                && let Some(b) = crate::graph_share::ask_extract(a, &hash).await
+            {
+                return Got::Sidecar(b);
+            }
+            Got::Nothing
         }
     })
     .await
@@ -320,6 +339,9 @@ pub async fn keep_up(a: std::sync::Arc<Agent>) {
                     Ok((db, _)) => {
                         if let Err(e) = embed_images(&a, &db).await {
                             tracing::warn!(error = %e, "images were not embedded");
+                        }
+                        if let Err(e) = crate::graph_share::fetch_image_vectors(&a, &db).await {
+                            tracing::warn!(error = %e, "picture vectors were not fetched");
                         }
                     }
                     Err(e) => tracing::warn!(error = %e, "the graph was not brought up to date"),
@@ -572,7 +594,7 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 words: &words.join(" "),
                 tag: tag.as_deref(),
                 near: near.as_deref(),
-                images: image_model(&t.a.dir),
+                images: image_query(&t.a, &words.join(" ")).await,
                 limit,
             };
             let found = search(&db, m, &lib, &q).await?;
@@ -726,7 +748,7 @@ pub async fn search(
     let ask = drive_graph::search::Ask {
         query: q.words,
         model,
-        images: q.images,
+        images: q.images.clone(),
         near: q.near,
         limit: wide,
     };
@@ -744,8 +766,9 @@ pub struct Query<'a> {
     pub tag: Option<&'a str>,
     /// A node id to rank things near it higher.
     pub near: Option<&'a str>,
-    /// The image model, to find pictures by what they show.
-    pub images: Option<&'a dyn ImageEmbedder>,
+    /// The query as the image model sees it, to find pictures by what
+    /// they show.
+    pub images: Option<drive_graph::search::ImageQuery>,
     pub limit: usize,
 }
 

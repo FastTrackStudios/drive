@@ -165,12 +165,13 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         None => None,
     };
     let model = crate::graph::model(&ctx.a.dir);
-    let images = crate::graph::image_model(&ctx.a.dir);
+    let words = need(args, "query")?;
+    let images = crate::graph::image_query(&ctx.a, words).await;
     let q = crate::graph::Query {
-        words: need(args, "query")?,
+        words,
         tag: opt_str(args, "tag"),
         near: near.as_deref(),
-        images,
+        images: images.clone(),
         limit: offset + limit,
     };
     let found = crate::graph::search(

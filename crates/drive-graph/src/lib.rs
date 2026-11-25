@@ -33,4 +33,6 @@ pub mod refresh;
 pub mod resolve;
 #[cfg(all(feature = "turso", feature = "embed"))]
 pub mod search;
+#[cfg(feature = "share")]
+pub mod share;
 pub mod space;
