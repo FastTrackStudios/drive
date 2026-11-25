@@ -228,3 +228,99 @@ mod tests {
         assert_eq!((r.cached, r.parsed, r.unread), (2, 0, 2));
     }
 }
+
+/// How long a refresh of a big space takes (`cargo test --release --
+/// --ignored big_space --nocapture`).
+#[cfg(test)]
+mod scale {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore]
+    async fn big_space() {
+        let mut items = Vec::new();
+        for d in 0..500 {
+            items.push(TreeItem {
+                id: format!("d{d}@1"),
+                path: format!("F{d}"),
+                dir: true,
+                hash: String::new(),
+            });
+            for f in 0..100 {
+                let note = f < 10;
+                let name = if note {
+                    format!("Note {d}-{f}.md")
+                } else {
+                    format!("take {f}.wav")
+                };
+                items.push(TreeItem {
+                    id: format!("{d}-{f}@1"),
+                    path: format!("F{d}/{name}"),
+                    dir: false,
+                    hash: format!("h{d}-{f}"),
+                });
+            }
+        }
+        let (lib, kinds) = (Library::default(), Kinds::from(vec![]));
+        let s = Sources {
+            tree: &items,
+            tags: &lib,
+            tasks: &[],
+            events: &[],
+            projects: &[],
+            kinds: &kinds,
+            docs: &[],
+            links: &[],
+        };
+        let dir = std::env::temp_dir().join(format!("graph-scale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = GraphDb::open(&dir.join("g.db")).await.unwrap();
+        let text = |k: &str| {
+            format!(
+                "# {k}\n\nSee [[Note 1-1]] and [[Note {}-2]] and [[Nowhere]].\n\n{}",
+                k.len() % 7,
+                "words about music ".repeat(40)
+            )
+        };
+        for round in 0..2 {
+            let t = std::time::Instant::now();
+            let r = refresh(&db, &s, |k| {
+                let b = text(&k).into_bytes();
+                async move { Got::Bytes(b) }
+            })
+            .await
+            .unwrap();
+            println!(
+                "round {round}: {:?} for {} nodes, {} edges ({} parsed)",
+                t.elapsed(),
+                r.nodes,
+                r.edges,
+                r.parsed
+            );
+        }
+        let t = std::time::Instant::now();
+        let g = crate::graph::build(&crate::graph::Inputs {
+            tree: &items,
+            extracts: &db.extracts(&note_keys(&items)).await.unwrap(),
+            tags: &lib,
+            tasks: &[],
+            events: &[],
+            projects: &[],
+            kinds: &kinds,
+            docs: &[],
+            links: &[],
+        });
+        println!("build alone: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        db.replace(&g).await.unwrap();
+        println!("replace, nothing changed: {:?}", t.elapsed());
+        let mut g2 = g.clone();
+        let one = g2.texts.keys().nth(7).unwrap().clone();
+        g2.texts.insert(one, "changed".into());
+        g2.edges.pop();
+        let t = std::time::Instant::now();
+        db.replace(&g2).await.unwrap();
+        println!("replace, one text and one edge changed: {:?}", t.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
