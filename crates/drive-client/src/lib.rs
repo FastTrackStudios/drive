@@ -21,7 +21,12 @@
 
 #[cfg(target_arch = "wasm32")]
 mod idb;
+#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+pub mod peers;
 mod platform;
+mod transport;
+
+pub use transport::{Connection, MaybeSend, Transport, WebSocket, Wire};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -141,9 +146,11 @@ struct OpenDoc {
 const LINGER_MS: u32 = 30_000;
 
 struct Inner {
+    transport: Box<dyn Transport>,
+    /// What the transport connects to, for logs.
     url: String,
     me: Mutex<Me>,
-    ws: Mutex<Option<platform::Socket>>,
+    ws: Mutex<Option<Box<dyn Connection>>>,
     status: Mutex<Status>,
     peer: Mutex<Option<Peer>>,
     docs: Mutex<HashMap<DocId, OpenDoc>>,
@@ -188,7 +195,21 @@ impl Drive {
         url: Option<String>,
         token: Option<String>,
     ) -> (Drive, mpsc::UnboundedReceiver<Event>) {
-        let url = url.unwrap_or_else(platform::default_url);
+        let transport = match url {
+            Some(u) => WebSocket::new(u),
+            None => WebSocket::default_node(),
+        };
+        Drive::connect_via(transport, token)
+    }
+
+    /// Connect through any [`Transport`]: a node's [`WebSocket`], or
+    /// (natively, with the `p2p` feature) this device's own peers
+    /// ([`Drive::peer_to_peer`]).
+    pub fn connect_via(
+        transport: impl Transport,
+        token: Option<String>,
+    ) -> (Drive, mpsc::UnboundedReceiver<Event>) {
+        let url = transport.describe();
         let (tx, rx) = mpsc::unbounded();
         let me = platform::load_me()
             .and_then(|j| serde_json::from_str(&j).ok())
@@ -197,6 +218,7 @@ impl Drive {
                 hue: (platform::random() * 360.0) as u32,
             });
         let drive = Drive(Arc::new(Inner {
+            transport: Box::new(transport),
             url,
             me: Mutex::new(me),
             ws: Mutex::new(None),
@@ -581,7 +603,11 @@ impl Drive {
         if let Some(old) = ws.take() {
             old.close();
         }
-        match platform::Socket::open(&self.0.url, self.clone(), generation) {
+        let wire = Wire {
+            drive: self.clone(),
+            generation,
+        };
+        match self.0.transport.open(wire) {
             Some(s) => *ws = Some(s),
             None => {
                 drop(ws);
@@ -736,7 +762,7 @@ mod tests {
     use super::*;
 
     /// The copies' folder, one for every test here (it is process-wide).
-    fn copies() -> &'static std::path::Path {
+    pub(crate) fn copies() -> &'static std::path::Path {
         static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
         let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap()).path();
         set_data_dir(dir);
@@ -766,7 +792,7 @@ mod tests {
         assert_eq!(pending(&drive, id), 1, "the update waits to be sent");
     }
 
-    async fn node() -> (String, tempfile::TempDir) {
+    pub(crate) async fn node() -> (String, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
         let opts = drive_node::Options {
             no_backfill: true,

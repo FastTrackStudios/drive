@@ -28,10 +28,17 @@ type PendingBrowse = (Peer, oneshot::Sender<Result<drive_proto::Browsed, String>
 struct Docs(Arc<Store>);
 
 impl drive_sync::Store for Docs {
-    fn load<'a>(&'a self, id: &'a str) -> drive_sync::BoxFuture<'a, Result<Option<Vec<u8>>, String>> {
+    fn load<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> drive_sync::BoxFuture<'a, Result<Option<Vec<u8>>, String>> {
         Box::pin(async move { self.0.load(id).await.map_err(|e| e.to_string()) })
     }
-    fn save<'a>(&'a self, id: &'a str, snapshot: Vec<u8>) -> drive_sync::BoxFuture<'a, Result<(), String>> {
+    fn save<'a>(
+        &'a self,
+        id: &'a str,
+        snapshot: Vec<u8>,
+    ) -> drive_sync::BoxFuture<'a, Result<(), String>> {
         Box::pin(async move { self.0.save(id, snapshot).await.map_err(|e| e.to_string()) })
     }
     fn list(&self) -> drive_sync::BoxFuture<'_, Result<Vec<(DocId, u64)>, String>> {

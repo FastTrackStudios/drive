@@ -148,10 +148,10 @@ impl Rooms {
             if *p == from {
                 continue;
             }
-            if let Some(v) = book.via.get(p) {
-                if Some(v) == source || !sent.insert(v) {
-                    continue;
-                }
+            if let Some(v) = book.via.get(p)
+                && (Some(v) == source || !sent.insert(v))
+            {
+                continue;
             }
             let _ = o.send(msg.clone());
         }
@@ -292,7 +292,9 @@ impl Rooms {
         json: Option<String>,
     ) {
         let mut rooms = self.rooms.lock().await;
-        let Some(room) = rooms.get_mut(id) else { return };
+        let Some(room) = rooms.get_mut(id) else {
+            return;
+        };
         if !room.peers.contains_key(&conn) {
             return;
         }
@@ -324,7 +326,9 @@ impl Rooms {
     /// it was the last one here.
     pub async fn leave(&self, peer: Peer, name: &str, id: &str) {
         let mut rooms = self.rooms.lock().await;
-        let Some(room) = rooms.get_mut(id) else { return };
+        let Some(room) = rooms.get_mut(id) else {
+            return;
+        };
         room.peers.remove(&peer);
         let mut book = self.book();
         if room.presence.remove(&peer).is_some() {

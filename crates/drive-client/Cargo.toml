@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# This device as a peer: documents sync with the account's other devices
+# over iroh, with no node (drive-sync, drive-net). Native only.
+p2p = ["dep:drive-sync", "dep:drive-net"]
+
 [dependencies]
 drive-proto.workspace = true
 drive-spine.workspace = true
@@ -34,6 +39,8 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 futures-util = { version = "0.3", features = ["sink"] }
 getrandom = "0.3"
 libc = "0.2"
+drive-sync = { path = "../drive-sync", features = ["iroh"], optional = true }
+drive-net = { path = "../drive-net", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 drive-node = { path = "../drive-node" }

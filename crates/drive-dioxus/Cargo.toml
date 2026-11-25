@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Sync this app's documents peer to peer, with no node
+# (`drive_dioxus::peer_to_peer`). Native only.
+p2p = ["drive-client/p2p"]
+
 [dependencies]
 tracing = "0.1"
 drive-client.workspace = true

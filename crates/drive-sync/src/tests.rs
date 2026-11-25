@@ -242,8 +242,7 @@ async fn presence_crosses_a_link_and_goes_when_it_ends() {
                 seen = Some(json);
             }
         }
-        seen
-            .as_ref()
+        seen.as_ref()
             .is_some_and(|j| j.as_deref() == Some("{\"at\":1}"))
     })
     .await;
@@ -372,8 +371,12 @@ async fn a_device_not_allowed_is_refused() {
         access: all(),
         hello: Hello::default(),
     };
-    let na = Net::start(a.clone(), opts(Arc::new(|_| true))).await.unwrap();
-    let nb = Net::start(b.clone(), opts(Arc::new(|_| false))).await.unwrap();
+    let na = Net::start(a.clone(), opts(Arc::new(|_| true)))
+        .await
+        .unwrap();
+    let nb = Net::start(b.clone(), opts(Arc::new(|_| false)))
+        .await
+        .unwrap();
     na.dial(nb.addr());
     tokio::time::sleep(Duration::from_millis(800)).await;
     wa.pump().await;

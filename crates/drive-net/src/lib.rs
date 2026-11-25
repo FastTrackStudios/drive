@@ -77,7 +77,6 @@ pub fn addr_from_str(s: &str) -> Result<EndpointAddr, String> {
         .map_err(|e| format!("not an endpoint address: {e}"))
 }
 
-
 /// The mDNS service Drive's devices advertise under, so a scan finds only
 /// them (not every iroh app on the network).
 pub const MDNS_SERVICE: &str = "drive";
@@ -86,7 +85,9 @@ pub const MDNS_SERVICE: &str = "drive";
 /// there: the returned lookup is added to the endpoint, and its
 /// [`iroh_mdns_address_lookup::MdnsAddressLookup::subscribe`] says who
 /// appears and goes. Needs a Tokio runtime.
-pub fn mdns(endpoint: &iroh::Endpoint) -> Result<iroh_mdns_address_lookup::MdnsAddressLookup, String> {
+pub fn mdns(
+    endpoint: &iroh::Endpoint,
+) -> Result<iroh_mdns_address_lookup::MdnsAddressLookup, String> {
     let mdns = iroh_mdns_address_lookup::MdnsAddressLookup::builder()
         .service_name(MDNS_SERVICE)
         .build(endpoint.id())

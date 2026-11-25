@@ -3167,9 +3167,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "drive-native",
+ "drive-net",
  "drive-node",
  "drive-proto",
  "drive-spine",
+ "drive-sync",
  "futures-channel",
  "futures-util",
  "getrandom 0.2.17",

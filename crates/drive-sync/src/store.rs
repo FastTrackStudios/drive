@@ -26,7 +26,12 @@ pub struct MemStore(Mutex<HashMap<DocId, Vec<u8>>>);
 
 impl Store for MemStore {
     fn load<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>, String>> {
-        let v = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned();
+        let v = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned();
         Box::pin(async move { Ok(v) })
     }
     fn save<'a>(&'a self, id: &'a str, snapshot: Vec<u8>) -> BoxFuture<'a, Result<(), String>> {
@@ -153,7 +158,11 @@ mod tests {
 
     #[test]
     fn file_names_go_back_to_their_ids() {
-        for id in ["home/studio:library", "comments:loc:l1:Song A/Mix v2.wav", "a-b"] {
+        for id in [
+            "home/studio:library",
+            "comments:loc:l1:Song A/Mix v2.wav",
+            "a-b",
+        ] {
             assert_eq!(id_of(&file_name(id)).as_deref(), Some(id));
         }
         assert_eq!(id_of("x.tmp"), None);

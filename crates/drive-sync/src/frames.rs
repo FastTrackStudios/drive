@@ -105,7 +105,7 @@ pub async fn link_stream(
 }
 
 /// An `UnboundedReceiver` as a `Stream`.
-pub(crate) struct Rx<T>(pub mpsc::UnboundedReceiver<T>);
+pub struct Rx<T>(pub mpsc::UnboundedReceiver<T>);
 
 impl<T> futures::Stream for Rx<T> {
     type Item = T;

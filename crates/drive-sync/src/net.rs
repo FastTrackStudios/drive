@@ -93,7 +93,10 @@ fn refuse(conn: &Connection) {
 impl ProtocolHandler for Handler {
     async fn on_accepting(&self, accepting: Accepting) -> Result<Connection, AcceptError> {
         let conn = accepting.await?;
-        let allowed = self.0.upgrade().is_some_and(|i| (i.allow)(&conn.remote_id()));
+        let allowed = self
+            .0
+            .upgrade()
+            .is_some_and(|i| (i.allow)(&conn.remote_id()));
         if !allowed {
             refuse(&conn);
             return Err(AcceptError::from_err(std::io::Error::other("not allowed")));
@@ -183,7 +186,9 @@ impl Net {
             tokio::spawn(async move {
                 let mut events = mdns.subscribe().await;
                 while let Some(e) = events.next().await {
-                    let Some(net) = weak.upgrade().map(Net) else { break };
+                    let Some(net) = weak.upgrade().map(Net) else {
+                        break;
+                    };
                     if let drive_net::DiscoveryEvent::Discovered { endpoint_info, .. } = e {
                         let id = endpoint_info.endpoint_id;
                         if id != net.id() && (net.0.allow)(&id) {
