@@ -9,6 +9,7 @@
 //! drive graph path THING THING [--max N]    # a shortest path between them
 //! drive graph tag TAG                  # everything under a tag (child tags too)
 //! drive graph refresh                  # bring the graph up to date, and say what it read
+//! drive graph search WORDS… [--tag TAG] [--limit N]   # notes, files, tags, documents by their words
 //! drive graph link FROM TO [--kind K]  # an app's kind of link (uses, built-on), in drive:links
 //! drive graph unlink FROM TO [--kind K]
 //! ```
@@ -237,10 +238,18 @@ fn words(rest: &[String]) -> Vec<&str> {
 pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-    let usage = "graph backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
+    let usage = "graph search WORDS… [--tag TAG] [--limit N] | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
     if !matches!(
         sub,
-        "backlinks" | "neighbors" | "neighbours" | "path" | "tag" | "refresh" | "link" | "unlink"
+        "search"
+            | "backlinks"
+            | "neighbors"
+            | "neighbours"
+            | "path"
+            | "tag"
+            | "refresh"
+            | "link"
+            | "unlink"
     ) {
         return Err(usage.into());
     }
@@ -257,6 +266,16 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 report.notes, report.cached, report.parsed, report.shared, report.unread
             ));
             out(format!("{} nodes, {} edges", report.nodes, report.edges));
+        }
+        ("search", words) if !words.is_empty() => {
+            let limit = depth_flag(&rest, "--limit", 20)? as usize;
+            let tag = flag(&rest, "--tag");
+            let lib = Library::load(&t.doc);
+            let found = search(&db, &lib, &words.join(" "), tag.as_deref(), limit).await?;
+            for f in &found {
+                out(format!("  {:>6.2}  {}", f.score, shown(&f.node)));
+            }
+            out(format!("{} found", found.len()));
         }
         ("backlinks", [thing]) => {
             let id = node_key(&t, &db, thing).await?;
@@ -321,6 +340,36 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
         _ => return Err(usage.into()),
     }
     Ok(())
+}
+
+/// What a search finds, best first, only things under `tag` when one is
+/// given (by a Drive tag or a frontmatter tag, child tags included).
+pub async fn search(
+    db: &GraphDb,
+    lib: &Library,
+    query: &str,
+    tag: Option<&str>,
+    limit: usize,
+) -> Result<Vec<drive_graph::index::Found>, String> {
+    let err = |e: drive_graph::index::Error| e.to_string();
+    let Some(tag) = tag else {
+        return db.search(query, limit).await.map_err(err);
+    };
+    let under: std::collections::HashSet<String> = db
+        .under_tag(&tag_key(lib, tag)?)
+        .await
+        .map_err(err)?
+        .into_iter()
+        .map(|h| h.node.id)
+        .collect();
+    // Enough of the best to fill `limit` after the tag narrows them.
+    let mut found = db
+        .search(query, limit.saturating_mul(20).max(200))
+        .await
+        .map_err(err)?;
+    found.retain(|f| under.contains(&f.node.id));
+    found.truncate(limit);
+    Ok(found)
 }
 
 /// `graph link|unlink FROM TO [--kind K]`.

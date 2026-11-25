@@ -253,6 +253,7 @@ fn tools_are_described_and_none_destroys() {
         "rules",
         "rule_preview",
         "journal",
+        "graph_search",
         "graph_backlinks",
         "graph_neighbors",
         "graph_path",
@@ -801,6 +802,14 @@ async fn the_graph_tools_read_this_peers_graph() {
     assert_eq!(path["found"], true);
     assert_eq!(path["steps"].as_array().unwrap().len(), 3);
 
+    let found = w.call("graph_search", json!({ "query": "built from scales" })).await.unwrap();
+    assert_eq!(found["items"][0]["thing"], "drive:Notes/Chords.md", "{found}");
+    let narrowed = w
+        .call("graph_search", json!({ "query": "chords scales", "tag": "theory" }))
+        .await
+        .unwrap();
+    assert_eq!(narrowed["total"], 1, "only what is under #theory: {narrowed}");
+    assert_eq!(narrowed["items"][0]["thing"], "drive:Notes/Scales.md");
     let tagged = w.call("graph_tag", json!({ "tag": "theory" })).await.unwrap();
     assert_eq!(tagged["items"][0]["thing"], "drive:Notes/Scales.md");
     assert_eq!(tagged["tag"], "label:theory", "a frontmatter tag no Drive tag has");

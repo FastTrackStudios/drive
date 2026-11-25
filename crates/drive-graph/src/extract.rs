@@ -15,7 +15,7 @@ use crate::markdown::{
 
 /// Changes whenever [`extract`] would give a different result for the same
 /// text: a sidecar made by another version is made again.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// How a link was written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -88,6 +88,9 @@ pub struct Extract {
     /// `tags:` (or `tag:`), without a leading `#`, as written.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The note's text after its frontmatter, as written (for search).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
 }
 
 impl Extract {
@@ -115,6 +118,7 @@ pub fn extract(text: &str) -> Extract {
         aliases: either_list(&fm, "aliases", "alias"),
         headings,
         tags: frontmatter_tags(&fm),
+        text: body.trim().to_string(),
     }
 }
 

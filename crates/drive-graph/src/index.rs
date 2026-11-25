@@ -44,6 +44,27 @@ pub struct Step {
     pub edge: Option<Edge>,
 }
 
+/// A node a search found, best first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub node: Node,
+    /// Higher is better; comparable within one answer only.
+    pub score: f64,
+}
+
+/// A search's words: letters and digits, lower case (anything else
+/// separates words, so no query syntax reaches an engine).
+#[must_use]
+pub fn terms(query: &str) -> Vec<String> {
+    let mut out: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    out.dedup();
+    out
+}
+
 /// The longest path [`Index::path`] looks for unless told.
 pub const MAX_PATH: u32 = 8;
 
@@ -59,6 +80,10 @@ pub trait Index {
 
     /// Every edge into or out of a node.
     fn touching(&self, id: &str) -> impl Future<Output = Result<Vec<Edge>>>;
+
+    /// Nodes whose text (name, path, other names, a note's text) has the
+    /// query's words, best first, at most `limit`.
+    fn search(&self, query: &str, limit: usize) -> impl Future<Output = Result<Vec<Found>>>;
 
     /// What points at a node: each source and its edge.
     fn backlinks(&self, id: &str) -> impl Future<Output = Result<Vec<Hit>>> {
@@ -219,6 +244,50 @@ async fn steps<I: Index + ?Sized>(
     Ok(out)
 }
 
+/// A small BM25 over the graph's texts (the in-memory index's search; a
+/// database uses its own full-text index).
+fn rank(g: &Graph, terms: &[String], limit: usize) -> Vec<Found> {
+    if terms.is_empty() {
+        return Vec::new();
+    }
+    let docs: Vec<(&String, Vec<String>)> =
+        g.texts.iter().map(|(id, t)| (id, self::terms(t))).collect();
+    let n = docs.len().max(1) as f64;
+    let avg = docs.iter().map(|(_, w)| w.len()).sum::<usize>() as f64 / n;
+    let df = |t: &String| docs.iter().filter(|(_, w)| w.contains(t)).count() as f64;
+    let idf: Vec<f64> = terms
+        .iter()
+        .map(|t| ((n - df(t) + 0.5) / (df(t) + 0.5) + 1.0).ln())
+        .collect();
+    let (k1, b) = (1.2, 0.75);
+    let mut found: Vec<Found> = docs
+        .iter()
+        .filter_map(|(id, words)| {
+            let len = words.len() as f64;
+            let score: f64 = terms
+                .iter()
+                .zip(&idf)
+                .map(|(t, idf)| {
+                    let tf = words.iter().filter(|w| *w == t).count() as f64;
+                    idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * len / avg.max(1.0)))
+                })
+                .sum();
+            let node = g.nodes.get(*id)?;
+            (score > 0.0).then(|| Found {
+                node: node.clone(),
+                score,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.node.id.cmp(&b.node.id))
+    });
+    found.truncate(limit);
+    found
+}
+
 /// The end of `e` that is not `n`.
 fn other_end<'a>(e: &'a Edge, n: &str) -> &'a str {
     if e.src == n { &e.dst } else { &e.src }
@@ -275,6 +344,10 @@ impl Index for MemoryIndex {
             .into_iter()
             .filter_map(|id| self.graph.nodes.get(id).cloned())
             .collect())
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<Found>> {
+        Ok(rank(&self.graph, &terms(query), limit))
     }
 
     async fn touching(&self, id: &str) -> Result<Vec<Edge>> {
