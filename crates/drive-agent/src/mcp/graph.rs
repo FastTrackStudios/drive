@@ -160,12 +160,22 @@ pub async fn link(ctx: &Ctx, args: &Value, add: bool) -> Result<Value, String> {
 pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let (db, report) = graph(ctx).await?;
     let (offset, limit) = ctx.paging(args);
+    let near = match opt_str(args, "near") {
+        Some(n) => Some(node_key(ctx, &db, n).await?),
+        None => None,
+    };
+    let model = crate::graph::model(&ctx.a.dir);
+    let q = crate::graph::Query {
+        words: need(args, "query")?,
+        tag: opt_str(args, "tag"),
+        near: near.as_deref(),
+        limit: offset + limit,
+    };
     let found = crate::graph::search(
         &db,
+        model.map(|m| m as &dyn drive_graph::embed::Embedder),
         &ctx.tags(),
-        need(args, "query")?,
-        opt_str(args, "tag"),
-        offset + limit,
+        &q,
     )
     .await?;
     let rows: Vec<Value> = found
@@ -178,5 +188,10 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
         .collect();
     let mut v = page(rows, offset, limit);
     v["coverage"] = coverage(&report);
+    v["by"] = json!(if model.is_some() {
+        "words and meaning"
+    } else {
+        "words (no model on this device)"
+    });
     Ok(v)
 }

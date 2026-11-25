@@ -9,7 +9,9 @@
 //! drive graph path THING THING [--max N]    # a shortest path between them
 //! drive graph tag TAG                  # everything under a tag (child tags too)
 //! drive graph refresh                  # bring the graph up to date, and say what it read
-//! drive graph search WORDS… [--tag TAG] [--limit N]   # notes, files, tags, documents by their words
+//! drive graph search WORDS… [--tag TAG] [--near THING] [--limit N]
+//!                                      # by words and meaning, fused; near a thing first
+//! drive graph model fetch              # the embedding model (once per device)
 //! drive graph link FROM TO [--kind K]  # an app's kind of link (uses, built-on), in drive:links
 //! drive graph unlink FROM TO [--kind K]
 //! ```
@@ -24,6 +26,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use drive_files::tree;
 use drive_graph::db::GraphDb;
+use drive_graph::embed::{Embedder, MODEL_FILES, StaticModel};
 use drive_graph::graph::{EdgeKind, Node, NodeKind, tag_node, target_node};
 use drive_graph::index::{Hit, Index, MAX_PATH};
 use drive_graph::refresh::{Got, Report, Sources, refresh};
@@ -65,6 +68,55 @@ pub fn tree_items(files: &LoroDoc) -> Vec<TreeItem> {
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// The embedding model every peer runs (docs/graph.md): Model2Vec's
+/// potion-base-8M, where it is fetched from, and the id its vectors are
+/// kept under.
+pub const MODEL_ID: &str = "potion-base-8M@1";
+const MODEL_URL: &str = "https://huggingface.co/minishlab/potion-base-8M/resolve/main";
+
+/// Where this device keeps the model: `$DRIVE_EMBED_MODEL`, else
+/// `models/potion-base-8M` in the agent's folder.
+pub fn model_dir(agent_dir: &Path) -> std::path::PathBuf {
+    std::env::var_os("DRIVE_EMBED_MODEL")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| agent_dir.join("models").join("potion-base-8M"))
+}
+
+/// The model, when this device has it (none: search is by words only).
+pub fn model(agent_dir: &Path) -> Option<&'static StaticModel> {
+    static MODEL: std::sync::OnceLock<Option<StaticModel>> = std::sync::OnceLock::new();
+    MODEL
+        .get_or_init(|| StaticModel::load(MODEL_ID, &model_dir(agent_dir)).ok())
+        .as_ref()
+}
+
+/// Download the model's files (once; `drive graph model fetch`).
+async fn fetch_model(a: &Agent) -> Result<std::path::PathBuf, String> {
+    let dir = model_dir(&a.dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for f in MODEL_FILES {
+        let to = dir.join(f);
+        if to.exists() {
+            continue;
+        }
+        let resp = a
+            .http
+            .get(format!("{MODEL_URL}/{f}"))
+            .send()
+            .await
+            .map_err(|e| format!("{f}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("{f}: {}", resp.status()));
+        }
+        let bytes = resp.bytes().await.map_err(|e| format!("{f}: {e}"))?;
+        let part = dir.join(format!("{f}.part"));
+        std::fs::write(&part, &bytes).map_err(|e| format!("{}: {e}", part.display()))?;
+        std::fs::rename(&part, &to).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    StaticModel::load(MODEL_ID, &dir)?;
+    Ok(dir)
 }
 
 /// The space's `drive:links`, with the other peers' copy when they answer
@@ -121,6 +173,11 @@ pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), 
     })
     .await
     .map_err(|e| e.to_string())?;
+    if let Some(m) = model(&a.dir) {
+        drive_graph::search::embed_missing(&db, m)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     Ok((db, report))
 }
 
@@ -238,7 +295,7 @@ fn words(rest: &[String]) -> Vec<&str> {
 pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-    let usage = "graph search WORDS… [--tag TAG] [--limit N] | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
+    let usage = "graph search WORDS… [--tag TAG] [--near THING] [--limit N] | model fetch | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
     if !matches!(
         sub,
         "search"
@@ -270,12 +327,35 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
         ("search", words) if !words.is_empty() => {
             let limit = depth_flag(&rest, "--limit", 20)? as usize;
             let tag = flag(&rest, "--tag");
+            let near = match flag(&rest, "--near") {
+                Some(n) => Some(node_key(&t, &db, &n).await?),
+                None => None,
+            };
             let lib = Library::load(&t.doc);
-            let found = search(&db, &lib, &words.join(" "), tag.as_deref(), limit).await?;
+            let m = model(&t.a.dir).map(|m| m as &dyn Embedder);
+            let q = Query {
+                words: &words.join(" "),
+                tag: tag.as_deref(),
+                near: near.as_deref(),
+                limit,
+            };
+            let found = search(&db, m, &lib, &q).await?;
             for f in &found {
-                out(format!("  {:>6.2}  {}", f.score, shown(&f.node)));
+                out(format!("  {:>6.3}  {}", f.score, shown(&f.node)));
             }
-            out(format!("{} found", found.len()));
+            out(format!(
+                "{} found{}",
+                found.len(),
+                if m.is_none() {
+                    " (by words: `drive graph model fetch` adds meaning)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        ("model", ["fetch"]) => {
+            let dir = fetch_model(&t.a).await?;
+            out(format!("{MODEL_ID} in {}", dir.display()));
         }
         ("backlinks", [thing]) => {
             let id = node_key(&t, &db, thing).await?;
@@ -342,34 +422,54 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// What a search finds, best first, only things under `tag` when one is
-/// given (by a Drive tag or a frontmatter tag, child tags included).
+/// What a search finds, best first: words and meaning (when this device
+/// has the model) fused, things near `near` moved up, and only things
+/// under `tag` when one is given (child tags included).
 pub async fn search(
     db: &GraphDb,
+    model: Option<&dyn Embedder>,
     lib: &Library,
-    query: &str,
-    tag: Option<&str>,
-    limit: usize,
+    q: &Query<'_>,
 ) -> Result<Vec<drive_graph::index::Found>, String> {
     let err = |e: drive_graph::index::Error| e.to_string();
-    let Some(tag) = tag else {
-        return db.search(query, limit).await.map_err(err);
+    let under: Option<std::collections::HashSet<String>> = match q.tag {
+        Some(tag) => Some(
+            db.under_tag(&tag_key(lib, tag)?)
+                .await
+                .map_err(err)?
+                .into_iter()
+                .map(|h| h.node.id)
+                .collect(),
+        ),
+        None => None,
     };
-    let under: std::collections::HashSet<String> = db
-        .under_tag(&tag_key(lib, tag)?)
-        .await
-        .map_err(err)?
-        .into_iter()
-        .map(|h| h.node.id)
-        .collect();
-    // Enough of the best to fill `limit` after the tag narrows them.
-    let mut found = db
-        .search(query, limit.saturating_mul(20).max(200))
-        .await
-        .map_err(err)?;
-    found.retain(|f| under.contains(&f.node.id));
-    found.truncate(limit);
+    // Enough of the best to fill `limit` after a tag narrows them.
+    let wide = if under.is_some() {
+        q.limit.saturating_mul(20).max(200)
+    } else {
+        q.limit
+    };
+    let ask = drive_graph::search::Ask {
+        query: q.words,
+        model,
+        near: q.near,
+        limit: wide,
+    };
+    let mut found = drive_graph::search::hybrid(db, &ask).await.map_err(err)?;
+    if let Some(under) = under {
+        found.retain(|f| under.contains(&f.node.id));
+    }
+    found.truncate(q.limit);
     Ok(found)
+}
+
+/// A search, as asked.
+pub struct Query<'a> {
+    pub words: &'a str,
+    pub tag: Option<&'a str>,
+    /// A node id to rank things near it higher.
+    pub near: Option<&'a str>,
+    pub limit: usize,
 }
 
 /// `graph link|unlink FROM TO [--kind K]`.

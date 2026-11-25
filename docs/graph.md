@@ -164,7 +164,46 @@ content no longer in the space forgotten.
 | neighbours, depth N | a recursive CTE walking edges either way |
 | shortest path | breadth-first over the indexed edges (at most 8 steps unless told) |
 | everything under a tag | a recursive CTE down `parent` edges, then `tagged` and `fm-tag` edges into any of them (child tags count, as tag search does) |
-| search | the full-text index, ranked by BM25 (`fts_score`); words only (letters and digits), so nothing typed reaches the engine's query syntax; optionally only things under a tag. The in-memory index ranks the same way with its own small BM25 |
+| search | the full-text index, ranked by BM25 (`fts_score`); words only (letters and digits), so nothing typed reaches the engine's query syntax; fused with the nearest vectors and the graph (below). The in-memory index ranks words with its own small BM25 |
+| `vectors` | a text's key, the model, the chunk, the vector (`vector32`) |
+
+## Search: words, meaning and the graph
+
+One search, three rankings fused (reciprocal rank fusion,
+`drive_graph::search::hybrid`, on every peer):
+
+1. **Words**: the full-text index over each node's text (BM25).
+2. **Meaning**: the vectors nearest the query's (cosine, Turso's
+   `vector_distance_cos`), when the peer has the model.
+3. **The graph**: with `near`, what the words and meaning found within two
+   edges of that thing moves up.
+
+`tag` then keeps only what is under a tag. Every node has a text (its
+name, path and other names; a note's tags and text); a long one is cut
+into pieces of about 1000 characters at headings and blank lines, one
+vector each, and a node scores by its best piece.
+
+### The model every peer runs
+
+[Model2Vec](https://github.com/MinishLab/model2vec)'s **potion-base-8M**: a
+tokenizer and one table of token vectors (256 dimensions, about 30 MB). A
+text's vector is the mean of its tokens' rows, normalised: pure Rust
+(`tokenizers` with `fancy-regex`, `safetensors`), microseconds a note, the
+same on a phone, in a browser and on the always-on machines, so every
+peer can embed everything it has. `drive graph model fetch` puts it in
+`models/potion-base-8M` in the agent's folder (or `$DRIVE_EMBED_MODEL`);
+without it, search is by words and the graph.
+
+Vectors are kept by **text and model**: `vectors(key, model, chunk, vec)`,
+the key being the text's BLAKE3 hash, so the same text anywhere is
+embedded once, a changed one again, and vectors of different models never
+meet. They are derived data like extracts: a peer that has the text can
+always make them itself.
+
+Machines with more to give (the always-on box, starcommand, thebattleship)
+run the same model over everything they can read; heavier models (a
+transformer for text, CLIP for images) are other `Embedder`s, kept under
+their own model id beside it, so a peer uses them only when it has them.
 
 ## The command line
 
@@ -174,7 +213,8 @@ drive graph neighbors THING [--depth N]
 drive graph path THING THING [--max N]
 drive graph tag TAG
 drive graph refresh                # and what it read: kept, read now, from a peer, out of reach
-drive graph search WORDS… [--tag TAG] [--limit N]
+drive graph search WORDS… [--tag TAG] [--near THING] [--limit N]
+drive graph model fetch              # the embedding model, once per device
 drive graph link FROM TO [--kind K]  # in drive:links (synced)
 drive graph unlink FROM TO [--kind K]
 ```
@@ -206,6 +246,13 @@ peer could read, so an agent knows when some were out of reach.
   asked for first, never automatic.
 - **Handing sidecars between peers.** The format and its checks are here;
   the transport waits for peer-to-peer sync (`drive-sync`, `drive-net`).
+  Vectors cannot be checked as cheaply as extracts; a peer will take them
+  only from the owner's own devices, and make its own when it has the model.
+- **Images by what they show**: CLIP image vectors (on the machines that
+  can run it), and OCR text into the full-text index.
+- An approximate nearest-neighbour index once vectors run past a few
+  hundred thousand pieces (Turso's vector index is not ready yet; the
+  search reads every vector of the model).
 - **Refreshing as documents change**, in `drive serve` and in apps, rather
   than on each question.
 - Inline `#tags` in a note's body, and block references as their own nodes.

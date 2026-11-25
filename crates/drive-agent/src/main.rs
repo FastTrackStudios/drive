@@ -56,7 +56,8 @@
 //! The graph (docs/graph.md; this peer's own, from what it has synced):
 //! drive [--dir DIR] graph backlinks THING | neighbors THING [--depth N]
 //! drive [--dir DIR] graph path THING THING [--max N] | tag TAG | refresh
-//! drive [--dir DIR] graph search WORDS… [--tag TAG] [--limit N]
+//! drive [--dir DIR] graph search WORDS… [--tag TAG] [--near THING] [--limit N]
+//! drive [--dir DIR] graph model fetch             # the embedding model, once per device
 //! drive [--dir DIR] graph link|unlink FROM TO [--kind K]   # an app's kind of link, in drive:links
 //!
 //! File rules (docs/rules.md; every rule starts off and as a dry run):

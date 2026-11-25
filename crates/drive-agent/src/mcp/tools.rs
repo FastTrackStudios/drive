@@ -203,12 +203,13 @@ pub fn defs() -> Vec<Def> {
         Def {
             name: "graph_search",
             title: "Search notes and things by their words",
-            description: "Full-text search over this computer's graph of the space: notes' text, titles and aliases, file and folder names and paths, tag names, documents' titles, ranked best first. `tag` keeps only things under a tag (child tags too, Drive or frontmatter). Words only: no query syntax.",
+            description: "Search this computer's graph of the space by words and by meaning (a local embedding model, when the device has it: `by` says), fused into one ranking: notes' text, titles and aliases, file and folder names and paths, tag names, documents' titles. `tag` keeps only things under a tag (child tags too); `near` ranks things close to a thing in the graph higher. Words only: no query syntax.",
             write: false,
             schema: props(
                 paged(json!({
                     "query": { "type": "string", "description": "The words to find." },
-                    "tag": { "type": "string", "description": "Only things under this tag (name, shorthand, alias, id, or a frontmatter tag)." }
+                    "tag": { "type": "string", "description": "Only things under this tag (name, shorthand, alias, id, or a frontmatter tag)." },
+                    "near": thing("Rank things near this one higher")
                 })),
                 &["query"],
             ),
