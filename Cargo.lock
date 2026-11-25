@@ -3022,6 +3022,7 @@ dependencies = [
  "blake3",
  "drive-fileprovider",
  "drive-files",
+ "drive-graph",
  "drive-kache",
  "drive-local",
  "drive-native",
@@ -3158,6 +3159,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "drive-graph"
+version = "0.1.0"
+dependencies = [
+ "drive-files",
+ "drive-spine",
+ "loro",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tokio",
+ "turso",
+]
+
+[[package]]
 name = "drive-kache"
 version = "0.1.0"
 dependencies = [
@@ -3282,6 +3298,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "drive-files",
+ "drive-graph",
  "loro",
  "opendal",
  "regex",

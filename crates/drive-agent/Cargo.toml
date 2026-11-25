@@ -15,6 +15,7 @@ path = "src/main.rs"
 drive-native = { path = "../drive-native" }
 drive-files = { path = "../drive-files" }
 drive-sites = { path = "../drive-sites" }
+drive-graph.workspace = true
 drive-sidecars = { workspace = true, features = ["produce"] }
 opendal = { version = "0.59", default-features = false }
 drive-spine.workspace = true

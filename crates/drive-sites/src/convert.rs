@@ -20,9 +20,15 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use regex::Regex;
+use drive_graph::markdown::{
+    self, Frontmatter, WikiLink, first_heading, fm_bool, fm_list, fm_str, frontmatter, is_markdown,
+    normalize, relative_dest, split_dir, stem,
+};
+use drive_graph::resolve::{Entry, Resolver};
 
 use crate::source::SourceFile;
+
+pub use drive_graph::markdown::slug;
 
 /// The site-wide words the root section carries.
 #[derive(Clone, Debug, Default)]
@@ -44,50 +50,14 @@ pub struct Converted {
     pub pages: usize,
 }
 
-fn is_markdown(path: &str) -> bool {
-    path.to_ascii_lowercase().ends_with(".md")
-}
+/// Where a page or file ends up (its URL), and the note or file it is.
+type Target = Entry<String>;
 
-fn split_dir(path: &str) -> (&str, &str) {
-    match path.rsplit_once('/') {
-        Some((d, f)) => (d, f),
-        None => ("", path),
+fn target(url: String, source: &str) -> Target {
+    Entry {
+        value: url,
+        source: source.to_string(),
     }
-}
-
-fn stem(file: &str) -> &str {
-    match file.rsplit_once('.') {
-        Some((s, _)) if !s.is_empty() => s,
-        _ => file,
-    }
-}
-
-/// A URL slug: lowercase letters and digits, words joined by dashes.
-pub fn slug(s: &str) -> String {
-    let mut out = String::new();
-    let mut dash = false;
-    for c in s.chars().flat_map(char::to_lowercase) {
-        if c.is_alphanumeric() {
-            if dash && !out.is_empty() {
-                out.push('-');
-            }
-            dash = false;
-            out.push(c);
-        } else if c == '\'' || c == '’' {
-            // "Don't" → "dont"
-        } else {
-            dash = true;
-        }
-    }
-    if out.is_empty() { "page".into() } else { out }
-}
-
-/// Where a page or file ends up.
-#[derive(Clone, Debug)]
-struct Target {
-    url: String,
-    /// The source path (to prefer targets in the linking note's folder).
-    source: String,
 }
 
 /// One note, its frontmatter read.
@@ -97,80 +67,10 @@ struct Note {
     /// `content/…`
     out: String,
     url: String,
-    fm: serde_yaml_ng::Mapping,
+    fm: Frontmatter,
     body: String,
     title: String,
     is_section: bool,
-}
-
-fn frontmatter(text: &str) -> (serde_yaml_ng::Mapping, String) {
-    let t = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let rest = t
-        .strip_prefix("---\n")
-        .or_else(|| t.strip_prefix("---\r\n"));
-    if let Some(rest) = rest {
-        // The closing line: `---` (or `...`).
-        let mut offset = 0;
-        for line in rest.split_inclusive('\n') {
-            let l = line.trim_end();
-            if l == "---" || l == "..." {
-                let yaml = &rest[..offset];
-                let body = rest[offset + line.len()..].to_string();
-                let fm = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(yaml)
-                    .ok()
-                    .and_then(|v| match v {
-                        serde_yaml_ng::Value::Mapping(m) => Some(m),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-                return (fm, body);
-            }
-            offset += line.len();
-        }
-    }
-    (serde_yaml_ng::Mapping::new(), t.to_string())
-}
-
-fn fm_str(fm: &serde_yaml_ng::Mapping, k: &str) -> Option<String> {
-    match fm.get(k)? {
-        serde_yaml_ng::Value::String(s) => Some(s.clone()),
-        serde_yaml_ng::Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-fn fm_bool(fm: &serde_yaml_ng::Mapping, k: &str) -> Option<bool> {
-    match fm.get(k)? {
-        serde_yaml_ng::Value::Bool(b) => Some(*b),
-        _ => None,
-    }
-}
-
-fn fm_list(fm: &serde_yaml_ng::Mapping, k: &str) -> Vec<String> {
-    match fm.get(k) {
-        Some(serde_yaml_ng::Value::Sequence(s)) => s
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
-        Some(serde_yaml_ng::Value::String(s)) => vec![s.clone()],
-        _ => Vec::new(),
-    }
-}
-
-/// The first `# Heading`, if the note starts with one.
-fn first_heading(body: &str) -> Option<(usize, usize, String)> {
-    let mut offset = 0;
-    for line in body.split_inclusive('\n') {
-        let l = line.trim();
-        if l.is_empty() {
-            offset += line.len();
-            continue;
-        }
-        return l
-            .strip_prefix("# ")
-            .map(|h| (offset, offset + line.len(), h.trim().to_string()));
-    }
-    None
 }
 
 fn yaml_to_toml(v: &serde_yaml_ng::Value) -> Option<toml::Value> {
@@ -208,7 +108,7 @@ fn yaml_to_toml(v: &serde_yaml_ng::Value) -> Option<toml::Value> {
 }
 
 /// The `+++` block for a note.
-fn toml_front(title: &str, fm: &serde_yaml_ng::Mapping, root_description: Option<&str>) -> String {
+fn toml_front(title: &str, fm: &Frontmatter, root_description: Option<&str>) -> String {
     let mut top = toml::Table::new();
     top.insert("title".into(), toml::Value::String(title.to_string()));
     let weight = ["weight", "order", "nav_order"]
@@ -254,33 +154,6 @@ fn unique(taken: &mut HashSet<String>, base: String) -> String {
     name
 }
 
-struct Index {
-    by_path: HashMap<String, Target>,
-    by_name: HashMap<String, Vec<Target>>,
-    by_title: HashMap<String, Target>,
-}
-
-impl Index {
-    /// What `[[target]]` (or a relative link, already joined to the
-    /// note's folder) names.
-    fn find(&self, target: &str, from_dir: &str) -> Option<&Target> {
-        let t = target.trim().trim_start_matches('/').to_lowercase();
-        let no_md = t.strip_suffix(".md").unwrap_or(&t);
-        if let Some(x) = self.by_path.get(no_md) {
-            return Some(x);
-        }
-        let name = no_md.rsplit('/').next().unwrap_or(no_md);
-        if let Some(c) = self.by_name.get(name) {
-            let here = from_dir.to_lowercase();
-            return c
-                .iter()
-                .find(|x| split_dir(&x.source).0.to_lowercase() == here)
-                .or_else(|| c.iter().min_by_key(|x| x.source.len()));
-        }
-        self.by_title.get(no_md)
-    }
-}
-
 fn escape_label(s: &str) -> String {
     s.replace('[', "\\[").replace(']', "\\]")
 }
@@ -291,53 +164,14 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && i + 3 <= b.len()
-            && let Ok(hex) = std::str::from_utf8(&b[i + 1..i + 3])
-            && let Ok(v) = u8::from_str_radix(hex, 16)
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// `a/b/../c` → `a/c`.
-fn normalize(path: &str) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    for p in path.split('/') {
-        match p {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            p => parts.push(p),
-        }
-    }
-    parts.join("/")
-}
-
 struct Rewriter<'a> {
-    index: &'a Index,
-    wiki: Regex,
-    md_link: Regex,
-    callout: Regex,
+    index: &'a Resolver<String>,
 }
 
 impl Rewriter<'_> {
     /// One line of a note's body, outside code.
     fn line(&self, line: &str, dir: &str, note: &str, missing: &mut Vec<String>) -> String {
-        let line = self
-            .callout
+        let line = markdown::CALLOUT
             .replace(line, |c: &regex::Captures| {
                 let kind = &c[2];
                 let title = c[4].trim();
@@ -354,148 +188,72 @@ impl Rewriter<'_> {
             })
             .into_owned();
         // Code spans stay as they are: rewrite only between backticks.
-        let mut out = String::new();
-        for (i, part) in line.split('`').enumerate() {
-            if i > 0 {
-                out.push('`');
-            }
-            if i % 2 == 1 {
-                out.push_str(part);
-            } else {
-                out.push_str(&self.text(part, dir, note, missing));
-            }
-        }
-        out
+        markdown::map_outside_code_spans(&line, |part| self.text(part, dir, note, missing))
     }
 
     fn text(&self, s: &str, dir: &str, note: &str, missing: &mut Vec<String>) -> String {
-        let s = self.wiki.replace_all(s, |c: &regex::Captures| {
-            let embed = !c[1].is_empty();
-            let inner = &c[2];
-            let (target, label) = match inner.split_once('|') {
-                Some((t, l)) => (t.trim(), Some(l.trim())),
-                None => (inner.trim(), None),
-            };
-            let (page, anchor) = match target.split_once('#') {
-                Some((p, a)) => (p.trim(), Some(a.trim().trim_start_matches('^'))),
-                None => (target, None),
-            };
-            let shown = label.map(str::to_string).unwrap_or_else(|| match anchor {
-                Some(a) if page.is_empty() => a.to_string(),
-                Some(a) => format!("{page} > {a}"),
-                None => page.rsplit('/').next().unwrap_or(page).to_string(),
-            });
-            // `[[#Heading]]`: a heading on this page.
-            if page.is_empty() {
-                return format!(
-                    "[{}](#{})",
-                    escape_label(&shown),
-                    slug(anchor.unwrap_or_default())
-                );
-            }
-            match self.index.find(page, dir) {
-                Some(t) => {
-                    let url = match anchor {
-                        Some(a) if !a.is_empty() => format!("{}#{}", t.url, slug(a)),
-                        _ => t.url.clone(),
-                    };
-                    let is_image = matches!(
-                        page.rsplit('.')
-                            .next()
-                            .map(str::to_ascii_lowercase)
-                            .as_deref(),
-                        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "avif" | "jxl")
-                    );
-                    if embed && is_image {
-                        // `![[x.png|300]]`: a size, not a caption.
-                        let alt = label
-                            .filter(|l| !l.chars().all(|c| c.is_ascii_digit() || c == 'x'))
-                            .unwrap_or_else(|| stem(page.rsplit('/').next().unwrap_or(page)));
-                        format!("![{}]({url})", escape_label(alt))
-                    } else {
-                        format!("[{}]({url})", escape_label(&shown))
-                    }
-                }
-                None => {
-                    missing.push(format!("[[{page}]] in {note}"));
-                    format!(
-                        "<span class=\"missing-link\">{}</span>",
-                        escape_html(&shown)
-                    )
-                }
-            }
+        let s = markdown::WIKILINK.replace_all(s, |c: &regex::Captures| {
+            self.wikilink(WikiLink::from_captures(c), dir, note, missing)
         });
-        self.md_link
-            .replace_all(&s, |c: &regex::Captures| {
-                let whole = c[0].to_string();
-                let dest = c.get(3).or_else(|| c.get(4)).map_or("", |m| m.as_str());
-                if dest.is_empty()
-                    || dest.starts_with('/')
-                    || dest.starts_with('#')
-                    || dest.contains("://")
-                    || dest.starts_with("mailto:")
-                    || dest.starts_with("data:")
-                {
-                    return whole;
-                }
-                let decoded = percent_decode(dest);
-                let (path, anchor) = match decoded.split_once('#') {
-                    Some((p, a)) => (p.to_string(), Some(a.to_string())),
-                    None => (decoded.clone(), None),
-                };
-                let joined = normalize(&format!("{dir}/{path}"));
-                match self.index.find(&joined, dir) {
-                    Some(t) => {
-                        let url = match anchor {
-                            Some(a) if !a.is_empty() => format!("{}#{}", t.url, slug(&a)),
-                            _ => t.url.clone(),
-                        };
-                        format!(
-                            "{}[{}]({url}{})",
-                            &c[1],
-                            &c[2],
-                            c.get(5).map_or("", |m| m.as_str())
-                        )
-                    }
-                    None => whole,
-                }
-            })
+        markdown::MD_LINK
+            .replace_all(&s, |c: &regex::Captures| self.md_link(c, dir))
             .into_owned()
     }
 
-    fn body(&self, body: &str, dir: &str, note: &str, missing: &mut Vec<String>) -> String {
-        let mut out = String::with_capacity(body.len());
-        let mut fence: Option<String> = None;
-        for line in body.split_inclusive('\n') {
-            let t = line.trim_start();
-            let marker = if t.starts_with("```") {
-                Some("```")
-            } else if t.starts_with("~~~") {
-                Some("~~~")
-            } else {
-                None
-            };
-            match (&fence, marker) {
-                (None, Some(m)) => {
-                    fence = Some(m.to_string());
-                    out.push_str(line);
-                }
-                (Some(f), Some(m)) if f == m => {
-                    fence = None;
-                    out.push_str(line);
-                }
-                (Some(_), _) => out.push_str(line),
-                (None, None) => {
-                    let (text, nl) = match line.strip_suffix('\n') {
-                        Some(t) => (t, "\n"),
-                        None => (line, ""),
-                    };
-                    out.push_str(&self.line(text, dir, note, missing));
-                    out.push_str(nl);
-                }
-            }
+    fn wikilink(&self, w: WikiLink, dir: &str, note: &str, missing: &mut Vec<String>) -> String {
+        let shown = w.shown();
+        // `[[#Heading]]`: a heading on this page.
+        if w.page.is_empty() {
+            return format!(
+                "[{}](#{})",
+                escape_label(&shown),
+                slug(w.anchor.unwrap_or_default())
+            );
         }
-        out
+        let Some(t) = self.index.find(w.page, dir) else {
+            missing.push(format!("[[{}]] in {note}", w.page));
+            return format!(
+                "<span class=\"missing-link\">{}</span>",
+                escape_html(&shown)
+            );
+        };
+        let url = with_anchor(&t.value, w.anchor);
+        if w.embed && w.is_image() {
+            // `![[x.png|300]]`: a size, not a caption.
+            format!("![{}]({url})", escape_label(w.image_alt()))
+        } else {
+            format!("[{}]({url})", escape_label(&shown))
+        }
+    }
+
+    fn md_link(&self, c: &regex::Captures, dir: &str) -> String {
+        let whole = c[0].to_string();
+        let Some((path, anchor)) = relative_dest(markdown::md_dest(c)) else {
+            return whole;
+        };
+        let joined = normalize(&format!("{dir}/{path}"));
+        match self.index.find(&joined, dir) {
+            Some(t) => format!(
+                "{}[{}]({}{})",
+                &c[1],
+                &c[2],
+                with_anchor(&t.value, anchor.as_deref()),
+                c.get(5).map_or("", |m| m.as_str())
+            ),
+            None => whole,
+        }
+    }
+
+    fn body(&self, body: &str, dir: &str, note: &str, missing: &mut Vec<String>) -> String {
+        markdown::map_prose_lines(body, |line| self.line(line, dir, note, missing))
+    }
+}
+
+/// A URL with `#anchor` (slugged) when the link names one.
+fn with_anchor(url: &str, anchor: Option<&str>) -> String {
+    match anchor {
+        Some(a) if !a.is_empty() => format!("{url}#{}", slug(a)),
+        _ => url.to_string(),
     }
 }
 
@@ -659,11 +417,7 @@ pub fn convert(
     }
 
     // Files beside the notes.
-    let mut index = Index {
-        by_path: HashMap::new(),
-        by_name: HashMap::new(),
-        by_title: HashMap::new(),
-    };
+    let mut index = Resolver::new();
     let mut asset_names: HashMap<String, HashSet<String>> = HashMap::new();
     for f in files.iter().copied().filter(|f| !is_markdown(&f.path)) {
         let (dir, file) = split_dir(&f.path);
@@ -681,65 +435,29 @@ pub fn convert(
         } else {
             format!("{dslug}/{name}")
         };
-        let t = Target {
-            url: format!("/{rel}"),
-            source: f.path.clone(),
-        };
-        index.by_path.insert(f.path.to_lowercase(), t.clone());
-        index
-            .by_name
-            .entry(file.to_lowercase())
-            .or_default()
-            .push(t);
+        let t = target(format!("/{rel}"), &f.path);
+        index.path(&f.path, t.clone());
+        index.name(file, t);
         out.assets.insert(format!("static/{rel}"), (*f).clone());
     }
     for n in &notes {
-        let t = Target {
-            url: n.url.clone(),
-            source: n.path.clone(),
-        };
+        let t = target(n.url.clone(), &n.path);
         let path = n.path.to_lowercase();
-        let no_ext = path.strip_suffix(".md").unwrap_or(&path);
-        index.by_path.insert(no_ext.to_string(), t.clone());
-        index
-            .by_name
-            .entry(stem(split_dir(&n.path).1).to_lowercase())
-            .or_default()
-            .push(t.clone());
-        index
-            .by_title
-            .entry(n.title.to_lowercase())
-            .or_insert_with(|| t.clone());
+        index.path(path.strip_suffix(".md").unwrap_or(&path), t.clone());
+        index.name(stem(split_dir(&n.path).1), t.clone());
+        index.title(&n.title, t.clone());
         for a in fm_list(&n.fm, "aliases") {
-            index
-                .by_title
-                .entry(a.to_lowercase())
-                .or_insert_with(|| t.clone());
+            index.title(&a, t.clone());
         }
     }
     // A folder's name links to its section.
     for (d, _) in sections.iter().filter(|(d, _)| !d.is_empty()) {
-        let t = Target {
-            url: url_of_dir(d),
-            source: format!("{d}/"),
-        };
-        index
-            .by_path
-            .entry(d.to_lowercase())
-            .or_insert_with(|| t.clone());
-        index
-            .by_name
-            .entry(split_dir(d).1.to_lowercase())
-            .or_insert_with(|| vec![t]);
+        let t = target(url_of_dir(d), &format!("{d}/"));
+        index.path_if_absent(d, t.clone());
+        index.name_if_absent(split_dir(d).1, t);
     }
 
-    let rw = Rewriter {
-        index: &index,
-        wiki: Regex::new(r"(!?)\[\[([^\[\]\n]+?)\]\]").expect("a regex"),
-        md_link: Regex::new(r#"(!?)\[([^\[\]\n]*)\]\((?:<([^>\n]+)>|([^)\s]+))(\s+"[^"\n]*")?\)"#)
-            .expect("a regex"),
-        callout: Regex::new(r"^(\s*(?:>\s*)+)\[!([A-Za-z-]+)\]([+-]?)(.*)$").expect("a regex"),
-    };
+    let rw = Rewriter { index: &index };
 
     for n in &notes {
         let mut body = n.body.clone();
@@ -786,10 +504,8 @@ pub fn convert(
         } else {
             (split_dir(d).1.to_string(), None)
         };
-        out.content.insert(
-            path,
-            toml_front(&title, &serde_yaml_ng::Mapping::new(), desc),
-        );
+        out.content
+            .insert(path, toml_front(&title, &Frontmatter::new(), desc));
     }
     out.pages = out.content.len();
     out
@@ -931,6 +647,9 @@ mod tests {
         assert_eq!(slug("Don't Stop (live)"), "dont-stop-live");
         assert_eq!(slug("!!!"), "page");
         assert_eq!(normalize("a/b/../c/./d.md"), "a/c/d.md");
-        assert_eq!(percent_decode("Other%20Note.md"), "Other Note.md");
+        assert_eq!(
+            drive_graph::markdown::percent_decode("Other%20Note.md"),
+            "Other Note.md"
+        );
     }
 }

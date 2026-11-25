@@ -5,10 +5,10 @@
 use serde_json::{Value, json};
 
 use super::ctx::Ctx;
-use super::{plan, read, write};
+use super::{graph, plan, read, write};
 
 /// What the server tells the client about itself (`initialize`).
-pub const INSTRUCTIONS: &str = "Drive: the owner's files on every computer (each computer's indexed folders, its disks, the Drive tree), with tags, fields, projects and file rules. Read freely; organise only through these tools, which never delete, trash or overwrite anything. Rules you propose stay off and a dry run until a person switches them on and live in the Drive app or CLI; say so when you propose one. Start with the `organize` prompt for the workflow. Name things as drive:PATH (the Drive tree), LOCATION:PATH (a computer's indexed folder), project:NAME, doc:ID or content:HASH.";
+pub const INSTRUCTIONS: &str = "Drive: the owner's files on every computer (each computer's indexed folders, its disks, the Drive tree), with tags, fields, projects and file rules. Read freely; organise only through these tools, which never delete, trash or overwrite anything. Rules you propose stay off and a dry run until a person switches them on and live in the Drive app or CLI; say so when you propose one. Start with the `organize` prompt for the workflow. Name things as drive:PATH (the Drive tree), LOCATION:PATH (a computer's indexed folder), project:NAME, doc:ID or content:HASH. The graph_* tools follow links between notes, tags, tasks and projects.";
 
 pub const SAFETY: &str = "\
 # Drive's safety model for AI agents
@@ -198,6 +198,53 @@ pub fn defs() -> Vec<Def> {
                     "device": { "type": "string" }
                 })),
                 &[],
+            ),
+        },
+        Def {
+            name: "graph_backlinks",
+            title: "What links here",
+            description: "Everything that points at a thing in this computer's graph of the space: notes linking or embedding it ([[wikilinks]], relative Markdown links, frontmatter related:), things carrying a tag, tasks and events naming a document, projects holding it. Each with the edge (its kind and what was written). `coverage` says how many notes could be read here.",
+            write: false,
+            schema: props(
+                paged(json!({ "thing": json!({ "type": "string", "description": "drive:PATH, LOCATION:PATH, project:NAME, doc:ID, content:HASH, a graph key (tag:ID, missing:NAME, label:NAME, task:ID, event:ID) or a name the graph knows (a note's title or alias, a file name)." }) })),
+                &["thing"],
+            ),
+        },
+        Def {
+            name: "graph_neighbors",
+            title: "Neighbours in the graph",
+            description: "Everything within `depth` edges of a thing (links, embeds, tags, tag parents, tasks, events, projects), either way, nearest first.",
+            write: false,
+            schema: props(
+                paged(json!({
+                    "thing": thing("Where to start"),
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 4, "description": "How many edges away (default 1)." }
+                })),
+                &["thing"],
+            ),
+        },
+        Def {
+            name: "graph_path",
+            title: "How two things connect",
+            description: "A shortest chain of edges (links, tags, tasks, projects, either way) from one thing to another, or found: false.",
+            write: false,
+            schema: props(
+                json!({
+                    "from": thing("Where the path starts"),
+                    "to": thing("Where it ends"),
+                    "max": { "type": "integer", "minimum": 1, "maximum": 8, "description": "The longest path looked for (default 8)." }
+                }),
+                &["from", "to"],
+            ),
+        },
+        Def {
+            name: "graph_tag",
+            title: "Everything under a tag",
+            description: "Every thing carrying a tag or any tag under it, by a Drive tag (drive:tags) or a note's frontmatter `tags:` (one that names no Drive tag is found as written).",
+            write: false,
+            schema: props(
+                paged(json!({ "tag": { "type": "string", "description": "A tag's name, shorthand, alias or id, or a frontmatter tag." } })),
+                &["tag"],
             ),
         },
         Def {
@@ -407,6 +454,10 @@ pub async fn run(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "rules" => read::rules(ctx, args).await,
         "rule_preview" => read::rule_preview(ctx, args).await,
         "journal" => read::journal(ctx, args).await,
+        "graph_backlinks" => graph::backlinks(ctx, args).await,
+        "graph_neighbors" => graph::neighbors(ctx, args).await,
+        "graph_path" => graph::path(ctx, args).await,
+        "graph_tag" => graph::tagged(ctx, args).await,
         "tag" => write::tag(ctx, args, true).await,
         "untag" => write::tag(ctx, args, false).await,
         "set_field" => write::set_field(ctx, args).await,

@@ -13,7 +13,7 @@ Written 2026-11-21.
 | **Output** | `<space>/drive:siteout:<id>`: every built file's path → blob, as the node serves it, and what each public storage was last sent. |
 | **Source** | A folder of the file tree (`drive_sites::source::TreeFolder`). `Source` is a trait: Loro page documents can be a second source (their text is `Content::Text`). |
 | **Theme** | A folder with `templates/`, `sass/`, `static/` (the starter is `assets/site-theme`, copied into `Sites/Themes/Base` by `drive site theme-init`). The override folder lays files of the same paths on top. No theme folder: the built-in starter. |
-| **Generator** | `crates/drive-sites`: converts the pages (Obsidian frontmatter and `[[wikilinks]]` included), writes a dodeca project on the building computer (only changed files), runs `ddc build`, places the output under its path, publishes it. |
+| **Generator** | `crates/drive-sites`: converts the pages (Obsidian frontmatter and `[[wikilinks]]` included, read and resolved by `drive-graph`'s parser, which the graph shares: [graph.md](graph.md)), writes a dodeca project on the building computer (only changed files), runs `ddc build`, places the output under its path, publishes it. |
 
 ## Who builds
 

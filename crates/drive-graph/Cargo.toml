@@ -1,0 +1,26 @@
+[package]
+name = "drive-graph"
+description = "Drive's graph: Markdown links, tags and app links across a space, worked out by every peer from data that already syncs (a projection, never edited)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex = "1"
+serde_yaml_ng = "0.10"
+drive-spine.workspace = true
+drive-files = { path = "../drive-files", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+# The index in a peer's local database (every native peer); without it,
+# the in-memory index only (a browser).
+turso = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+loro.workspace = true
+
+[features]
+default = ["turso"]
+turso = ["dep:turso", "dep:tokio"]

@@ -26,6 +26,7 @@
 //! lines and tested end to end here.
 
 mod ctx;
+mod graph;
 mod plan;
 mod read;
 mod tools;
