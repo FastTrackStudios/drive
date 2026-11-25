@@ -187,7 +187,8 @@ impl Agent {
         let disk = tokio::task::spawn_blocking(move || walk_disk(&walk))
             .await
             .map_err(|e| e.to_string())??;
-        let in_tree = walk_tree(&self.files, root_id);
+        let pages = self.page_texts(root_id).await;
+        let in_tree = walk_tree(&self.files, root_id, &pages);
         let actions = plan::plan(&disk.files, &in_tree.files, &last);
 
         // A file new on disk with the bytes of one gone from it: renamed or
@@ -302,7 +303,7 @@ impl Agent {
             Action::Up { rel, id } => {
                 if let Some(id) = id {
                     let planned = views.tree.get(rel).map(|t| t.hash.as_str()).unwrap_or("");
-                    if tree_hash(&self.files, id) != planned {
+                    if self.tree_hash_now(id).await != planned {
                         return Err(format!(
                             "{rel}: changed in the Drive during the pass; next time"
                         ));
@@ -336,7 +337,7 @@ impl Agent {
             }
             Action::TrashInTree { rel, id } => {
                 let synced_hash = last.get(rel).map(|s| s.hash.clone()).unwrap_or_default();
-                if tree_hash(&self.files, id) != synced_hash {
+                if self.tree_hash_now(id).await != synced_hash {
                     return Err(format!("{rel}: changed in the Drive during the pass; kept"));
                 }
                 let tid = tree::parse_id(id).ok_or("a bad tree id")?;
@@ -405,6 +406,41 @@ impl Agent {
         Ok(())
     }
 
+    /// The text of every page under `root`, by tree id (one open each).
+    async fn page_texts(&self, root: TreeID) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        let mut todo = vec![root];
+        while let Some(id) = todo.pop() {
+            for e in tree::children(&self.files, Some(id)) {
+                if e.dir {
+                    todo.push(e.id);
+                } else if !e.page.is_empty() {
+                    let doc = self.page(&e.page).await;
+                    out.insert(tree::id_string(e.id), drive_spine::pages::text(&doc));
+                }
+            }
+        }
+        out
+    }
+
+    /// A page's document.
+    async fn page(&self, page: &str) -> LoroDoc {
+        let space = self.cfg.lock().expect("cfg").space.clone();
+        self.drive.open(&drive_spine::pages::page_doc(&space, page)).await
+    }
+
+    /// A tree file's hash now: a page's by its text ("" if not a file).
+    async fn tree_hash_now(&self, id: &str) -> String {
+        let page = tree::parse_id(id)
+            .and_then(|t| tree::entry(&self.files, t))
+            .map(|e| e.page)
+            .unwrap_or_default();
+        if page.is_empty() {
+            return tree_hash(&self.files, id);
+        }
+        hash::of_bytes(drive_spine::pages::text(&self.page(&page).await).as_bytes())
+    }
+
     /// `rel` on disk into the tree (`id`: the file to update). A file that
     /// changes while it is read is left for the next pass.
     async fn up(
@@ -453,6 +489,22 @@ impl Agent {
                 },
             },
         };
+        let page = tree::entry(&self.files, tid)
+            .map(|e| e.page)
+            .unwrap_or_default();
+        if !page.is_empty() {
+            // A page: the file's text applied to it as a diff, so what
+            // others typed into the page meanwhile stays.
+            let text = String::from_utf8(bytes).map_err(|_| format!("{rel}: not UTF-8 text"))?;
+            let doc = self.page(&page).await;
+            if drive_spine::pages::text(&doc) != text {
+                drive_spine::pages::write(&doc, &text).map_err(|e| format!("{rel}: {e}"))?;
+                let space = self.cfg.lock().expect("cfg").space.clone();
+                self.drive.commit(&drive_spine::pages::page_doc(&space, &page));
+            }
+            last.insert(rel.to_string(), record(&tree::id_string(tid)));
+            return Ok(());
+        }
         let current = tree::entry(&self.files, tid)
             .map(|e| e.hash)
             .unwrap_or_default();
@@ -491,7 +543,13 @@ impl Agent {
         if changed() {
             return Err(format!("{rel}: changed on disk during the pass; next time"));
         }
-        let bytes = if h.is_empty() {
+        let page = tree::parse_id(id)
+            .and_then(|t| tree::entry(&self.files, t))
+            .map(|e| e.page)
+            .unwrap_or_default();
+        let bytes = if !page.is_empty() {
+            drive_spine::pages::text(&self.page(&page).await).into_bytes()
+        } else if h.is_empty() {
             Vec::new()
         } else {
             self.fetch_bytes(h).await?
@@ -511,7 +569,7 @@ impl Agent {
         }
         let len = bytes.len() as u64;
         write_atomic_async(path.clone(), bytes).await?;
-        if !h.is_empty() {
+        if !h.is_empty() && page.is_empty() {
             let _ = space::set_held(&self.space, &self.device_id(), h, Some("local"));
         }
         match disk_now(&path) {
@@ -684,8 +742,9 @@ fn walk_disk(root: &Path) -> Result<Walked<OnDisk>, String> {
     Ok(out)
 }
 
-/// The tree under `root`.
-fn walk_tree(doc: &LoroDoc, root: TreeID) -> Walked<InTree> {
+/// The tree under `root`; a page (its text in its document, not a blob)
+/// is hashed and sized by its text (`pages`: tree id → text).
+fn walk_tree(doc: &LoroDoc, root: TreeID, pages: &HashMap<String, String>) -> Walked<InTree> {
     let mut out = Walked::default();
     let mut todo = vec![(root, String::new())];
     while let Some((id, rel)) = todo.pop() {
@@ -699,14 +758,12 @@ fn walk_tree(doc: &LoroDoc, root: TreeID) -> Walked<InTree> {
                 out.dirs.insert(sub.clone());
                 todo.push((e.id, sub));
             } else {
-                out.files.insert(
-                    sub,
-                    InTree {
-                        id: tree::id_string(e.id),
-                        hash: e.hash,
-                        size: e.size,
-                    },
-                );
+                let id = tree::id_string(e.id);
+                let (hash, size) = match pages.get(&id) {
+                    Some(text) => (hash::of_bytes(text.as_bytes()), text.len() as u64),
+                    None => (e.hash, e.size),
+                };
+                out.files.insert(sub, InTree { id, hash, size });
             }
         }
     }

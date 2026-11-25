@@ -116,6 +116,13 @@ drive page ls
 
 MCP: `page_read`, `page_write` (a diff, with `dry_run`) and `page_create`.
 
+**On disk, for Obsidian.** In a working copy (docs/working-copies.md) a
+page is a plain `.md` file: written from the page's text, and when an
+editor saves it the new text goes into the page as a diff. So a vault
+folder can be open in Obsidian on one computer while people and agents
+edit the same pages live everywhere else. A page changed on both sides
+since the last sync keeps both, the disk's beside it as a conflict copy.
+
 ## Notes: what one file says
 
 `drive_graph::extract` reads one Markdown file into an `Extract`: its
@@ -285,9 +292,10 @@ peer could read, so an agent knows when some were out of reach.
 - An approximate nearest-neighbour index once vectors run past a few
   hundred thousand pieces (Turso's vector index is not ready yet; the
   search reads every vector of the model).
-- **Pages as files on disk**, both ways: a page's working copy (a `.md` in a
-  folder, docs/working-copies.md), so Obsidian and any editor open it, and
-  saving it applies the diff to the page.
+- **A three-way merge for a page edited on disk and in the Drive at once**
+  (today both are kept, the disk's as a conflict copy, as for any file).
+- New `.md` files saved in a working copy becoming pages (today they are
+  files; pages made in the Drive are pages on disk too).
 - An editor for pages in the Drive app (live cursors through presence), and
   pages as a source for sites (docs/sites.md's "Loro page documents").
 - **Refreshing as documents change** in apps that embed the engine (the
