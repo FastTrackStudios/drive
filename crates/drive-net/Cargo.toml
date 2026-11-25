@@ -1,0 +1,14 @@
+[package]
+name = "drive-net"
+description = "A device's iroh endpoint for Drive: its key, its relay, and local discovery (mDNS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# No metrics (unused) and one TLS backend, aws-lc-rs, as rustls uses here
+# elsewhere: the default ring would be a second (drive#36).
+iroh = { version = "1.5", default-features = false, features = ["portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
+iroh-mdns-address-lookup = { version = "0.6", default-features = false }
+serde_json.workspace = true
+drive-local = { path = "../drive-local" }

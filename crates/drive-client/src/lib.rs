@@ -21,7 +21,12 @@
 
 #[cfg(target_arch = "wasm32")]
 mod idb;
+#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+pub mod peers;
 mod platform;
+mod transport;
+
+pub use transport::{Connection, MaybeSend, Transport, WebSocket, Wire};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -126,6 +131,9 @@ struct OpenDoc {
     save_pending: bool,
     /// The node has answered this document's join at least once.
     synced: bool,
+    /// This device's own copy has been read (found or not): until then an
+    /// empty document may only be one whose copy has not arrived yet.
+    restored: bool,
     /// How many [`Drive::hold`]s are on it, and how often the count has
     /// fallen to none (a close waiting to happen checks it is still the
     /// latest).
@@ -138,9 +146,11 @@ struct OpenDoc {
 const LINGER_MS: u32 = 30_000;
 
 struct Inner {
+    transport: Box<dyn Transport>,
+    /// What the transport connects to, for logs.
     url: String,
     me: Mutex<Me>,
-    ws: Mutex<Option<platform::Socket>>,
+    ws: Mutex<Option<Box<dyn Connection>>>,
     status: Mutex<Status>,
     peer: Mutex<Option<Peer>>,
     docs: Mutex<HashMap<DocId, OpenDoc>>,
@@ -185,7 +195,21 @@ impl Drive {
         url: Option<String>,
         token: Option<String>,
     ) -> (Drive, mpsc::UnboundedReceiver<Event>) {
-        let url = url.unwrap_or_else(platform::default_url);
+        let transport = match url {
+            Some(u) => WebSocket::new(u),
+            None => WebSocket::default_node(),
+        };
+        Drive::connect_via(transport, token)
+    }
+
+    /// Connect through any [`Transport`]: a node's [`WebSocket`], or
+    /// (natively, with the `p2p` feature) this device's own peers
+    /// ([`Drive::peer_to_peer`]).
+    pub fn connect_via(
+        transport: impl Transport,
+        token: Option<String>,
+    ) -> (Drive, mpsc::UnboundedReceiver<Event>) {
+        let url = transport.describe();
         let (tx, rx) = mpsc::unbounded();
         let me = platform::load_me()
             .and_then(|j| serde_json::from_str(&j).ok())
@@ -194,6 +218,7 @@ impl Drive {
                 hue: (platform::random() * 360.0) as u32,
             });
         let drive = Drive(Arc::new(Inner {
+            transport: Box::new(transport),
             url,
             me: Mutex::new(me),
             ws: Mutex::new(None),
@@ -292,20 +317,20 @@ impl Drive {
             let me = self.clone();
             let id = id.to_string();
             platform::spawn(async move {
-                let Some(bytes) = platform::load_doc(&id).await else {
-                    return;
+                let bytes = platform::load_doc(&id).await;
+                let imported = {
+                    let mut docs = lock(&me.0.docs);
+                    let Some(d) = docs.get_mut(&id) else { return };
+                    d.restored = true;
+                    bytes.is_some_and(|b| d.doc.import(&b).is_ok())
                 };
-                let ok = lock(&me.0.docs)
-                    .get(&id)
-                    .map(|d| d.doc.import(&bytes).is_ok());
-                if ok == Some(true) {
-                    // Edits made offline last time: join again so the node
-                    // says what it lacks and they are sent.
-                    if me.status() == Status::Online {
-                        me.join(&id);
-                    }
-                    me.emit(Event::Changed(id.clone()));
+                // Edits made offline last time: join again so the node
+                // says what it lacks and they are sent.
+                if imported && me.status() == Status::Online {
+                    me.join(&id);
                 }
+                // Said either way: found or not, the copy is in.
+                me.emit(Event::Changed(id.clone()));
             });
         }
         let outbox = Arc::new(Mutex::new(Vec::new()));
@@ -325,6 +350,7 @@ impl Drive {
                 my_presence: None,
                 save_pending: false,
                 synced: false,
+                restored: false,
                 holders: 0,
                 released: 0,
             },
@@ -436,6 +462,14 @@ impl Drive {
     /// document is really empty, not just not arrived).
     pub fn is_synced(&self, id: &str) -> bool {
         lock(&self.0.docs).get(id).is_some_and(|d| d.synced)
+    }
+
+    /// Whether this device's own copy of the document has been read, found
+    /// or not (it loads a moment after [`Drive::open`]). Offline, an empty
+    /// document that is restored is really empty here; one that is not may
+    /// only be waiting for its copy. An [`Event::Changed`] says when.
+    pub fn is_restored(&self, id: &str) -> bool {
+        lock(&self.0.docs).get(id).is_some_and(|d| d.restored)
     }
 
     /// Merge exported Loro bytes made elsewhere (a template, a file) into a
@@ -569,7 +603,11 @@ impl Drive {
         if let Some(old) = ws.take() {
             old.close();
         }
-        match platform::Socket::open(&self.0.url, self.clone(), generation) {
+        let wire = Wire {
+            drive: self.clone(),
+            generation,
+        };
+        match self.0.transport.open(wire) {
             Some(s) => *ws = Some(s),
             None => {
                 drop(ws);
@@ -724,7 +762,7 @@ mod tests {
     use super::*;
 
     /// The copies' folder, one for every test here (it is process-wide).
-    fn copies() -> &'static std::path::Path {
+    pub(crate) fn copies() -> &'static std::path::Path {
         static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
         let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap()).path();
         set_data_dir(dir);
@@ -754,7 +792,7 @@ mod tests {
         assert_eq!(pending(&drive, id), 1, "the update waits to be sent");
     }
 
-    async fn node() -> (String, tempfile::TempDir) {
+    pub(crate) async fn node() -> (String, tempfile::TempDir) {
         let data = tempfile::tempdir().unwrap();
         let opts = drive_node::Options {
             no_backfill: true,
@@ -910,4 +948,53 @@ mod tests {
         panic!("closed: {}, copy saved: {}", !open(id), file.exists());
     }
 
+    /// Wait until this device's copy of `id` has loaded (or was found
+    /// missing).
+    async fn restored(drive: &Drive, id: &str) {
+        for _ in 0..100 {
+            if drive.is_restored(id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("{id}: this device's copy never finished loading");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_document_says_when_this_devices_copy_has_loaded() {
+        copies();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("ws://127.0.0.1:{port}/sync");
+
+        // Nothing stored: restored, and really empty.
+        let (drive, _events) = Drive::connect(Some(url.clone()));
+        let fresh = "home/test:restored-none";
+        let doc = drive.open(fresh);
+        restored(&drive, fresh).await;
+        assert!(doc.get_map("household").is_empty());
+        assert!(!drive.is_restored("home/test:never-opened"));
+
+        // A stored copy: once restored, it is in the document.
+        let kept = "home/test:restored-kept";
+        let made = LoroDoc::new();
+        made.get_map("household").insert("name", "Ours").unwrap();
+        platform::save_doc(kept, made.export(ExportMode::Snapshot).unwrap());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let (drive, _events) = Drive::connect(Some(url));
+        let doc = drive.open(kept);
+        restored(&drive, kept).await;
+        assert_eq!(
+            doc.get_map("household")
+                .get("name")
+                .and_then(|v| v.into_value().ok())
+                .and_then(|v| v.into_string().ok())
+                .map(|s| s.to_string()),
+            Some("Ours".to_string()),
+            "the stored copy is in the document once it is restored"
+        );
+    }
 }

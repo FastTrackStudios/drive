@@ -36,8 +36,12 @@ pub mod auth;
 pub mod comments;
 pub mod env;
 mod keyed;
-mod nesting;
 pub mod mount;
+mod nesting;
+#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+pub mod p2p;
+#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+pub use p2p::{peer_to_peer, peers};
 pub mod text;
 pub mod ui;
 
@@ -165,6 +169,11 @@ async fn boot() -> Boot {
 }
 
 async fn boot_inner() -> Boot {
+    // Peer to peer with no node: nothing to ask; this device's copies.
+    #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+    if p2p::standalone() && !auth::is_callback() {
+        return offline(None);
+    }
     if auth::is_callback() {
         return match auth::finish().await {
             Ok(()) => Boot::Loading, // going back to where the sign-in began
@@ -382,6 +391,16 @@ fn BootMessage(why: String) -> Element {
     }
 }
 
+/// This app's connection: its own peer when it syncs peer to peer, else
+/// the node.
+fn connect(token: Option<String>) -> (Drive, drive_client::EventStream) {
+    #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+    if let Some(c) = p2p::connect(token.clone()) {
+        return c;
+    }
+    Drive::connect_with(sync_url(), token)
+}
+
 #[component]
 fn Connected(
     org: String,
@@ -391,7 +410,7 @@ fn Connected(
     children: Element,
 ) -> Element {
     let ctx = use_context_provider(|| {
-        let (drive, rx) = Drive::connect_with(sync_url(), token.clone());
+        let (drive, rx) = connect(token.clone());
         let ctx = DriveCtx {
             status: Signal::new(drive.status()),
             me: Signal::new(drive.me()),
@@ -568,6 +587,14 @@ impl Doc {
     pub fn synced(&self) -> bool {
         let _ = (self.rev)();
         self.drive.is_synced(&self.id)
+    }
+
+    /// Whether this device's own copy has loaded (found or not): offline,
+    /// an empty document is really empty only once this is true. Live, as
+    /// [`Doc::synced`].
+    pub fn restored(&self) -> bool {
+        let _ = (self.rev)();
+        self.drive.is_restored(&self.id)
     }
 
     /// Merge exported Loro bytes made elsewhere (a template) and send them.
