@@ -232,3 +232,37 @@ pub async fn page_create(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let p = crate::pages::create(&ctx.a, path, text).await?;
     Ok(json!({ "done": { "page": format!("drive:{}", p.path) } }))
 }
+
+/// `adopt_frontmatter_tags`: notes' frontmatter tags as Drive tags.
+pub async fn adopt_tags(ctx: &Ctx, args: &Value) -> Result<Value, String> {
+    use crate::graph::Adopted;
+    let dry = super::tools::dry(args);
+    let plan = crate::graph::adopt_tags(&ctx.a, &ctx.e.tags, &ctx.author, false).await?;
+    let todo = plan
+        .iter()
+        .filter(|(_, w)| matches!(w, Adopted::Tag(_) | Adopted::Make))
+        .count();
+    let rows: Vec<Value> = plan
+        .iter()
+        .filter(|(_, w)| *w != Adopted::Already)
+        .map(|(w, what)| {
+            json!({
+                "note": format!("drive:{}", w.path),
+                "tag": w.tag.join("/"),
+                "does": match what {
+                    Adopted::Tag(_) => "tag",
+                    Adopted::Make => "make the tag, then tag",
+                    Adopted::Ambiguous => "left alone: several tags have that name",
+                    Adopted::Already => "already",
+                },
+            })
+        })
+        .collect();
+    if dry || todo == 0 {
+        return Ok(json!({ "dry_run": dry, "would": rows, "writes": todo }));
+    }
+    ctx.charge(todo)?;
+    crate::graph::adopt_tags(&ctx.a, &ctx.e.tags, &ctx.author, true).await?;
+    ctx.commit_tags();
+    Ok(json!({ "done": rows, "writes": todo }))
+}

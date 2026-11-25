@@ -12,6 +12,7 @@
 //! drive graph search WORDS… [--tag TAG] [--near THING] [--limit N]
 //!                                      # by words and meaning, fused; near a thing first
 //! drive graph model fetch              # the embedding model (once per device)
+//! drive graph adopt-tags [--apply]     # notes' frontmatter tags as Drive tags (a dry run without --apply)
 //! drive graph link FROM TO [--kind K]  # an app's kind of link (uses, built-on), in drive:links
 //! drive graph unlink FROM TO [--kind K]
 //! ```
@@ -261,6 +262,88 @@ pub async fn keep_up(a: std::sync::Arc<Agent>) {
     }
 }
 
+/// What adopting one frontmatter tag does (or would do).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Adopted {
+    /// The note has the Drive tag already.
+    Already,
+    /// The note gets an existing Drive tag.
+    Tag(String),
+    /// The Drive tag is made (nested as written), then put on the note.
+    Make,
+    /// Several Drive tags have the name: left alone.
+    Ambiguous,
+}
+
+/// Notes' frontmatter tags as Drive tags: planned, and written only when
+/// `apply` (the tags document is synced; the owner asks for this).
+pub async fn adopt_tags(
+    a: &Agent,
+    tags: &LoroDoc,
+    by: &str,
+    apply: bool,
+) -> Result<Vec<(drive_graph::adopt_tags::Wanted, Adopted)>, String> {
+    let (db, _) = up_to_date(a, tags).await?;
+    let (items, _) = tree_and_pages(a).await;
+    let keys = drive_graph::refresh::note_keys(&items);
+    let extracts = db.extracts(&keys).await.map_err(|e| e.to_string())?;
+    let plan = drive_graph::adopt_tags::plan(&items, &extracts, &Library::load(tags));
+    let mut out = Vec::new();
+    for w in plan {
+        let what = match (&w.have, w.already, w.ambiguous) {
+            (_, true, _) => Adopted::Already,
+            (Some(id), false, _) => Adopted::Tag(id.clone()),
+            (None, _, true) => Adopted::Ambiguous,
+            (None, _, false) => Adopted::Make,
+        };
+        if apply && matches!(what, Adopted::Tag(_) | Adopted::Make) {
+            let id = match &what {
+                Adopted::Tag(id) => id.clone(),
+                _ => make_nested(tags, &w.tag, by)?,
+            };
+            drive_spine::tags::tag(tags, &w.note, &id, by, drive_files::now_ms())
+                .map_err(|e| e.to_string())?;
+        }
+        out.push((w, what));
+    }
+    Ok(out)
+}
+
+/// A nested tag (`["music", "drums"]`: Drums under Music), each level
+/// found by name under the one before or made.
+fn make_nested(tags: &LoroDoc, path: &[String], by: &str) -> Result<String, String> {
+    let mut parent: Option<String> = None;
+    for name in path {
+        let lib = Library::load(tags);
+        let found = lib.all().into_iter().find(|t| {
+            t.name.eq_ignore_ascii_case(name)
+                && match &parent {
+                    Some(p) => t.parents.contains(p),
+                    None => t.parents.is_empty(),
+                }
+        });
+        let id = match found {
+            Some(t) => t.id.clone(),
+            None => {
+                let parents: Vec<String> = parent.iter().cloned().collect();
+                drive_spine::tags::create(
+                    tags,
+                    drive_spine::tags::NewTag {
+                        name,
+                        parents: &parents,
+                        ..Default::default()
+                    },
+                    by,
+                    drive_files::now_ms(),
+                )
+                .map_err(|e| e.to_string())?
+            }
+        };
+        parent = Some(id);
+    }
+    parent.ok_or_else(|| "an empty tag".to_string())
+}
+
 /// A graph key given as it is, if `thing` is one (`project:` is a name in
 /// THING syntax, so it is not).
 pub fn raw_key(thing: &str) -> Option<&str> {
@@ -375,7 +458,7 @@ fn words(rest: &[String]) -> Vec<&str> {
 pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let rest: Vec<String> = args.iter().skip(2).cloned().collect();
-    let usage = "graph search WORDS… [--tag TAG] [--near THING] [--limit N] | model fetch | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
+    let usage = "graph search WORDS… [--tag TAG] [--near THING] [--limit N] | model fetch | adopt-tags [--apply] | backlinks THING | neighbors THING [--depth N] | path THING THING [--max N] | tag TAG | refresh | link FROM TO [--kind K] | unlink FROM TO [--kind K]";
     if !matches!(
         sub,
         "search"
@@ -432,6 +515,36 @@ pub async fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                     ""
                 }
             ));
+        }
+        ("adopt-tags", []) => {
+            let apply = rest.iter().any(|a| a == "--apply");
+            let done = adopt_tags(&t.a, &t.doc, &t.by, apply).await?;
+            let mut n = 0;
+            for (w, what) in &done {
+                let tag = format!("#{}", w.tag.join("/"));
+                let line = match what {
+                    Adopted::Already => continue,
+                    Adopted::Tag(_) => format!("  {tag:<24} → drive:{}", w.path),
+                    Adopted::Make => format!("  {tag:<24} → drive:{}  (a new tag)", w.path),
+                    Adopted::Ambiguous => format!(
+                        "  {tag:<24}   drive:{}  left alone: several tags have that name",
+                        w.path
+                    ),
+                };
+                n += usize::from(!matches!(what, Adopted::Ambiguous));
+                out(line);
+            }
+            if apply {
+                t.a.drive.commit(&drive_spine::tags::tags_doc(
+                    &t.a.cfg.lock().expect("cfg").space,
+                ));
+                crate::settle(&t.a).await;
+                out(format!("{n} tags put on notes"));
+            } else {
+                out(format!(
+                    "{n} would be put on notes; --apply does it (the tags sync to every device)"
+                ));
+            }
         }
         ("model", ["fetch"]) => {
             let dir = fetch_model(&t.a).await?;

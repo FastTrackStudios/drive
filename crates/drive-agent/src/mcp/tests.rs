@@ -261,6 +261,7 @@ fn tools_are_described_and_none_destroys() {
         "page_read",
         "page_write",
         "page_create",
+        "adopt_frontmatter_tags",
         "link",
         "unlink",
         "tag",
@@ -774,11 +775,20 @@ async fn note(w: &World, dir: loro::TreeID, name: &str, text: &str) {
 async fn the_graph_tools_read_this_peers_graph() {
     let w = world(10).await;
     let notes = tree::mkdir(&w.ctx().a.files, None, "Notes").unwrap();
-    note(&w, notes, "Scales.md", "---\naliases: [Modes]\ntags: [theory]\n---\nSee [[Chords]] and [[Nowhere]].\n").await;
+    note(
+        &w,
+        notes,
+        "Scales.md",
+        "---\naliases: [Modes]\ntags: [theory]\n---\nSee [[Chords]] and [[Nowhere]].\n",
+    )
+    .await;
     note(&w, notes, "Chords.md", "Built from [[Modes|scales]].\n").await;
 
     let back = w
-        .call("graph_backlinks", json!({ "thing": "drive:Notes/Scales.md" }))
+        .call(
+            "graph_backlinks",
+            json!({ "thing": "drive:Notes/Scales.md" }),
+        )
         .await
         .unwrap();
     assert_eq!(back["total"], 1, "{back}");
@@ -796,32 +806,57 @@ async fn the_graph_tools_read_this_peers_graph() {
         .call("graph_neighbors", json!({ "thing": "Modes", "depth": 1 }))
         .await
         .unwrap();
-    assert_eq!(near["total"], 4, "Chords, the missing page, the tag and its folder: {near}");
+    assert_eq!(
+        near["total"], 4,
+        "Chords, the missing page, the tag and its folder: {near}"
+    );
 
     let path = w
-        .call("graph_path", json!({ "from": "drive:Notes/Chords.md", "to": "missing:nowhere" }))
+        .call(
+            "graph_path",
+            json!({ "from": "drive:Notes/Chords.md", "to": "missing:nowhere" }),
+        )
         .await
         .unwrap();
     assert_eq!(path["found"], true);
     assert_eq!(path["steps"].as_array().unwrap().len(), 3);
 
-    let found = w.call("graph_search", json!({ "query": "built from scales" })).await.unwrap();
-    assert_eq!(found["items"][0]["thing"], "drive:Notes/Chords.md", "{found}");
-    let narrowed = w
-        .call("graph_search", json!({ "query": "chords scales", "tag": "theory" }))
+    let found = w
+        .call("graph_search", json!({ "query": "built from scales" }))
         .await
         .unwrap();
-    assert_eq!(narrowed["total"], 1, "only what is under #theory: {narrowed}");
+    assert_eq!(
+        found["items"][0]["thing"], "drive:Notes/Chords.md",
+        "{found}"
+    );
+    let narrowed = w
+        .call(
+            "graph_search",
+            json!({ "query": "chords scales", "tag": "theory" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        narrowed["total"], 1,
+        "only what is under #theory: {narrowed}"
+    );
     assert_eq!(narrowed["items"][0]["thing"], "drive:Notes/Scales.md");
-    let tagged = w.call("graph_tag", json!({ "tag": "theory" })).await.unwrap();
+    let tagged = w
+        .call("graph_tag", json!({ "tag": "theory" }))
+        .await
+        .unwrap();
     assert_eq!(tagged["items"][0]["thing"], "drive:Notes/Scales.md");
-    assert_eq!(tagged["tag"], "label:theory", "a frontmatter tag no Drive tag has");
+    assert_eq!(
+        tagged["tag"], "label:theory",
+        "a frontmatter tag no Drive tag has"
+    );
 
     // Read only: nothing was written to the space's documents.
     assert_eq!(w.ctx().writes_used(), 0);
 
     // An app's link: dry run first, then made, then seen by the graph.
-    let args = json!({ "from": "doc:season:episode:1", "to": "drive:Notes/Scales.md", "kind": "uses" });
+    let args =
+        json!({ "from": "doc:season:episode:1", "to": "drive:Notes/Scales.md", "kind": "uses" });
     let mut dry_args = args.clone();
     dry_args["dry_run"] = json!(true);
     assert_eq!(w.call("link", dry_args).await.unwrap()["dry_run"], true);
@@ -829,10 +864,18 @@ async fn the_graph_tools_read_this_peers_graph() {
     w.call("link", args.clone()).await.unwrap();
     assert_eq!(w.ctx().writes_used(), 1);
     let back = w
-        .call("graph_backlinks", json!({ "thing": "drive:Notes/Scales.md" }))
+        .call(
+            "graph_backlinks",
+            json!({ "thing": "drive:Notes/Scales.md" }),
+        )
         .await
         .unwrap();
-    let linked: Vec<&Value> = back["items"].as_array().unwrap().iter().filter(|h| h["edge"]["kind"] == "linked").collect();
+    let linked: Vec<&Value> = back["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|h| h["edge"]["kind"] == "linked")
+        .collect();
     assert_eq!(linked.len(), 1, "{back}");
     assert_eq!(linked[0]["id"], "doc:season:episode:1");
     assert_eq!(linked[0]["edge"]["written"], "uses");
@@ -840,10 +883,19 @@ async fn the_graph_tools_read_this_peers_graph() {
     assert_eq!(w.ctx().writes_used(), 1, "linking again writes nothing");
     w.call("unlink", args).await.unwrap();
     let back = w
-        .call("graph_backlinks", json!({ "thing": "drive:Notes/Scales.md" }))
+        .call(
+            "graph_backlinks",
+            json!({ "thing": "drive:Notes/Scales.md" }),
+        )
         .await
         .unwrap();
-    assert!(!back["items"].as_array().unwrap().iter().any(|h| h["edge"]["kind"] == "linked"));
+    assert!(
+        !back["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["edge"]["kind"] == "linked")
+    );
 }
 
 #[tokio::test]
@@ -855,14 +907,24 @@ async fn a_computers_folder_is_tagged_and_its_tags_follow_a_move() {
     )
     .await
     .unwrap();
-    w.call("link", json!({ "from": "doc:season:episode:1", "to": "Scratch:Mixes", "kind": "uses" }))
+    w.call(
+        "link",
+        json!({ "from": "doc:season:episode:1", "to": "Scratch:Mixes", "kind": "uses" }),
+    )
+    .await
+    .unwrap();
+    let on = w
+        .call("tags", json!({ "thing": "Scratch:Mixes" }))
         .await
         .unwrap();
-    let on = w.call("tags", json!({ "thing": "Scratch:Mixes" })).await.unwrap();
     assert_eq!(on["tags"][0]["tag"], "Bounces", "{on}");
 
     // Renamed on disk, then walked again by the device that has it.
-    std::fs::rename(w.disk.path().join("Mixes"), w.disk.path().join("Mixes 2026")).unwrap();
+    std::fs::rename(
+        w.disk.path().join("Mixes"),
+        w.disk.path().join("Mixes 2026"),
+    )
+    .unwrap();
     let a = &w.ctx().a;
     let loc = space::locations(&a.space)
         .into_iter()
@@ -870,8 +932,14 @@ async fn a_computers_folder_is_tagged_and_its_tags_follow_a_move() {
         .unwrap();
     a.index_location(&loc).await.unwrap();
 
-    let moved = w.call("tags", json!({ "thing": "Scratch:Mixes 2026" })).await.unwrap();
-    assert_eq!(moved["tags"][0]["tag"], "Bounces", "the tag went with it: {moved}");
+    let moved = w
+        .call("tags", json!({ "thing": "Scratch:Mixes 2026" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        moved["tags"][0]["tag"], "Bounces",
+        "the tag went with it: {moved}"
+    );
     let back = w
         .call("graph_backlinks", json!({ "thing": "Scratch:Mixes 2026" }))
         .await
@@ -882,8 +950,14 @@ async fn a_computers_folder_is_tagged_and_its_tags_follow_a_move() {
         .iter()
         .map(|h| h["edge"]["kind"].as_str().unwrap())
         .collect();
-    assert!(kinds.contains(&"linked"), "the link went with it too: {back}");
-    let tagged = w.call("graph_tag", json!({ "tag": "Bounces" })).await.unwrap();
+    assert!(
+        kinds.contains(&"linked"),
+        "the link went with it too: {back}"
+    );
+    let tagged = w
+        .call("graph_tag", json!({ "tag": "Bounces" }))
+        .await
+        .unwrap();
     assert_eq!(tagged["total"], 1);
 }
 
@@ -891,31 +965,121 @@ async fn a_computers_folder_is_tagged_and_its_tags_follow_a_move() {
 async fn pages_are_live_notes_in_the_graph() {
     let w = world(10).await;
     let made = w
-        .call("page_create", json!({ "path": "drive:Wiki/Scales", "text": "# Scales\n\nSee [[Modes]].\n" }))
+        .call(
+            "page_create",
+            json!({ "path": "drive:Wiki/Scales", "text": "# Scales\n\nSee [[Modes]].\n" }),
+        )
         .await
         .unwrap();
     assert_eq!(made["done"]["page"], "drive:Wiki/Scales.md");
-    w.call("page_create", json!({ "path": "Wiki/Modes.md", "text": "Dorian, Lydian.\n" }))
+    w.call(
+        "page_create",
+        json!({ "path": "Wiki/Modes.md", "text": "Dorian, Lydian.\n" }),
+    )
+    .await
+    .unwrap();
+    // Linked at once: the graph reads the page's text from its document.
+    let back = w
+        .call("graph_backlinks", json!({ "thing": "drive:Wiki/Modes.md" }))
         .await
         .unwrap();
-    // Linked at once: the graph reads the page's text from its document.
-    let back = w.call("graph_backlinks", json!({ "thing": "drive:Wiki/Modes.md" })).await.unwrap();
     assert_eq!(back["items"][0]["thing"], "drive:Wiki/Scales.md", "{back}");
 
     // An edit: only what changed is applied; the new link joins the graph.
-    let read = w.call("page_read", json!({ "page": "drive:Wiki/Scales.md" })).await.unwrap();
-    let text = read["text"].as_str().unwrap().replace("[[Modes]]", "[[Modes]] and [[Circle]]");
+    let read = w
+        .call("page_read", json!({ "page": "drive:Wiki/Scales.md" }))
+        .await
+        .unwrap();
+    let text = read["text"]
+        .as_str()
+        .unwrap()
+        .replace("[[Modes]]", "[[Modes]] and [[Circle]]");
     let dry = w
-        .call("page_write", json!({ "page": "drive:Wiki/Scales.md", "text": text, "dry_run": true }))
+        .call(
+            "page_write",
+            json!({ "page": "drive:Wiki/Scales.md", "text": text, "dry_run": true }),
+        )
         .await
         .unwrap();
     assert_eq!(dry["dry_run"], true);
-    w.call("page_write", json!({ "page": "drive:Wiki/Scales.md", "text": text })).await.unwrap();
-    let missing = w.call("graph_backlinks", json!({ "thing": "missing:circle" })).await.unwrap();
+    w.call(
+        "page_write",
+        json!({ "page": "drive:Wiki/Scales.md", "text": text }),
+    )
+    .await
+    .unwrap();
+    let missing = w
+        .call("graph_backlinks", json!({ "thing": "missing:circle" }))
+        .await
+        .unwrap();
     assert_eq!(missing["total"], 1, "{missing}");
-    let found = w.call("graph_search", json!({ "query": "lydian" })).await.unwrap();
+    let found = w
+        .call("graph_search", json!({ "query": "lydian" }))
+        .await
+        .unwrap();
     assert_eq!(found["items"][0]["thing"], "drive:Wiki/Modes.md");
     // A file is not a page.
-    assert!(w.call("page_read", json!({ "page": "drive:Songs/lyrics.txt" })).await.is_err());
+    assert!(
+        w.call("page_read", json!({ "page": "drive:Songs/lyrics.txt" }))
+            .await
+            .is_err()
+    );
     assert_eq!(w.ctx().writes_used(), 3);
+}
+
+#[tokio::test]
+async fn frontmatter_tags_become_drive_tags_only_when_asked() {
+    let w = world(20).await;
+    let notes = tree::mkdir(&w.ctx().a.files, None, "Notes").unwrap();
+    note(
+        &w,
+        notes,
+        "Kick.md",
+        "---\ntags: [music/drums, theory]\n---\nKick.\n",
+    )
+    .await;
+    let dry = w
+        .call("adopt_frontmatter_tags", json!({ "dry_run": true }))
+        .await
+        .unwrap();
+    assert_eq!(dry["writes"], 2, "{dry}");
+    assert!(
+        w.call("tags", json!({})).await.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["name"] != "Drums"),
+        "a dry run makes nothing"
+    );
+    w.call("adopt_frontmatter_tags", json!({})).await.unwrap();
+    let on = w
+        .call("tags", json!({ "thing": "drive:Notes/Kick.md" }))
+        .await
+        .unwrap();
+    let mut names: Vec<&str> = on["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tag"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["drums", "theory"], "named as written: {on}");
+    // Now a Drive tag: under Music in tag search and the graph.
+    let under = w
+        .call("graph_tag", json!({ "tag": "Music" }))
+        .await
+        .unwrap();
+    assert!(
+        under["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["thing"] == "drive:Notes/Kick.md"),
+        "{under}"
+    );
+    let again = w
+        .call("adopt_frontmatter_tags", json!({ "dry_run": true }))
+        .await
+        .unwrap();
+    assert_eq!(again["writes"], 0, "nothing left to do");
 }

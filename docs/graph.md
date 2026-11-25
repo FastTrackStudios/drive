@@ -251,6 +251,17 @@ run the same model over everything they can read; heavier models (a
 transformer for text, CLIP for images) are other `Embedder`s, kept under
 their own model id beside it, so a peer uses them only when it has them.
 
+## Frontmatter tags as Drive tags (when asked)
+
+A note's `tags:` are its own words; Drive's tags are what every app and
+search share. `drive graph adopt-tags` (MCP `adopt_frontmatter_tags`)
+puts each note's frontmatter tags on it as Drive tags: an existing tag by
+name, shorthand or alias, else a new one, nested as Obsidian nests
+(`music/drums` is drums under Music). A name several Drive tags share,
+with nothing to tell them apart, is left alone. Without `--apply` (or with
+`dry_run`) it only says what it would do. It never runs by itself: the
+tags document syncs to every device.
+
 ## The command line
 
 ```text
@@ -261,6 +272,7 @@ drive graph tag TAG
 drive graph refresh                # and what it read: kept, read now, from a peer, out of reach
 drive graph search WORDS… [--tag TAG] [--near THING] [--limit N]
 drive graph model fetch              # the embedding model, once per device
+drive graph adopt-tags [--apply]     # notes' frontmatter tags as Drive tags
 drive graph link FROM TO [--kind K]  # in drive:links (synced)
 drive graph unlink FROM TO [--kind K]
 ```
@@ -287,9 +299,6 @@ peer could read, so an agent knows when some were out of reach.
 ## Not yet
 
 - **App UI**: a backlinks panel in the inspector and a graph view.
-- **Frontmatter tags → Drive tags**: offering a note's `tags:` as Drive
-  tags. It writes into the synced tags document, so it will be opt-in and
-  asked for first, never automatic.
 - **Handing sidecars between peers.** The format and its checks are here;
   the transport waits for peer-to-peer sync (`drive-sync`, `drive-net`).
   Vectors cannot be checked as cheaply as extracts; a peer will take them

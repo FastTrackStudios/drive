@@ -220,7 +220,9 @@ pub fn defs() -> Vec<Def> {
             description: "Everything that points at a thing in this computer's graph of the space: notes linking or embedding it ([[wikilinks]], relative Markdown links, frontmatter related:), things carrying a tag, tasks and events naming a document, projects holding it. Each with the edge (its kind and what was written). `coverage` says how many notes could be read here.",
             write: false,
             schema: props(
-                paged(json!({ "thing": json!({ "type": "string", "description": "drive:PATH, LOCATION:PATH, project:NAME, doc:ID, content:HASH, a graph key (tag:ID, missing:NAME, label:NAME, task:ID, event:ID) or a name the graph knows (a note's title or alias, a file name)." }) })),
+                paged(
+                    json!({ "thing": json!({ "type": "string", "description": "drive:PATH, LOCATION:PATH, project:NAME, doc:ID, content:HASH, a graph key (tag:ID, missing:NAME, label:NAME, task:ID, event:ID) or a name the graph knows (a note's title or alias, a file name)." }) }),
+                ),
                 &["thing"],
             ),
         },
@@ -257,7 +259,9 @@ pub fn defs() -> Vec<Def> {
             description: "Every thing carrying a tag or any tag under it, by a Drive tag (drive:tags) or a note's frontmatter `tags:` (one that names no Drive tag is found as written).",
             write: false,
             schema: props(
-                paged(json!({ "tag": { "type": "string", "description": "A tag's name, shorthand, alias or id, or a frontmatter tag." } })),
+                paged(
+                    json!({ "tag": { "type": "string", "description": "A tag's name, shorthand, alias or id, or a frontmatter tag." } }),
+                ),
                 &["tag"],
             ),
         },
@@ -266,7 +270,10 @@ pub fn defs() -> Vec<Def> {
             title: "Read a page",
             description: "The text of a page: a Markdown note kept as live text that everyone edits at once (wikilinks, frontmatter and all, as in Obsidian).",
             write: false,
-            schema: props(json!({ "page": { "type": "string", "description": "The page's Drive path (drive:Wiki/Scales.md)." } }), &["page"]),
+            schema: props(
+                json!({ "page": { "type": "string", "description": "The page's Drive path (drive:Wiki/Scales.md)." } }),
+                &["page"],
+            ),
         },
         Def {
             name: "page_write",
@@ -293,6 +300,13 @@ pub fn defs() -> Vec<Def> {
                 }),
                 &["path"],
             ),
+        },
+        Def {
+            name: "adopt_frontmatter_tags",
+            title: "Notes' tags as Drive tags",
+            description: "Put each note's frontmatter `tags:` on it as Drive tags (shared by every app and search), making the ones that do not exist, nested as Obsidian nests them (music/drums: Drums under Music). A name several Drive tags share is left alone. Run it with dry_run first and show the person: the tags sync to every device.",
+            write: true,
+            schema: props(json!({}), &[]),
         },
         Def {
             name: "link",
@@ -537,6 +551,7 @@ pub async fn run(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "page_read" => graph::page_read(ctx, args).await,
         "page_write" => graph::page_write(ctx, args).await,
         "page_create" => graph::page_create(ctx, args).await,
+        "adopt_frontmatter_tags" => graph::adopt_tags(ctx, args).await,
         "link" => graph::link(ctx, args, true).await,
         "unlink" => graph::link(ctx, args, false).await,
         "tag" => write::tag(ctx, args, true).await,
