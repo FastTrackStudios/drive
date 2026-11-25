@@ -50,6 +50,7 @@ can be invited by link, live, with nothing installed.
 | `crates/drive-view` | Embedded file viewers (PDF via `pdfcraft`, audio/video, images, Markdown, text) |
 | `crates/drive-rules` | Synced file rules AST, matcher, planner, dry-run/live evaluator, and undo journal |
 | `crates/drive-sites` | Static site conversion & publishing from Drive folders (`dodeca`) |
+| `crates/drive-graph` | One graph across Markdown links, tags and spine links, built by every peer from what already syncs: link resolver, per-content extractor, and a local Turso index (backlinks, neighbours, paths, tags) |
 | `crates/drive-kache` | P2P Rust build cache server/peer for `kache` build groups |
 
 ## Developing & Testing Safely
@@ -84,6 +85,7 @@ scripts/dev.sh down          # stops only the dev PIDs
 - [docs/sidecars.md](docs/sidecars.md): thumbnails and waveforms, derived once per file content.
 - [docs/viewers.md](docs/viewers.md): embedded viewers (PDF, audio, video, images, Markdown).
 - [docs/tags.md](docs/tags.md): tags, fields, and tag search.
+- [docs/graph.md](docs/graph.md): one graph across notes' links, tags and app links, built by every peer for itself.
 - [docs/rules.md](docs/rules.md): file rules, synced and run by every device (dry run first; nothing deleted).
 - [docs/sites.md](docs/sites.md): static sites from folders of Markdown (`dodeca`).
 - [docs/kache.md](docs/kache.md): Rust build caches (`kache`) shared peer-to-peer between the owner's computers.

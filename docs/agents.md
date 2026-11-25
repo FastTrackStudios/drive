@@ -98,6 +98,10 @@ Listings are paged: `offset` and `limit` in, `total`, `offset`,
 | `rules` | File rules: on or off, dry run or live, what they do, each device's last run; with `rule`, one in full. |
 | `rule_preview` | A rule's dry run per device: each file and each step, held-back steps with why. Asks for a fresh one (never live) and waits a little. |
 | `journal` | What rules did, newest first, with status and whether it can be undone. |
+| `graph_backlinks` | What points at a thing: notes linking or embedding it, things tagged with it, tasks, events and projects naming it ([graph.md](graph.md)). |
+| `graph_neighbors` | Everything within `depth` edges of a thing, either way. |
+| `graph_path` | A shortest chain of edges between two things. |
+| `graph_tag` | Everything under a tag (child tags too), Drive tags and notes' frontmatter tags. |
 
 ### Organising
 
