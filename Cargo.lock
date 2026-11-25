@@ -3429,6 +3429,7 @@ dependencies = [
  "futures",
  "iroh",
  "loro",
+ "serde",
  "tempfile",
  "tokio",
  "tracing",

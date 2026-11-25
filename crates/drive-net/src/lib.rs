@@ -98,4 +98,4 @@ pub fn mdns(endpoint: &iroh::Endpoint) -> Result<iroh_mdns_address_lookup::MdnsA
     Ok(mdns)
 }
 
-pub use iroh_mdns_address_lookup::DiscoveryEvent;
+pub use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};

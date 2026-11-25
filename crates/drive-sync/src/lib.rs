@@ -23,6 +23,7 @@
 //! With the `iroh` feature, [`net`] carries all this between devices over
 //! iroh (ALPN [`net::ALPN`]), found by mDNS nearby and through a relay.
 
+pub mod frames;
 mod link;
 mod rooms;
 mod serve;

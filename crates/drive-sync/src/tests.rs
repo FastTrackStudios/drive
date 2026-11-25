@@ -10,18 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::{Access, Hello, MemStore, Rooms, link, serve};
 
-/// An `UnboundedReceiver` as a `Stream`.
-pub(crate) struct Rx<T>(pub mpsc::UnboundedReceiver<T>);
-
-impl<T> futures::Stream for Rx<T> {
-    type Item = T;
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<T>> {
-        self.0.poll_recv(cx)
-    }
-}
+use crate::frames::Rx;
 
 fn rooms() -> Arc<Rooms> {
     Arc::new(Rooms::new(Arc::new(MemStore::default())))
@@ -303,4 +292,93 @@ async fn a_peer_refused_a_document_gets_nothing_of_it() {
         "{got:?}"
     );
     assert_eq!(got.len(), 2);
+}
+
+/// The first milestone: two devices in one process, each with its own
+/// rooms, over iroh (direct addresses, no relay), no node anywhere.
+#[cfg(feature = "iroh")]
+#[tokio::test(flavor = "multi_thread")]
+async fn two_devices_sync_over_iroh_with_no_node() {
+    use crate::net::{Net, Options, SecretKey, Settings};
+
+    let local = Settings {
+        relay: None,
+        local_only: true,
+    };
+    let start = async |rooms: &Arc<Rooms>, name: &str| {
+        Net::start(
+            rooms.clone(),
+            Options {
+                key: SecretKey::generate(),
+                settings: local.clone(),
+                mdns: false,
+                allow: Arc::new(|_| true),
+                access: all(),
+                hello: Hello {
+                    name: name.into(),
+                    token: None,
+                },
+            },
+        )
+        .await
+        .unwrap()
+    };
+    let (a, b) = (rooms(), rooms());
+    let id = "home/test:iroh";
+    let mut wa = Window::open(&a, id).await;
+    let mut wb = Window::open(&b, id).await;
+    wa.edit(id, "before", "made apart");
+    let (na, nb) = (start(&a, "A").await, start(&b, "B").await);
+    na.dial(nb.addr());
+
+    until("b has what a made before they met", async || {
+        wb.pump().await;
+        wb.get("before").as_deref() == Some("made apart")
+    })
+    .await;
+    wb.edit(id, "live", "from b");
+    until("a sees b's edit live", async || {
+        wa.pump().await;
+        wa.get("live").as_deref() == Some("from b")
+    })
+    .await;
+    assert_eq!(nb.connected(), vec![na.id()]);
+    na.shutdown().await;
+    nb.shutdown().await;
+}
+
+/// A device `allow` does not let in gets nothing.
+#[cfg(feature = "iroh")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_not_allowed_is_refused() {
+    use crate::net::{Net, Options, SecretKey, Settings};
+
+    let local = Settings {
+        relay: None,
+        local_only: true,
+    };
+    let (a, b) = (rooms(), rooms());
+    let id = "home/test:closed";
+    b.edit(id, "me", |d| {
+        d.get_map("m").insert("k", "secret").unwrap();
+    })
+    .await;
+    let mut wa = Window::open(&a, id).await;
+    let opts = |allow: crate::net::Allow| Options {
+        key: SecretKey::generate(),
+        settings: local.clone(),
+        mdns: false,
+        allow,
+        access: all(),
+        hello: Hello::default(),
+    };
+    let na = Net::start(a.clone(), opts(Arc::new(|_| true))).await.unwrap();
+    let nb = Net::start(b.clone(), opts(Arc::new(|_| false))).await.unwrap();
+    na.dial(nb.addr());
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    wa.pump().await;
+    assert_eq!(wa.get("k"), None);
+    assert!(nb.connected().is_empty());
+    na.shutdown().await;
+    nb.shutdown().await;
 }
