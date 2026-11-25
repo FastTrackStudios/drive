@@ -42,13 +42,28 @@ const NOTES: &[(&str, &str)] = &[
         "Harmony/Chords.MD",
         "Built from [[Scales|scales]]. ![[circle.png|300]] [[Basics/Scales]] [[basics/scales.md]]\n",
     ),
-    ("Harmony/index.md", "---\ntitle: Harmony index\n---\nThe index wins.\n"),
-    ("Harmony/Scales.md", "A second Scales, nearer [[Scales]] links here.\n"),
-    ("Deep/Er/Note Ü.md", "Unicode [[Note Ü]] and [up](../../Home.md).\n"),
+    (
+        "Harmony/index.md",
+        "---\ntitle: Harmony index\n---\nThe index wins.\n",
+    ),
+    (
+        "Harmony/Scales.md",
+        "A second Scales, nearer [[Scales]] links here.\n",
+    ),
+    (
+        "Deep/Er/Note Ü.md",
+        "Unicode [[Note Ü]] and [up](../../Home.md).\n",
+    ),
     ("Deep/README.md", "Deep section, [[Er]].\n"),
     ("bom.md", "\u{feff}---\ntitle: BOM\n---\nbody\n"),
-    ("crlf.md", "---\r\ntitle: CRLF\r\n---\r\nline [[Scales]]\r\n"),
-    ("broken-fm.md", "---\ntitle: [unclosed\n---\nStill [[Scales]].\n"),
+    (
+        "crlf.md",
+        "---\r\ntitle: CRLF\r\n---\r\nline [[Scales]]\r\n",
+    ),
+    (
+        "broken-fm.md",
+        "---\ntitle: [unclosed\n---\nStill [[Scales]].\n",
+    ),
     ("no-close.md", "---\ntitle: x\nno end\n"),
 ];
 

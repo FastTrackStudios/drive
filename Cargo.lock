@@ -3158,6 +3158,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "drive-graph"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "drive-kache"
 version = "0.1.0"
 dependencies = [
@@ -3282,6 +3290,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "drive-files",
+ "drive-graph",
  "loro",
  "opendal",
  "regex",

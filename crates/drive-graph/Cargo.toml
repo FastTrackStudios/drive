@@ -1,0 +1,10 @@
+[package]
+name = "drive-graph"
+description = "Drive's graph: Markdown links, tags and app links across a space, worked out by every peer from data that already syncs (a projection, never edited)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex = "1"
+serde_yaml_ng = "0.10"

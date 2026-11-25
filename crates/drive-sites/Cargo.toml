@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 drive-files = { path = "../drive-files" }
+drive-graph.workspace = true
 loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true
