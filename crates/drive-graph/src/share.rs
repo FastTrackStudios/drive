@@ -209,6 +209,91 @@ pub async fn ask_query(
         .filter(|v| !v.is_empty() && v.iter().all(|f| f.is_finite()))
 }
 
+/// Who to ask, and how: the endpoint to ask from and the devices to ask
+/// (the agent's: the space's registry; an app's on its own: the devices
+/// its door let in, and the account's directory once there is one), each
+/// given `patience` to answer.
+pub struct Askable<'a> {
+    pub endpoint: &'a Endpoint,
+    pub peers: &'a [EndpointAddr],
+    pub patience: std::time::Duration,
+}
+
+impl Askable<'_> {
+    /// The first answer of the peers, asked one after the other.
+    async fn first<T, F, Fut>(&self, mut ask: F) -> Option<T>
+    where
+        F: FnMut(EndpointAddr) -> Fut,
+        Fut: std::future::Future<Output = Option<T>>,
+    {
+        for p in self.peers {
+            if let Ok(Some(v)) = tokio::time::timeout(self.patience, ask(p.clone())).await {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    /// A peer's extract of a note's content (a sidecar's bytes, still to be
+    /// checked with `Sidecar::decode`).
+    pub async fn extract(&self, key: &str) -> Option<Vec<u8>> {
+        let ep = self.endpoint;
+        self.first(|p| async move { ask_extract(ep, &p, key).await })
+            .await
+    }
+
+    /// The query in `model`'s space, made by a peer that has the model.
+    pub async fn query(&self, model: &str, text: &str) -> Option<Vec<f32>> {
+        let ep = self.endpoint;
+        self.first(|p| async move { ask_query(ep, &p, model, text).await })
+            .await
+    }
+
+    /// The vectors of `model` (each of `dims` numbers) that `db` lacks for
+    /// the space's files with one of `extensions`, from the peers that
+    /// have them, kept in `db`. Returns how many contents got theirs.
+    ///
+    /// # Errors
+    ///
+    /// The database could not be read or written.
+    pub async fn fetch_vectors(
+        &self,
+        db: &GraphDb,
+        model: &str,
+        dims: usize,
+        extensions: &[&str],
+    ) -> crate::index::Result<usize> {
+        let missing = |have: std::collections::HashSet<String>, all: &[String]| -> Vec<String> {
+            all.iter().filter(|k| !have.contains(*k)).cloned().collect()
+        };
+        let mut all: Vec<String> = db
+            .contents_of(extensions)
+            .await?
+            .into_iter()
+            .map(|(_, k)| k)
+            .collect();
+        all.sort();
+        all.dedup();
+        let mut want = missing(db.vector_keys(model).await?, &all);
+        let mut got = 0;
+        for p in self.peers {
+            if want.is_empty() {
+                break;
+            }
+            for batch in want.chunks(MAX_KEYS) {
+                let asked = ask_vectors(self.endpoint, p, model, batch, Some(dims));
+                let Ok(Ok(v)) = tokio::time::timeout(self.patience, asked).await else {
+                    break;
+                };
+                got += v.len();
+                db.put_vectors(model, &v).await?;
+            }
+            want = missing(db.vector_keys(model).await?, &all);
+        }
+        Ok(got)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +374,47 @@ mod tests {
             Some(vec![1.0, 0.0])
         );
         assert_eq!(ask_query(&asker, &addr, "image:other@1", "red").await, None);
+
+        // The first peer that answers, after one that cannot.
+        let gone = endpoint().await.addr();
+        let peers = [gone, addr.clone()];
+        let askable = Askable {
+            endpoint: &asker,
+            peers: &peers,
+            patience: std::time::Duration::from_secs(2),
+        };
+        assert!(askable.extract("h1").await.is_some());
+        assert_eq!(
+            askable.query("image:colours@1", "red").await,
+            Some(vec![1.0, 0.0])
+        );
+        let mine = GraphDb::memory().await.unwrap();
+        let mut g = Graph::default();
+        g.nodes.insert(
+            "file:1".into(),
+            crate::graph::Node {
+                id: "file:1".into(),
+                kind: crate::graph::NodeKind::File,
+                label: "a.png".into(),
+                path: "a.png".into(),
+            },
+        );
+        g.contents.insert("file:1".into(), "k1".into());
+        mine.replace(&g).await.unwrap();
+        assert_eq!(
+            askable
+                .fetch_vectors(&mine, "image:colours@1", 2, &["png"])
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            askable
+                .fetch_vectors(&mine, "image:colours@1", 2, &["png"])
+                .await
+                .unwrap(),
+            0
+        );
         router.shutdown().await.unwrap();
     }
 }

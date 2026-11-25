@@ -47,3 +47,5 @@ drive-node = { path = "../drive-node" }
 axum = "0.8"
 tempfile = "3"
 tracing-subscriber = "0.3"
+# The graph's protocol between two apps (peers.rs).
+drive-graph = { workspace = true, features = ["share"] }

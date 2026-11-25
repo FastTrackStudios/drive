@@ -317,6 +317,7 @@ async fn two_devices_sync_over_iroh_with_no_node() {
                     name: name.into(),
                     token: None,
                 },
+                protocols: Vec::new(),
             },
         )
         .await
@@ -370,6 +371,7 @@ async fn a_device_not_allowed_is_refused() {
         allow,
         access: all(),
         hello: Hello::default(),
+        protocols: Vec::new(),
     };
     let na = Net::start(a.clone(), opts(Arc::new(|_| true)))
         .await
@@ -384,4 +386,69 @@ async fn a_device_not_allowed_is_refused() {
     assert!(nb.connected().is_empty());
     na.shutdown().await;
     nb.shutdown().await;
+}
+
+#[cfg(feature = "iroh")]
+mod another_protocol {
+    use super::*;
+
+    /// Another protocol beside documents: an echo, behind the same door.
+    #[derive(Debug)]
+    struct Echo;
+
+    impl iroh::protocol::ProtocolHandler for Echo {
+        async fn accept(
+            &self,
+            conn: iroh::endpoint::Connection,
+        ) -> Result<(), iroh::protocol::AcceptError> {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let got = recv.read_to_end(1024).await.unwrap_or_default();
+                let _ = send.write_all(&got).await;
+                let _ = send.finish();
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn another_protocol_is_spoken_behind_the_same_door() {
+        use crate::net::{Net, Options, SecretKey, Settings};
+        const ECHO: &[u8] = b"test/echo/1";
+        let local = Settings {
+            relay: None,
+            local_only: true,
+        };
+        let allowed = SecretKey::generate();
+        let allowed_id = allowed.public();
+        let opts = Options {
+            key: SecretKey::generate(),
+            settings: local.clone(),
+            mdns: false,
+            allow: Arc::new(move |id| *id == allowed_id),
+            access: all(),
+            hello: Hello::default(),
+            protocols: vec![(
+                ECHO.to_vec(),
+                Box::new(Echo) as Box<dyn iroh::protocol::DynProtocolHandler>,
+            )],
+        };
+        let net = Net::start(rooms(), opts).await.unwrap();
+        let ask = async |key: SecretKey| -> Result<Vec<u8>, String> {
+            let ep = drive_net::endpoint(key, &local, vec![]).await?;
+            let conn = ep
+                .connect(net.addr(), ECHO)
+                .await
+                .map_err(|e| e.to_string())?;
+            let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+            send.write_all(b"hello").await.map_err(|e| e.to_string())?;
+            send.finish().map_err(|e| e.to_string())?;
+            recv.read_to_end(1024).await.map_err(|e| e.to_string())
+        };
+        assert_eq!(ask(allowed).await.unwrap(), b"hello");
+        assert!(
+            ask(SecretKey::generate()).await.is_err(),
+            "refused at the door"
+        );
+        net.shutdown().await;
+    }
 }

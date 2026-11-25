@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-pub use iroh::{EndpointAddr, EndpointId, SecretKey};
+pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 
 /// How a device's endpoint reaches others.
 #[derive(Clone, Debug, Default)]

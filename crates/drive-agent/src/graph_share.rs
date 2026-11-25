@@ -52,29 +52,16 @@ fn endpoint(a: &Agent) -> Option<&iroh::Endpoint> {
     a.provider.get().map(|p| p.endpoint())
 }
 
-/// The first answer of the peers, asked one after the other.
-async fn first<T, F, Fut>(a: &Agent, mut ask: F) -> Option<T>
-where
-    F: FnMut(iroh::Endpoint, EndpointAddr) -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let ep = endpoint(a)?.clone();
-    for p in peers(a) {
-        if let Ok(Some(v)) = tokio::time::timeout(PATIENCE, ask(ep.clone(), p)).await {
-            return Some(v);
-        }
-    }
-    None
-}
-
 /// A peer's extract of a note's content (its sidecar's bytes, checked by
 /// the caller).
 pub async fn ask_extract(a: &Agent, key: &str) -> Option<Vec<u8>> {
-    first(
-        a,
-        |ep, p| async move { share::ask_extract(&ep, &p, key).await },
-    )
-    .await
+    let peers = peers(a);
+    let askable = share::Askable {
+        endpoint: endpoint(a)?,
+        peers: &peers,
+        patience: PATIENCE,
+    };
+    askable.extract(key).await
 }
 
 /// The query as `model` sees it, made by a peer that has the model.
@@ -83,10 +70,13 @@ pub async fn ask_query(
     model: &str,
     words: &str,
 ) -> Option<drive_graph::search::ImageQuery> {
-    let vector = first(a, |ep, p| async move {
-        share::ask_query(&ep, &p, model, words).await
-    })
-    .await?;
+    let peers = peers(a);
+    let askable = share::Askable {
+        endpoint: endpoint(a)?,
+        peers: &peers,
+        patience: PATIENCE,
+    };
+    let vector = askable.query(model, words).await?;
     Some(drive_graph::search::ImageQuery {
         model: model.to_string(),
         vector,
@@ -100,43 +90,26 @@ const CLIP_DIMS: usize = 512;
 /// of, from the devices that made them (when it has no CLIP itself).
 /// Returns how many images got theirs.
 pub async fn fetch_image_vectors(a: &Agent, db: &GraphDb) -> Result<usize, String> {
-    if crate::graph::image_model(&a.dir).is_some() || endpoint(a).is_none() {
+    if crate::graph::image_model(&a.dir).is_some() {
         return Ok(0);
     }
-    let model = crate::graph::CLIP_ID;
-    let have = db.vector_keys(model).await.map_err(|e| e.to_string())?;
-    let mut want: Vec<String> = db
-        .contents_of(&drive_graph::embed::IMAGE_EXTENSIONS)
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|(_, k)| k)
-        .filter(|k| !have.contains(k))
-        .collect();
-    want.sort();
-    want.dedup();
-    let mut got = 0;
-    let ep = endpoint(a).cloned().ok_or("no endpoint")?;
-    for p in peers(a) {
-        for batch in want.chunks(share::MAX_KEYS) {
-            let Ok(Ok(v)) = tokio::time::timeout(
-                PATIENCE,
-                share::ask_vectors(&ep, &p, model, batch, Some(CLIP_DIMS)),
-            )
-            .await
-            else {
-                break;
-            };
-            got += v.len();
-            db.put_vectors(model, &v).await.map_err(|e| e.to_string())?;
-        }
-        let have = db.vector_keys(model).await.map_err(|e| e.to_string())?;
-        want.retain(|k| !have.contains(k));
-        if want.is_empty() {
-            break;
-        }
+    let Some(endpoint) = endpoint(a) else {
+        return Ok(0);
+    };
+    let peers = peers(a);
+    share::Askable {
+        endpoint,
+        peers: &peers,
+        patience: PATIENCE,
     }
-    Ok(got)
+    .fetch_vectors(
+        db,
+        crate::graph::CLIP_ID,
+        CLIP_DIMS,
+        &drive_graph::embed::IMAGE_EXTENSIONS,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
