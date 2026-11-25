@@ -12,7 +12,7 @@
 //! diff), so an agent that rewrites one line does not overwrite what
 //! someone else is typing elsewhere in the page.
 
-use loro::{LoroDoc, LoroText, UpdateOptions};
+use loro::{ExportMode, Frontiers, LoroDoc, LoroText, UpdateOptions};
 
 /// A page document's id within an org, before the page's own id.
 pub const PAGE_PREFIX: &str = "drive:page:";
@@ -41,6 +41,38 @@ pub fn write(doc: &LoroDoc, new: &str) -> Result<(), String> {
     body(doc)
         .update(new, UpdateOptions::default())
         .map_err(|e| e.to_string())
+}
+
+/// The page's version now, to merge against later ([`merge_since`]).
+pub fn version(doc: &LoroDoc) -> Vec<u8> {
+    doc.state_frontiers().encode()
+}
+
+/// The text `text`, written somewhere that started from the page as it was
+/// at `version` (a file saved on disk since the last sync), merged into the
+/// page as it is now: both the page's edits since then and `text`'s stay
+/// (a three-way merge, by the CRDT itself: the edit is made on a fork at
+/// that version and imported).
+///
+/// # Errors
+///
+/// A version this page does not have, or the merge failed.
+pub fn merge_since(doc: &LoroDoc, version: &[u8], text: &str) -> Result<(), String> {
+    let base = Frontiers::decode(version).map_err(|e| e.to_string())?;
+    let since = doc
+        .frontiers_to_vv(&base)
+        .ok_or("the page does not have that version")?;
+    let fork = doc.fork_at(&base).map_err(|e| e.to_string())?;
+    // Its own peer: the fork's edit must not reuse this document's ids.
+    fork.set_peer_id(LoroDoc::new().peer_id())
+        .map_err(|e| e.to_string())?;
+    write(&fork, text)?;
+    fork.commit();
+    let edit = fork
+        .export(ExportMode::updates(&since))
+        .map_err(|e| e.to_string())?;
+    doc.import(&edit).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// A new page id: time-ordered and unique across devices.
@@ -74,5 +106,23 @@ mod tests {
             "# Scales\n\nMajor, Ionian.\n\nMinor.\n\nModes next.\n"
         );
         assert!(page_doc("home", "x").ends_with("/drive:page:x"));
+    }
+
+    #[test]
+    fn a_file_edited_since_a_version_merges_with_the_pages_edits() {
+        let d = LoroDoc::new();
+        write(&d, "# Ideas\n\nA key change.\n").unwrap();
+        d.commit();
+        let synced = version(&d);
+        // Live, in the app: a line added at the end.
+        write(&d, "# Ideas\n\nA key change.\n\nFrom the app.\n").unwrap();
+        d.commit();
+        // Meanwhile on disk (Obsidian), from the synced text: a word changed.
+        merge_since(&d, &synced, "# Ideas\n\nA key change, up a tone.\n").unwrap();
+        assert_eq!(
+            text(&d),
+            "# Ideas\n\nA key change, up a tone.\n\nFrom the app.\n"
+        );
+        assert!(merge_since(&d, b"nonsense", "x").is_err());
     }
 }

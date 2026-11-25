@@ -331,15 +331,25 @@ async fn a_page_is_a_markdown_file_on_disk_both_ways() {
     let file = folder.join("Song B/Ideas.md");
     assert_eq!(read(&file), b"# Ideas\n\nA key change.\n");
 
-    // Saved in an editor (Obsidian): the page gets the change as a diff,
-    // keeping what someone typed into the page meanwhile.
+    // Saved in an editor (Obsidian) while someone typed into the page in
+    // the app: both edits are kept, merged by the page itself, and the
+    // merged text comes back to the file.
     drive_spine::pages::write(&p.doc, "# Ideas\n\nA key change.\n\nFrom the app.\n").unwrap();
     std::fs::write(&file, b"# Ideas\n\nA key change, up a tone.\n").unwrap();
     let done = a.reconcile(&w).await.unwrap();
     assert!(done.errors.is_empty(), "{:?}", done.errors);
-    // The page changed in the Drive and on disk since the last sync: both
-    // are kept (the disk's beside it as a conflict copy), as for any file.
-    assert_eq!(done.conflicts, 1, "{done:?}");
+    assert_eq!((done.merged, done.conflicts), (1, 0), "{done:?}");
+    let merged = "# Ideas\n\nA key change, up a tone.\n\nFrom the app.\n";
+    assert_eq!(drive_spine::pages::text(&p.doc), merged);
+    assert_eq!(read(&file), merged.as_bytes());
+    assert!(
+        std::fs::read_dir(folder.join("Song B")).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("conflict")),
+        "no conflict copy"
+    );
 
     // Edited only on disk: the page follows.
     let level = a.reconcile(&w).await.unwrap();
@@ -359,6 +369,34 @@ async fn a_page_is_a_markdown_file_on_disk_both_ways() {
         read(&file),
         b"# Ideas\n\nKey change at the bridge, then out.\n"
     );
+    assert_eq!(
+        a.reconcile(&w).await.unwrap(),
+        crate::working::Reconciled::default()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_note_saved_in_an_obsidian_vault_becomes_a_page() {
+    let (a, _b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+    std::fs::create_dir_all(folder.join("Song A/.obsidian")).unwrap();
+    std::fs::write(folder.join("Song A/.obsidian/app.json"), b"{}").unwrap();
+    std::fs::write(folder.join("Song A/Chords.md"), b"# Chords\n\nG C D\n").unwrap();
+    std::fs::write(folder.join("Song B/plain.md"), b"not in a vault").unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    let page = tree::resolve(&a.files, "Studio/Songs/Song A/Chords.md")
+        .unwrap()
+        .unwrap();
+    assert!(!page.page.is_empty(), "a page");
+    let p = crate::pages::open(&a, "Studio/Songs/Song A/Chords.md")
+        .await
+        .unwrap();
+    assert_eq!(drive_spine::pages::text(&p.doc), "# Chords\n\nG C D\n");
+    let plain = tree::resolve(&a.files, "Studio/Songs/Song B/plain.md")
+        .unwrap()
+        .unwrap();
+    assert!(plain.page.is_empty(), "outside a vault, a file");
     assert_eq!(
         a.reconcile(&w).await.unwrap(),
         crate::working::Reconciled::default()

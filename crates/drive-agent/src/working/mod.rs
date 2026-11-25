@@ -32,6 +32,8 @@ pub struct Reconciled {
     pub moved: usize,
     pub trashed: usize,
     pub conflicts: usize,
+    /// Pages changed on disk and in the Drive since the last sync, merged.
+    pub merged: usize,
     pub errors: Vec<String>,
 }
 
@@ -374,9 +376,29 @@ impl Agent {
                                 hash: hash.clone(),
                                 size: d.size,
                                 mtime: d.mtime,
+                                page_at: last
+                                    .get(rel)
+                                    .map(|s| s.page_at.clone())
+                                    .unwrap_or_default(),
                             },
                         );
                     }
+                    return Ok(());
+                }
+                // A page: merged (its edits since the last sync and the
+                // file's), and the merged text written back to disk.
+                let base = self.page_base(id, last.get(rel)).await;
+                if let Some(base) = base {
+                    let (page, doc) = base.0;
+                    let text =
+                        String::from_utf8(bytes).map_err(|_| format!("{rel}: not UTF-8 text"))?;
+                    drive_spine::pages::merge_since(&doc, &base.1, &text)
+                        .map_err(|e| format!("{rel}: {e}"))?;
+                    self.commit_page(&page);
+                    let merged = hash::of_bytes(drive_spine::pages::text(&doc).as_bytes());
+                    self.down(rel, id, &merged, folder, last, before.as_ref())
+                        .await?;
+                    done.merged += 1;
                     return Ok(());
                 }
                 // Both kept: the disk's version under a conflict name (and up
@@ -421,6 +443,30 @@ impl Agent {
             }
         }
         out
+    }
+
+    /// For a page whose last sync recorded its version: the page (its id
+    /// and document) and that version, to merge a disk edit against.
+    async fn page_base(
+        &self,
+        id: &str,
+        synced: Option<&Synced>,
+    ) -> Option<((String, LoroDoc), Vec<u8>)> {
+        let base = synced
+            .map(|s| s.page_at.clone())
+            .filter(|v| !v.is_empty())?;
+        let page = tree::parse_id(id)
+            .and_then(|t| tree::entry(&self.files, t))
+            .map(|e| e.page)
+            .filter(|p| !p.is_empty())?;
+        let doc = self.page(&page).await;
+        Some(((page, doc), base))
+    }
+
+    fn commit_page(&self, page: &str) {
+        let space = self.cfg.lock().expect("cfg").space.clone();
+        self.drive
+            .commit(&drive_spine::pages::page_doc(&space, page));
     }
 
     /// A page's document.
@@ -469,6 +515,7 @@ impl Agent {
             hash: h.clone(),
             size: before.size,
             mtime: before.mtime,
+            page_at: Vec::new(),
         };
         let (dir, name) = split(rel);
         let parent = ensure_tree_dir(&self.files, root, dir)?;
@@ -486,6 +533,13 @@ impl Agent {
                 None => match tree::lookup(&self.files, Some(parent), name) {
                     Some(e) if !e.dir => e.id,
                     Some(_) => return Err(format!("{rel} is a folder in the Drive")),
+                    // A new note in an Obsidian vault becomes a page, so it
+                    // is edited live everywhere from now on.
+                    None if is_vault_note(&path, &bytes) => {
+                        let page = drive_spine::pages::new_id(&self.files, drive_files::now_ms());
+                        tree::create_page(&self.files, Some(parent), name, &page)
+                            .map_err(|e| e.to_string())?
+                    }
                     None => tree::create_file(&self.files, Some(parent), name)
                         .map_err(|e| e.to_string())?,
                 },
@@ -500,12 +554,22 @@ impl Agent {
             let text = String::from_utf8(bytes).map_err(|_| format!("{rel}: not UTF-8 text"))?;
             let doc = self.page(&page).await;
             if drive_spine::pages::text(&doc) != text {
-                drive_spine::pages::write(&doc, &text).map_err(|e| format!("{rel}: {e}"))?;
-                let space = self.cfg.lock().expect("cfg").space.clone();
-                self.drive
-                    .commit(&drive_spine::pages::page_doc(&space, &page));
+                // Against the version the file was last synced from, when
+                // known: whatever reached the page since stays.
+                match last
+                    .get(rel)
+                    .map(|s| s.page_at.as_slice())
+                    .filter(|v| !v.is_empty())
+                {
+                    Some(base) => drive_spine::pages::merge_since(&doc, base, &text),
+                    None => drive_spine::pages::write(&doc, &text),
+                }
+                .map_err(|e| format!("{rel}: {e}"))?;
+                self.commit_page(&page);
             }
-            last.insert(rel.to_string(), record(&tree::id_string(tid)));
+            let mut synced = record(&tree::id_string(tid));
+            synced.page_at = drive_spine::pages::version(&doc);
+            last.insert(rel.to_string(), synced);
             return Ok(());
         }
         let current = tree::entry(&self.files, tid)
@@ -550,8 +614,11 @@ impl Agent {
             .and_then(|t| tree::entry(&self.files, t))
             .map(|e| e.page)
             .unwrap_or_default();
+        let mut page_at = Vec::new();
         let bytes = if !page.is_empty() {
-            drive_spine::pages::text(&self.page(&page).await).into_bytes()
+            let doc = self.page(&page).await;
+            page_at = drive_spine::pages::version(&doc);
+            drive_spine::pages::text(&doc).into_bytes()
         } else if h.is_empty() {
             Vec::new()
         } else {
@@ -585,6 +652,7 @@ impl Agent {
                         hash: h.to_string(),
                         size: d.size,
                         mtime: d.mtime,
+                        page_at,
                     },
                 );
             }
@@ -620,6 +688,19 @@ fn disk_now(path: &Path) -> Option<OnDisk> {
         size: md.len(),
         mtime: mtime_ms(&md),
     })
+}
+
+/// A Markdown note (UTF-8 text, `.md`) in an Obsidian vault: a folder at
+/// or above it holds `.obsidian/`.
+fn is_vault_note(path: &Path, bytes: &[u8]) -> bool {
+    let md = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    md && std::str::from_utf8(bytes).is_ok()
+        && path
+            .ancestors()
+            .skip(1)
+            .any(|d| d.join(".obsidian").is_dir())
 }
 
 /// A tree file's hash now ("" if it is not a file).
