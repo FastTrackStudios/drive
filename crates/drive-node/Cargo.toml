@@ -9,6 +9,7 @@ license.workspace = true
 drive-proto.workspace = true
 drive-files = { path = "../drive-files" }
 drive-transfer = { path = "../drive-transfer" }
+drive-sync = { path = "../drive-sync" }
 drive-spine.workspace = true
 drive-rules.workspace = true
 drive-view = { workspace = true, features = ["edit"] }

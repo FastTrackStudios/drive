@@ -19,7 +19,7 @@ async fn rooms(dir: &std::path::Path) -> Arc<Rooms> {
 }
 
 async fn open_rooms(rooms: &Rooms) -> usize {
-    rooms.rooms.lock().await.len()
+    rooms.sync.loaded().await
 }
 
 #[tokio::test]

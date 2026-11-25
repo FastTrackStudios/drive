@@ -1,0 +1,25 @@
+[package]
+name = "drive-sync"
+description = "Drive's document sync, over any transport: rooms that answer joins by version vector, fan out updates and presence, and link to other peers; backed by a store of snapshots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Peer-to-peer over iroh (ALPN `drive/sync/1`): an endpoint per device,
+# mDNS on the local network, a relay for everything else.
+iroh = ["dep:iroh", "dep:drive-net"]
+
+[dependencies]
+drive-proto.workspace = true
+drive-spine.workspace = true
+loro.workspace = true
+futures = "0.3"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt", "fs", "io-util"] }
+tracing = "0.1"
+iroh = { version = "1.5", default-features = false, optional = true }
+drive-net = { path = "../drive-net", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"

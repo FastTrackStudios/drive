@@ -1,67 +1,54 @@
 //! Rooms: each open document, the peers that have it open, and their
-//! presence. The node is one more peer of every document: it merges what
-//! it is sent, keeps it, and passes it on; it never decides who wins.
+//! presence (`drive-sync`'s, which an app runs too), and what only a node
+//! does on top: who may open what (the issuer's orgs), and the agents
+//! connected to it. The node is one more peer of every document: it
+//! merges what it is sent, keeps it, and passes it on; it never decides
+//! who wins.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
-use drive_proto::{DocId, DocInfo, Peer, ToClient, ToNode};
+use drive_proto::{DocId, Peer, ToClient, ToNode};
 use futures::{SinkExt, StreamExt};
-use loro::{ExportMode, LoroDoc, VersionVector};
+use loro::LoroDoc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::store::Store;
 
-/// One open document.
-struct Room {
-    doc: LoroDoc,
-    /// Who has it open: their outbox.
-    peers: HashMap<Peer, Outbox>,
-    /// Their latest presence: (name, json).
-    presence: HashMap<Peer, (String, String)>,
-    /// Bumped on every edit/update; saved tracks the latest flushed revision.
-    dirty: u64,
-    saved: u64,
-    /// When it was last read, changed or joined: a room nobody has open,
-    /// with nothing left to save, goes once it has been idle for [`IDLE`].
-    used: Instant,
-}
-
-/// How long a room nobody has open stays loaded after its last use.
-const IDLE: Duration = Duration::from_secs(60);
-
-impl Room {
-    fn from_snapshot(id: &str, snapshot: Option<Vec<u8>>) -> Room {
-        let doc = LoroDoc::new();
-        if let Some(snapshot) = snapshot
-            && let Err(e) = doc.import(&snapshot)
-        {
-            tracing::warn!(doc.id = %id, error = %e, "a stored snapshot did not import");
-        }
-        Room {
-            doc,
-            peers: HashMap::new(),
-            presence: HashMap::new(),
-            dirty: 0,
-            saved: 0,
-            used: Instant::now(),
-        }
-    }
-}
+pub use drive_sync::IDLE;
 
 type Outbox = mpsc::UnboundedSender<ToClient>;
 type PendingFetch = (Peer, oneshot::Sender<Result<String, String>>);
 type PendingBrowse = (Peer, oneshot::Sender<Result<drive_proto::Browsed, String>>);
 
+/// The node's database as `drive-sync`'s store of snapshots.
+struct Docs(Arc<Store>);
+
+impl drive_sync::Store for Docs {
+    fn load<'a>(&'a self, id: &'a str) -> drive_sync::BoxFuture<'a, Result<Option<Vec<u8>>, String>> {
+        Box::pin(async move { self.0.load(id).await.map_err(|e| e.to_string()) })
+    }
+    fn save<'a>(&'a self, id: &'a str, snapshot: Vec<u8>) -> drive_sync::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.0.save(id, snapshot).await.map_err(|e| e.to_string()) })
+    }
+    fn list(&self) -> drive_sync::BoxFuture<'_, Result<Vec<(DocId, u64)>, String>> {
+        Box::pin(async move {
+            self.0
+                .list()
+                .await
+                .map(|l| l.as_ref().clone())
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
 pub struct Rooms {
-    rooms: Mutex<HashMap<DocId, Room>>,
-    /// Serialises flush_loop and flush_now so an older snapshot never overwrites a newer one.
-    flushing: Mutex<()>,
-    pub store: Store,
-    next_peer: AtomicU64,
+    /// The documents, their peers and presence.
+    pub sync: drive_sync::Rooms,
+    pub store: Arc<Store>,
     /// Connected agents, by (space, device): their peer and outbox.
     agents: Mutex<HashMap<(String, String), (Peer, Outbox)>>,
     /// Fetches waiting for an agent's answer: (expected agent peer, sender).
@@ -91,12 +78,11 @@ pub enum FetchError {
 
 impl Rooms {
     pub fn new(store: Store, auth: crate::auth::Auth) -> Rooms {
+        let store = Arc::new(store);
         Rooms {
             auth,
-            rooms: Mutex::new(HashMap::new()),
-            flushing: Mutex::new(()),
+            sync: drive_sync::Rooms::new(Arc::new(Docs(store.clone()))),
             store,
-            next_peer: AtomicU64::new(1),
             agents: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             browsing: Mutex::new(HashMap::new()),
@@ -238,31 +224,12 @@ impl Rooms {
     /// share link): the edit is committed under `author`, saved, and sent
     /// to everyone who has the document open.
     pub async fn edit<T>(&self, id: &str, author: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
-        let mut rooms = self.rooms.lock().await;
-        let room = self.ensure(&mut rooms, id).await;
-        let before = room.doc.oplog_vv();
-        drive_spine::history::prepare(&room.doc, author);
-        let out = f(&room.doc);
-        drive_spine::history::commit(&room.doc, author);
-        if let Ok(bytes) = room.doc.export(ExportMode::updates(&before))
-            && !bytes.is_empty()
-        {
-            room.dirty += 1;
-            for o in room.peers.values() {
-                let _ = o.send(ToClient::Update {
-                    doc: id.to_string(),
-                    bytes: bytes.clone(),
-                });
-            }
-        }
-        out
+        self.sync.edit(id, author, f).await
     }
 
     /// Read a document as the node holds it (loading it if needed).
     pub async fn read<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
-        let mut rooms = self.rooms.lock().await;
-        let room = self.ensure(&mut rooms, id).await;
-        f(&room.doc)
+        self.sync.read(id, f).await
     }
 
     /// Read a document as [`Rooms::read`] does, except that one the store
@@ -270,42 +237,13 @@ impl Rooms {
     /// ask for without signing in (a site, a share link), so made-up ids
     /// cannot fill the node's memory with rooms.
     pub async fn peek<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
-        let mut rooms = self.rooms.lock().await;
-        if !rooms.contains_key(id) {
-            match self.store.load(id).await {
-                Ok(Some(snapshot)) => {
-                    rooms.insert(id.to_string(), Room::from_snapshot(id, Some(snapshot)));
-                }
-                Ok(None) => return f(&LoroDoc::new()),
-                Err(e) => {
-                    tracing::warn!(doc.id = %id, error = %e, "the store could not load a document");
-                    return f(&LoroDoc::new());
-                }
-            }
-        }
-        let room = self.ensure(&mut rooms, id).await;
-        f(&room.doc)
+        self.sync.peek(id, f).await
     }
 
     /// Read a document without opening a room for it: its room if it has
     /// one open, else its stored snapshot (empty when there is none).
     async fn inspect<T>(&self, id: &str, f: impl FnOnce(&LoroDoc) -> T) -> T {
-        if let Some(room) = self.rooms.lock().await.get(id) {
-            return f(&room.doc);
-        }
-        let doc = LoroDoc::new();
-        match self.store.load(id).await {
-            Ok(Some(snapshot)) => {
-                if let Err(e) = doc.import(&snapshot) {
-                    tracing::warn!(doc.id = %id, error = %e, "a stored snapshot did not import");
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(doc.id = %id, error = %e, "the store could not load a document")
-            }
-        }
-        f(&doc)
+        self.sync.inspect(id, f).await
     }
 
     /// Which devices have an agent connected in `space`.
@@ -442,73 +380,24 @@ impl Rooms {
         }
     }
 
-    /// The room for a document, loaded from the store the first time.
-    async fn ensure<'a>(&self, rooms: &'a mut HashMap<DocId, Room>, id: &str) -> &'a mut Room {
-        if !rooms.contains_key(id) {
-            let snapshot = match self.store.load(id).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(doc.id = %id, error = %e, "the store could not load a document");
-                    None
-                }
-            };
-            rooms.insert(id.to_string(), Room::from_snapshot(id, snapshot));
-        }
-        let room = rooms.get_mut(id).expect("just inserted");
-        room.used = Instant::now();
-        room
-    }
-
     /// Save every changed document, every two seconds.
     pub async fn flush_loop(self: Arc<Self>) {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            self.flush().await;
-            self.evict_idle(IDLE).await;
+            self.sync.flush_now().await;
+            self.sync.evict_idle(IDLE).await;
         }
     }
 
     /// Let go of every room nobody has open, with nothing left to save,
     /// unused for `idle`: it is loaded again from the store when asked for.
     pub async fn evict_idle(&self, idle: Duration) {
-        self.rooms
-            .lock()
-            .await
-            .retain(|_, r| !r.peers.is_empty() || r.dirty > r.saved || r.used.elapsed() < idle);
+        self.sync.evict_idle(idle).await;
     }
 
     /// Save every changed document now (before a backup).
     pub async fn flush_now(&self) {
-        self.flush().await;
-    }
-
-    async fn flush(&self) {
-        let _guard = self.flushing.lock().await;
-        let dirty: Vec<(DocId, u64, Vec<u8>)> = {
-            let rooms = self.rooms.lock().await;
-            rooms
-                .iter()
-                .filter(|(_, r)| r.dirty > r.saved)
-                .filter_map(|(id, r)| {
-                    r.doc
-                        .export(ExportMode::Snapshot)
-                        .ok()
-                        .map(|s| (id.clone(), r.dirty, s))
-                })
-                .collect()
-        };
-        for (id, rev, snapshot) in dirty {
-            match self.store.save(&id, snapshot).await {
-                Ok(()) => {
-                    if let Some(r) = self.rooms.lock().await.get_mut(&id) {
-                        r.saved = r.saved.max(rev);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(doc.id = %id, error = %e, "a document did not save");
-                }
-            }
-        }
+        self.sync.flush_now().await;
     }
 
     async fn handle(
@@ -547,69 +436,14 @@ impl Rooms {
                 doc: id,
                 version_vector,
             } => {
-                let mut rooms = self.rooms.lock().await;
-                let room = self.ensure(&mut rooms, &id).await;
-                let theirs = VersionVector::decode(&version_vector).unwrap_or_default();
-                let bytes = room
-                    .doc
-                    .export(ExportMode::updates(&theirs))
-                    .unwrap_or_default();
-                let _ = out.send(ToClient::Synced {
-                    doc: id.clone(),
-                    bytes,
-                    version_vector: room.doc.oplog_vv().encode(),
-                });
-                for (p, (n, json)) in &room.presence {
-                    let _ = out.send(ToClient::Presence {
-                        doc: id.clone(),
-                        peer: *p,
-                        name: n.clone(),
-                        json: Some(json.clone()),
-                    });
-                }
-                room.peers.insert(peer, out.clone());
+                self.sync.join(peer, out, &id, &version_vector).await;
                 joined.insert(id);
             }
             ToNode::Update { doc: id, bytes } => {
-                let mut rooms = self.rooms.lock().await;
-                let room = self.ensure(&mut rooms, &id).await;
-                match room.doc.import(&bytes) {
-                    Ok(_) => {
-                        room.dirty += 1;
-                        for (p, o) in &room.peers {
-                            if *p != peer {
-                                let _ = o.send(ToClient::Update {
-                                    doc: id.clone(),
-                                    bytes: bytes.clone(),
-                                });
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(doc.id = %id, peer, error = %e, "an update did not import");
-                        let _ = out.send(ToClient::Error {
-                            message: format!("update refused: {e}"),
-                        });
-                    }
-                }
+                self.sync.update(peer, Some(out), &id, &bytes).await;
             }
             ToNode::Presence { doc: id, json } => {
-                let mut rooms = self.rooms.lock().await;
-                if let Some(room) = rooms.get_mut(&id)
-                    && room.peers.contains_key(&peer)
-                {
-                    room.presence.insert(peer, (name.to_string(), json.clone()));
-                    for (p, o) in &room.peers {
-                        if *p != peer {
-                            let _ = o.send(ToClient::Presence {
-                                doc: id.clone(),
-                                peer,
-                                name: name.to_string(),
-                                json: Some(json.clone()),
-                            });
-                        }
-                    }
-                }
+                self.sync.presence(peer, peer, name, &id, Some(json)).await;
             }
             ToNode::Agent { space, device } => {
                 tracing::info!(agent.space = %space, agent.device = %device, peer, "an agent connected");
@@ -642,39 +476,7 @@ impl Rooms {
                 joined.remove(&id);
             }
             ToNode::List { prefix } => {
-                let open: HashMap<DocId, u32> = {
-                    let rooms = self.rooms.lock().await;
-                    rooms
-                        .iter()
-                        .map(|(id, r)| (id.clone(), r.peers.len() as u32))
-                        .collect()
-                };
-                // `*/studio:` lists that prefix in every org.
-                let matches = |id: &str| match prefix.strip_prefix("*/") {
-                    Some(rest) => id.split_once('/').is_some_and(|(_, r)| r.starts_with(rest)),
-                    None => id.starts_with(&prefix),
-                };
-                let mut docs: Vec<DocInfo> = match self.store.list().await {
-                    Ok(list) => list
-                        .iter()
-                        .filter(|(id, _)| matches(id))
-                        .map(|(id, bytes)| DocInfo {
-                            peers: open.get(id).copied().unwrap_or(0),
-                            id: id.clone(),
-                            bytes: *bytes,
-                        })
-                        .collect(),
-                    Err(_) => Vec::new(),
-                };
-                for (id, peers) in open {
-                    if matches(&id) && !docs.iter().any(|d| d.id == id) {
-                        docs.push(DocInfo {
-                            id,
-                            peers,
-                            bytes: 0,
-                        });
-                    }
-                }
+                let mut docs = self.sync.list(&prefix).await;
                 if !who.all {
                     // Another org's registry is read once per listing, and
                     // without opening its room (a listing runs every few
@@ -712,20 +514,7 @@ impl Rooms {
     }
 
     async fn leave(&self, peer: Peer, name: &str, id: &str) {
-        let mut rooms = self.rooms.lock().await;
-        if let Some(room) = rooms.get_mut(id) {
-            room.peers.remove(&peer);
-            if room.presence.remove(&peer).is_some() {
-                for o in room.peers.values() {
-                    let _ = o.send(ToClient::Presence {
-                        doc: id.to_string(),
-                        peer,
-                        name: name.to_string(),
-                        json: None,
-                    });
-                }
-            }
-        }
+        self.sync.leave(peer, name, id).await;
     }
 }
 
@@ -776,7 +565,7 @@ pub(crate) async fn session(
     local: bool,
     recheck: Duration,
 ) {
-    let peer = rooms.next_peer.fetch_add(1, Ordering::Relaxed);
+    let peer = rooms.sync.new_peer(None);
     let mut name = String::from("Guest");
     let mut who: Option<crate::auth::Principal> = None;
     let mut token: Option<String> = None;
@@ -861,6 +650,7 @@ pub(crate) async fn session(
         rooms.leave(peer, &name, &id).await;
     }
     rooms.agents.lock().await.retain(|_, (p, _)| *p != peer);
+    rooms.sync.forget_peer(peer);
 }
 
 #[cfg(test)]

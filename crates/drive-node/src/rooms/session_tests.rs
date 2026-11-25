@@ -106,13 +106,7 @@ impl Client {
 }
 
 async fn peers_of(rooms: &Rooms, doc: &str) -> usize {
-    rooms
-        .rooms
-        .lock()
-        .await
-        .get(doc)
-        .map(|r| r.peers.len())
-        .unwrap_or(0)
+    rooms.sync.peers_in(doc).await
 }
 
 #[tokio::test]
