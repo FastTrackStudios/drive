@@ -17,18 +17,18 @@
 //!   meaning and the graph, fused) and the pass that embeds new texts.
 //! - [`refresh`]: bringing a peer's graph up to date, the same on every peer.
 
+pub mod adopt_tags;
 #[cfg(feature = "turso")]
 pub mod db;
-pub mod adopt_tags;
-pub mod extract;
 #[cfg(feature = "embed")]
 pub mod embed;
+pub mod extract;
 pub mod graph;
 pub mod index;
 pub mod markdown;
 #[cfg(feature = "turso")]
 pub mod refresh;
+pub mod resolve;
 #[cfg(all(feature = "turso", feature = "embed"))]
 pub mod search;
-pub mod resolve;
 pub mod space;
