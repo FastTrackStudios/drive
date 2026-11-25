@@ -444,38 +444,140 @@ async fn in_tx(
     }
 }
 
+/// Write `g` over the graph in the tables: only the rows that differ
+/// (a graph made again after one note changed writes that note's rows).
 async fn write_graph(conn: &turso::Connection, g: &Graph) -> turso::Result<()> {
-    for table in ["nodes", "edges", "aliases", "texts"] {
-        conn.execute(&format!("DELETE FROM {table}"), ()).await?;
-    }
-    let nodes: Vec<Vec<Value>> = g
+    let nodes: Vec<Vec<String>> = g
         .nodes
         .values()
-        .map(|n| vec![t(&n.id), t(n.kind.id()), t(&n.label), t(&n.path)])
+        .map(|n| {
+            vec![
+                n.id.clone(),
+                n.kind.id().into(),
+                n.label.clone(),
+                n.path.clone(),
+            ]
+        })
         .collect();
-    insert(conn, "nodes (id, kind, label, path)", &nodes).await?;
-    let edges: Vec<Vec<Value>> = g
+    let edges: Vec<Vec<String>> = g
         .edges
         .iter()
         .map(|e| {
             vec![
-                t(&e.src),
-                t(&e.dst),
-                t(e.kind.id()),
-                t(&e.raw),
-                t(&e.anchor),
+                e.src.clone(),
+                e.dst.clone(),
+                e.kind.id().into(),
+                e.raw.clone(),
+                e.anchor.clone(),
             ]
         })
         .collect();
-    insert(conn, "edges (src, dst, kind, raw, anchor)", &edges).await?;
-    let aliases: Vec<Vec<Value>> = g.aliases.iter().map(|(n, id)| vec![t(n), t(id)]).collect();
-    insert(conn, "aliases (name, id)", &aliases).await?;
-    let texts: Vec<Vec<Value>> = g
+    let aliases: Vec<Vec<String>> = g
+        .aliases
+        .iter()
+        .map(|(n, id)| vec![n.clone(), id.clone()])
+        .collect();
+    // Texts are compared by their key (the text's hash), not the text.
+    let texts: Vec<Vec<String>> = g
         .texts
         .iter()
-        .map(|(id, x)| vec![t(id), t(&text_key(x)), t(x)])
+        .map(|(id, x)| vec![id.clone(), text_key(x), x.clone()])
         .collect();
-    insert(conn, "texts (id, key, text)", &texts).await
+    sync_rows(conn, &Table::NODES, &nodes).await?;
+    sync_rows(conn, &Table::EDGES, &edges).await?;
+    sync_rows(conn, &Table::ALIASES, &aliases).await?;
+    sync_rows(conn, &Table::TEXTS, &texts).await
+}
+
+/// A table as [`sync_rows`] writes it.
+struct Table {
+    name: &'static str,
+    /// Every column, in insert order.
+    columns: &'static [&'static str],
+    /// How many leading columns tell rows apart (and are compared).
+    compared: usize,
+    /// How many leading columns a delete matches on.
+    delete_by: usize,
+}
+
+impl Table {
+    const NODES: Table = Table {
+        name: "nodes",
+        columns: &["id", "kind", "label", "path"],
+        compared: 4,
+        delete_by: 1,
+    };
+    const EDGES: Table = Table {
+        name: "edges",
+        columns: &["src", "dst", "kind", "raw", "anchor"],
+        compared: 5,
+        delete_by: 5,
+    };
+    const ALIASES: Table = Table {
+        name: "aliases",
+        columns: &["name", "id"],
+        compared: 2,
+        delete_by: 2,
+    };
+    const TEXTS: Table = Table {
+        name: "texts",
+        columns: &["id", "key", "text"],
+        compared: 2,
+        delete_by: 1,
+    };
+}
+
+/// Make `table` hold exactly `rows`: the rows there that are not wanted
+/// deleted, the wanted ones not there inserted.
+async fn sync_rows(
+    conn: &turso::Connection,
+    table: &Table,
+    rows: &[Vec<String>],
+) -> turso::Result<()> {
+    use std::collections::HashSet;
+    let cmp = &table.columns[..table.compared];
+    let mut have: HashSet<Vec<String>> = HashSet::new();
+    let mut q = conn
+        .query(
+            &format!("SELECT {} FROM {}", cmp.join(", "), table.name),
+            (),
+        )
+        .await?;
+    while let Some(row) = q.next().await? {
+        let mut r = Vec::with_capacity(cmp.len());
+        for i in 0..cmp.len() {
+            r.push(text(row.get_value(i)?));
+        }
+        have.insert(r);
+    }
+    drop(q);
+    let want: HashSet<Vec<String>> = rows.iter().map(|r| r[..table.compared].to_vec()).collect();
+    let by = &table.columns[..table.delete_by];
+    let condition = by
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{c} = ?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    for gone in have.iter().filter(|r| !want.contains(*r)) {
+        let params: Vec<Value> = gone[..table.delete_by].iter().map(|v| t(v)).collect();
+        conn.execute(
+            &format!("DELETE FROM {} WHERE {condition}", table.name),
+            params,
+        )
+        .await?;
+    }
+    let new: Vec<Vec<Value>> = rows
+        .iter()
+        .filter(|r| !have.contains(&r[..table.compared]))
+        .map(|r| r.iter().map(|v| t(v)).collect())
+        .collect();
+    insert(
+        conn,
+        &format!("{} ({})", table.name, table.columns.join(", ")),
+        &new,
+    )
+    .await
 }
 
 /// Rows into `table (columns)`, [`ROWS`] an `INSERT`.
