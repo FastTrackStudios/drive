@@ -3163,10 +3163,13 @@ version = "0.1.0"
 dependencies = [
  "drive-files",
  "drive-spine",
+ "loro",
  "regex",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "tokio",
+ "turso",
 ]
 
 [[package]]

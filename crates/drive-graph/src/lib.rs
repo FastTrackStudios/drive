@@ -6,8 +6,15 @@
 //! - [`extract`]: what one Markdown file says (links, embeds, aliases,
 //!   headings, tags), kept by content hash.
 //! - [`space`]: what a link names across the whole space.
+//! - [`graph`]: the nodes and edges, built from what the space syncs.
+//! - [`index`]: asking it (backlinks, neighbours, paths, tags), in memory
+//!   or (feature `turso`) in a peer's own database ([`db`]).
 
+#[cfg(feature = "turso")]
+pub mod db;
 pub mod extract;
+pub mod graph;
+pub mod index;
 pub mod markdown;
 pub mod resolve;
 pub mod space;
