@@ -49,6 +49,9 @@ pub struct PeerOptions {
     pub allow: Option<Allow>,
     /// A node to keep copies on too (`wss://host/sync`): one more peer.
     pub node: Option<String>,
+    /// Other protocols this device's endpoint speaks, behind the same door
+    /// as its documents: the graph's (`drive_graph::share::protocol`).
+    pub protocols: Vec<drive_sync::net::Protocol>,
 }
 
 impl Default for PeerOptions {
@@ -60,6 +63,7 @@ impl Default for PeerOptions {
             peers: Vec::new(),
             allow: None,
             node: None,
+            protocols: Vec::new(),
         }
     }
 }
@@ -134,6 +138,7 @@ impl Peers {
                         allow,
                         access: all,
                         hello,
+                        protocols: opts.protocols,
                     },
                 )
                 .await
@@ -185,6 +190,12 @@ impl Peers {
     /// Why its endpoint did not start, if it did not.
     pub fn error(&self) -> Option<String> {
         lock(&self.0.error).clone()
+    }
+
+    /// This device's endpoint, once it has started: to ask the connected
+    /// devices over another protocol (the graph's).
+    pub fn endpoint(&self) -> Option<drive_net::Endpoint> {
+        self.0.net.get().map(|n| n.endpoint().clone())
     }
 
     /// The devices connected now.
@@ -412,6 +423,54 @@ mod tests {
         })
         .await;
         assert_eq!(pb.connected(), vec![pa.id().unwrap()]);
+    }
+
+    /// Apps on their own hand each other the graph's derived data: one
+    /// mounts `drive/graph/1` beside its documents, the other asks the
+    /// devices it is connected to.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_apps_hand_each_other_the_graphs_data() {
+        use drive_graph::db::GraphDb;
+        use drive_graph::extract::{Sidecar, extract};
+        use drive_graph::share;
+        crate::tests::copies();
+        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let made = std::sync::Arc::new(GraphDb::memory().await.unwrap());
+        made.put_extracts(&[("h1".into(), extract("[[Elsewhere]]"))])
+            .await
+            .unwrap();
+        let opts = PeerOptions {
+            dir: Some(da.path().to_path_buf()),
+            settings: Settings {
+                relay: None,
+                local_only: true,
+            },
+            mdns: false,
+            protocols: vec![share::protocol(share::Answerer {
+                db: made,
+                images: None,
+            })],
+            ..Default::default()
+        }
+        .trusting_the_network();
+        let (_a, _ea, pa) = Drive::peer_to_peer(opts, None);
+        let addr = up(&pa).await;
+        let (_b, _eb, pb) = device(db.path(), vec![addr]);
+        up(&pb).await;
+        until("connected", || !pb.connected().is_empty()).await;
+
+        let endpoint = pb.endpoint().unwrap();
+        let peers: Vec<EndpointAddr> = pb.connected().into_iter().map(EndpointAddr::new).collect();
+        let askable = share::Askable {
+            endpoint: &endpoint,
+            peers: &peers,
+            patience: Duration::from_secs(4),
+        };
+        let bytes = askable.extract("h1").await.expect("an answer");
+        assert_eq!(
+            Sidecar::decode(&bytes, "h1").unwrap(),
+            extract("[[Elsewhere]]")
+        );
     }
 
     /// A node is one more peer: what an app makes reaches it, and a client

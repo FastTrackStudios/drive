@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use iroh::endpoint::{Accepting, Connection};
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 
 pub use drive_net::{EndpointAddr, EndpointId, SecretKey, Settings};
 
@@ -27,6 +27,11 @@ pub const ALPN: &[u8] = b"drive/sync/1";
 
 /// Who may connect, by endpoint id.
 pub type Allow = Arc<dyn Fn(&EndpointId) -> bool + Send + Sync>;
+
+/// Another protocol the endpoint speaks beside documents (its ALPN and
+/// handler), behind the same door: the graph's derived data
+/// (`drive_graph::share`).
+pub type Protocol = (Vec<u8>, Box<dyn DynProtocolHandler>);
 
 /// How a device takes part.
 pub struct Options {
@@ -42,6 +47,8 @@ pub struct Options {
     pub access: Access,
     /// Who this device says it is.
     pub hello: Hello,
+    /// Other protocols to speak, each behind the same door (`allow`).
+    pub protocols: Vec<Protocol>,
 }
 
 /// This device on the network.
@@ -88,6 +95,37 @@ fn refuse(conn: &Connection) {
         "a device that is not allowed connected for documents"
     );
     conn.close(1u32.into(), b"not allowed");
+}
+
+/// Another protocol behind the door: only devices `allow` lets in.
+struct Gate {
+    inner: Box<dyn DynProtocolHandler>,
+    allow: Allow,
+}
+
+impl std::fmt::Debug for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("drive-sync gate")
+    }
+}
+
+impl ProtocolHandler for Gate {
+    async fn on_accepting(&self, accepting: Accepting) -> Result<Connection, AcceptError> {
+        let conn = accepting.await?;
+        if !(self.allow)(&conn.remote_id()) {
+            refuse(&conn);
+            return Err(AcceptError::from_err(std::io::Error::other("not allowed")));
+        }
+        Ok(conn)
+    }
+
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        self.inner.accept(conn).await
+    }
+
+    async fn shutdown(&self) {
+        self.inner.shutdown().await
+    }
 }
 
 impl ProtocolHandler for Handler {
@@ -157,7 +195,9 @@ async fn run(inner: Arc<Inner>, conn: Connection) {
 impl Net {
     /// Bring this device onto the network, answering from `rooms`.
     pub async fn start(rooms: Arc<Rooms>, opts: Options) -> Result<Net, String> {
-        let endpoint = drive_net::endpoint(opts.key, &opts.settings, vec![ALPN.to_vec()]).await?;
+        let mut alpns = vec![ALPN.to_vec()];
+        alpns.extend(opts.protocols.iter().map(|(a, _)| a.clone()));
+        let endpoint = drive_net::endpoint(opts.key, &opts.settings, alpns).await?;
         let mdns = if opts.mdns && !opts.settings.local_only {
             match drive_net::mdns(&endpoint) {
                 Ok(m) => Some(m),
@@ -169,10 +209,24 @@ impl Net {
         } else {
             None
         };
+        let allow = opts.allow.clone();
+        let protocols = opts.protocols;
         let inner = Arc::new_cyclic(|weak: &Weak<Inner>| Inner {
             rooms,
-            router: Router::builder(endpoint)
-                .accept(ALPN, Handler(weak.clone()))
+            router: protocols
+                .into_iter()
+                .fold(
+                    Router::builder(endpoint).accept(ALPN, Handler(weak.clone())),
+                    |r, (alpn, inner)| {
+                        r.accept(
+                            alpn,
+                            Gate {
+                                inner,
+                                allow: allow.clone(),
+                            },
+                        )
+                    },
+                )
                 .spawn(),
             allow: opts.allow,
             access: opts.access,

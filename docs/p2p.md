@@ -62,3 +62,7 @@ is not let in is refused at the handshake, both ways.
   account's directory from drive#183), a relay for everything else.
 - **Presence** rides the same connection (`ToNode::Presence` frames): who
   is here and what they are doing reach every directly connected device.
+- **Other protocols** can share the endpoint (`PeerOptions::protocols`),
+  each behind the same door as the documents: the graph's derived data
+  (`drive/graph/1`, docs/graph.md). `Peers::endpoint` asks the connected
+  devices over them.

@@ -187,6 +187,29 @@ embedded, without the 600 MB model, and with the battleship off it still
 has the vectors it took (only the query needs a device with CLIP on).
 Text vectors are not handed over: every peer makes them in microseconds.
 
+**Who is asked** is the host's to say (`share::Askable`: an endpoint, the
+devices to ask, how long each gets):
+
+| The engine runs in | It answers on | It asks |
+|---|---|---|
+| the `drive` agent | its files' endpoint (`drive-transfer`), behind the door of the space's devices | the space's devices with an endpoint in the registry |
+| an app on its own (Season, Studio; docs/p2p.md) | its documents' endpoint (`drive-sync`): `PeerOptions::protocols`, behind the same door as its documents | the devices it is connected to (`Peers::connected`, asked with `Peers::endpoint`); the account's devices from fts-auth once the directory is there (drive#183) |
+
+An app that finds Drive on its device syncs through it, and the agent's
+graph does this work for both.
+
+```rust
+// An app on its own: answer from its graph, ask the devices it is connected to.
+let opts = PeerOptions {
+    protocols: vec![drive_graph::share::protocol(share::Answerer { db: graph.clone(), images: None })],
+    ..Default::default()
+};
+// later
+let peers: Vec<EndpointAddr> = p.connected().into_iter().map(EndpointAddr::new).collect();
+let ask = share::Askable { endpoint: &p.endpoint()?, peers: &peers, patience: Duration::from_secs(4) };
+let photos = ask.fetch_vectors(&graph, "image:clip-vit-b32@1", 512, &IMAGE_EXTENSIONS).await?;
+```
+
 ## Resolving links across the space
 
 Not just one vault. A `[[Name]]` in a note is looked for, in order:
@@ -336,8 +359,6 @@ peer could read, so an agent knows when some were out of reach.
 ## Not yet
 
 - **App UI**: a backlinks panel in the inspector and a graph view.
-- Apps on `drive-sync`'s own endpoint (no agent) answering and asking
-  `drive/graph/1` too (its `Net` takes only its own protocol today).
 - Images' text (OCR) into the full-text index.
 - An approximate nearest-neighbour index once vectors run past a few
   hundred thousand pieces (Turso's vector index is not ready yet; the
