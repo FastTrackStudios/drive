@@ -126,6 +126,9 @@ struct OpenDoc {
     save_pending: bool,
     /// The node has answered this document's join at least once.
     synced: bool,
+    /// This device's own copy has been read (found or not): until then an
+    /// empty document may only be one whose copy has not arrived yet.
+    restored: bool,
     /// How many [`Drive::hold`]s are on it, and how often the count has
     /// fallen to none (a close waiting to happen checks it is still the
     /// latest).
@@ -292,20 +295,20 @@ impl Drive {
             let me = self.clone();
             let id = id.to_string();
             platform::spawn(async move {
-                let Some(bytes) = platform::load_doc(&id).await else {
-                    return;
+                let bytes = platform::load_doc(&id).await;
+                let imported = {
+                    let mut docs = lock(&me.0.docs);
+                    let Some(d) = docs.get_mut(&id) else { return };
+                    d.restored = true;
+                    bytes.is_some_and(|b| d.doc.import(&b).is_ok())
                 };
-                let ok = lock(&me.0.docs)
-                    .get(&id)
-                    .map(|d| d.doc.import(&bytes).is_ok());
-                if ok == Some(true) {
-                    // Edits made offline last time: join again so the node
-                    // says what it lacks and they are sent.
-                    if me.status() == Status::Online {
-                        me.join(&id);
-                    }
-                    me.emit(Event::Changed(id.clone()));
+                // Edits made offline last time: join again so the node
+                // says what it lacks and they are sent.
+                if imported && me.status() == Status::Online {
+                    me.join(&id);
                 }
+                // Said either way: found or not, the copy is in.
+                me.emit(Event::Changed(id.clone()));
             });
         }
         let outbox = Arc::new(Mutex::new(Vec::new()));
@@ -325,6 +328,7 @@ impl Drive {
                 my_presence: None,
                 save_pending: false,
                 synced: false,
+                restored: false,
                 holders: 0,
                 released: 0,
             },
@@ -436,6 +440,14 @@ impl Drive {
     /// document is really empty, not just not arrived).
     pub fn is_synced(&self, id: &str) -> bool {
         lock(&self.0.docs).get(id).is_some_and(|d| d.synced)
+    }
+
+    /// Whether this device's own copy of the document has been read, found
+    /// or not (it loads a moment after [`Drive::open`]). Offline, an empty
+    /// document that is restored is really empty here; one that is not may
+    /// only be waiting for its copy. An [`Event::Changed`] says when.
+    pub fn is_restored(&self, id: &str) -> bool {
+        lock(&self.0.docs).get(id).is_some_and(|d| d.restored)
     }
 
     /// Merge exported Loro bytes made elsewhere (a template, a file) into a
@@ -910,4 +922,53 @@ mod tests {
         panic!("closed: {}, copy saved: {}", !open(id), file.exists());
     }
 
+    /// Wait until this device's copy of `id` has loaded (or was found
+    /// missing).
+    async fn restored(drive: &Drive, id: &str) {
+        for _ in 0..100 {
+            if drive.is_restored(id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("{id}: this device's copy never finished loading");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_document_says_when_this_devices_copy_has_loaded() {
+        copies();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("ws://127.0.0.1:{port}/sync");
+
+        // Nothing stored: restored, and really empty.
+        let (drive, _events) = Drive::connect(Some(url.clone()));
+        let fresh = "home/test:restored-none";
+        let doc = drive.open(fresh);
+        restored(&drive, fresh).await;
+        assert!(doc.get_map("household").is_empty());
+        assert!(!drive.is_restored("home/test:never-opened"));
+
+        // A stored copy: once restored, it is in the document.
+        let kept = "home/test:restored-kept";
+        let made = LoroDoc::new();
+        made.get_map("household").insert("name", "Ours").unwrap();
+        platform::save_doc(kept, made.export(ExportMode::Snapshot).unwrap());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let (drive, _events) = Drive::connect(Some(url));
+        let doc = drive.open(kept);
+        restored(&drive, kept).await;
+        assert_eq!(
+            doc.get_map("household")
+                .get("name")
+                .and_then(|v| v.into_value().ok())
+                .and_then(|v| v.into_string().ok())
+                .map(|s| s.to_string()),
+            Some("Ours".to_string()),
+            "the stored copy is in the document once it is restored"
+        );
+    }
 }

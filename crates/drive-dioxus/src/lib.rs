@@ -570,6 +570,14 @@ impl Doc {
         self.drive.is_synced(&self.id)
     }
 
+    /// Whether this device's own copy has loaded (found or not): offline,
+    /// an empty document is really empty only once this is true. Live, as
+    /// [`Doc::synced`].
+    pub fn restored(&self) -> bool {
+        let _ = (self.rev)();
+        self.drive.is_restored(&self.id)
+    }
+
     /// Merge exported Loro bytes made elsewhere (a template) and send them.
     pub fn import(&self, bytes: &[u8]) {
         self.drive.import_local(&self.id, bytes);
