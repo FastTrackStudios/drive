@@ -257,6 +257,8 @@ fn tools_are_described_and_none_destroys() {
         "graph_neighbors",
         "graph_path",
         "graph_tag",
+        "link",
+        "unlink",
         "tag",
         "untag",
         "set_field",
@@ -790,7 +792,7 @@ async fn the_graph_tools_read_this_peers_graph() {
         .call("graph_neighbors", json!({ "thing": "Modes", "depth": 1 }))
         .await
         .unwrap();
-    assert_eq!(near["total"], 3, "Chords, the missing page and the tag: {near}");
+    assert_eq!(near["total"], 4, "Chords, the missing page, the tag and its folder: {near}");
 
     let path = w
         .call("graph_path", json!({ "from": "drive:Notes/Chords.md", "to": "missing:nowhere" }))
@@ -805,4 +807,29 @@ async fn the_graph_tools_read_this_peers_graph() {
 
     // Read only: nothing was written to the space's documents.
     assert_eq!(w.ctx().writes_used(), 0);
+
+    // An app's link: dry run first, then made, then seen by the graph.
+    let args = json!({ "from": "doc:season:episode:1", "to": "drive:Notes/Scales.md", "kind": "uses" });
+    let mut dry_args = args.clone();
+    dry_args["dry_run"] = json!(true);
+    assert_eq!(w.call("link", dry_args).await.unwrap()["dry_run"], true);
+    assert_eq!(w.ctx().writes_used(), 0);
+    w.call("link", args.clone()).await.unwrap();
+    assert_eq!(w.ctx().writes_used(), 1);
+    let back = w
+        .call("graph_backlinks", json!({ "thing": "drive:Notes/Scales.md" }))
+        .await
+        .unwrap();
+    let linked: Vec<&Value> = back["items"].as_array().unwrap().iter().filter(|h| h["edge"]["kind"] == "linked").collect();
+    assert_eq!(linked.len(), 1, "{back}");
+    assert_eq!(linked[0]["id"], "doc:season:episode:1");
+    assert_eq!(linked[0]["edge"]["written"], "uses");
+    w.call("link", args.clone()).await.unwrap();
+    assert_eq!(w.ctx().writes_used(), 1, "linking again writes nothing");
+    w.call("unlink", args).await.unwrap();
+    let back = w
+        .call("graph_backlinks", json!({ "thing": "drive:Notes/Scales.md" }))
+        .await
+        .unwrap();
+    assert!(!back["items"].as_array().unwrap().iter().any(|h| h["edge"]["kind"] == "linked"));
 }

@@ -248,6 +248,34 @@ pub fn defs() -> Vec<Def> {
             ),
         },
         Def {
+            name: "link",
+            title: "Link two things",
+            description: "Say that one thing refers to another, in an app's words (`kind`: uses, built-on, in-setlist; empty: a plain reference): an episode uses a song, a preset is built on another. Kept by what the things are (as tags are), synced to every device, and read by the graph_* tools.",
+            write: true,
+            schema: props(
+                json!({
+                    "from": thing("The thing that refers"),
+                    "to": thing("What it refers to"),
+                    "kind": { "type": "string", "description": "What the link says (one line); empty: a plain reference." }
+                }),
+                &["from", "to"],
+            ),
+        },
+        Def {
+            name: "unlink",
+            title: "Unlink two things",
+            description: "Take away a link made with `link` (the same from, to and kind). The things themselves are untouched.",
+            write: true,
+            schema: props(
+                json!({
+                    "from": thing("The thing that refers"),
+                    "to": thing("What it refers to"),
+                    "kind": { "type": "string", "description": "The link's kind, as it was made." }
+                }),
+                &["from", "to"],
+            ),
+        },
+        Def {
             name: "tag",
             title: "Tag things",
             description: "Put tags on things (a computer's file is tagged by its content, so every copy shows it). Tags are named by name, shorthand, alias or id; `create_missing` makes tags that do not exist yet (else they are refused).",
@@ -458,6 +486,8 @@ pub async fn run(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "graph_neighbors" => graph::neighbors(ctx, args).await,
         "graph_path" => graph::path(ctx, args).await,
         "graph_tag" => graph::tagged(ctx, args).await,
+        "link" => graph::link(ctx, args, true).await,
+        "unlink" => graph::link(ctx, args, false).await,
         "tag" => write::tag(ctx, args, true).await,
         "untag" => write::tag(ctx, args, false).await,
         "set_field" => write::set_field(ctx, args).await,

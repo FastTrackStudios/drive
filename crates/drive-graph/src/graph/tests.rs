@@ -11,6 +11,7 @@ pub(crate) struct Ids {
     pub circle: String,
     pub png: String,
     pub setlists: String,
+    pub notes: String,
     pub music: String,
     pub theory: String,
     pub drums: String,
@@ -104,6 +105,13 @@ pub(crate) fn fixture() -> (Graph, Ids) {
         shared_with: vec![],
     }];
     let kinds = Kinds::from(vec![song_kind()]);
+    let links = [drive_spine::links::Link {
+        from: Target::Doc("season:episode:1".into()),
+        to: Target::Doc("studio:song:amazing-grace".into()),
+        kind: "uses".into(),
+        by: "t".into(),
+        at: 1,
+    }];
     let g = build(&Inputs {
         tree: &items,
         extracts: &extracts,
@@ -113,6 +121,7 @@ pub(crate) fn fixture() -> (Graph, Ids) {
         projects: &projects,
         kinds: &kinds,
         docs: &[],
+        links: &links,
     });
     let ids = Ids {
         scales: node("Notes/Scales.md"),
@@ -120,6 +129,7 @@ pub(crate) fn fixture() -> (Graph, Ids) {
         circle: node("Notes/Circle.md"),
         png: node("Notes/circle.png"),
         setlists: node("Setlists"),
+        notes: node("Notes"),
         music: tag_node(&music),
         theory: tag_node(&theory),
         drums: tag_node(&drums),
@@ -127,10 +137,11 @@ pub(crate) fn fixture() -> (Graph, Ids) {
     (g, ids)
 }
 
+/// The edges out of `src`, folder edges aside (`app_links_and_folders`).
 fn edges_from<'a>(g: &'a Graph, src: &str) -> Vec<(&'a str, EdgeKind, &'a str)> {
     g.edges
         .iter()
-        .filter(|e| e.src == src)
+        .filter(|e| e.src == src && e.kind != EdgeKind::In)
         .map(|e| (e.dst.as_str(), e.kind, e.anchor.as_str()))
         .collect()
 }
@@ -210,6 +221,32 @@ fn tags_spine_and_projects() {
 }
 
 #[test]
+fn app_links_and_folders() {
+    let (g, ids) = fixture();
+    let ep: Vec<&Edge> = g
+        .edges
+        .iter()
+        .filter(|e| e.src == "doc:season:episode:1")
+        .collect();
+    assert_eq!(ep.len(), 1);
+    assert_eq!(
+        (ep[0].dst.as_str(), ep[0].kind, ep[0].raw.as_str()),
+        ("doc:studio:song:amazing-grace", EdgeKind::Linked, "uses")
+    );
+    assert!(
+        g.edges.iter().any(|e| e.src == ids.scales
+            && e.kind == EdgeKind::In
+            && g.nodes[&e.dst].path == "Notes")
+    );
+    assert!(
+        !g.edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::In && e.src == ids.setlists),
+        "top-level folders are in nothing"
+    );
+}
+
+#[test]
 fn a_note_whose_bytes_are_elsewhere_still_gets_its_backlinks() {
     let (items, mut extracts) = tree(&[("A.md", "[[B]]"), ("B.md", "[[A]]")]);
     let b = items[1].clone();
@@ -225,6 +262,7 @@ fn a_note_whose_bytes_are_elsewhere_still_gets_its_backlinks() {
         projects: &[],
         kinds: &kinds,
         docs: &[],
+        links: &[],
     });
     assert_eq!(g.edges.len(), 1);
     assert_eq!(g.edges[0].dst, b.node());

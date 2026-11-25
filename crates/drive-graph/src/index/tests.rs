@@ -23,7 +23,11 @@ async fn questions<I: Index>(ix: &I, ids: &Ids) {
 
     // Neighbours, either way.
     let one = ix.neighbors(&ids.png, 1).await.unwrap();
-    let mut want = vec![(ids.scales.as_str(), 1), (ids.drums.as_str(), 1)];
+    let mut want = vec![
+        (ids.scales.as_str(), 1),
+        (ids.drums.as_str(), 1),
+        (ids.notes.as_str(), 1),
+    ];
     want.sort_by(|a, b| a.0.cmp(b.0));
     assert_eq!(near(&one), want);
     let two = ix.neighbors(&ids.png, 2).await.unwrap();

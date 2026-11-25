@@ -122,3 +122,36 @@ pub async fn tagged(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     v["coverage"] = coverage(&report);
     Ok(v)
 }
+
+/// `link` / `unlink`: one link of an app's kind between two things, in
+/// `drive:links` (synced to every peer; the graph reads it).
+pub async fn link(ctx: &Ctx, args: &Value, add: bool) -> Result<Value, String> {
+    let from = ctx.thing(need(args, "from")?).await?;
+    let to = ctx.thing(need(args, "to")?).await?;
+    let kind = opt_str(args, "kind").unwrap_or_default().trim().to_string();
+    let (ft, tt) = (from.target()?, to.target()?);
+    let (id, doc) = crate::graph::links_doc(&ctx.a).await;
+    let exists = drive_spine::links::from(&doc, &ft)
+        .iter()
+        .any(|l| l.to == tt && l.kind == kind);
+    let change = json!({
+        "from": from.label(), "to": to.label(), "kind": kind,
+        "change": if add { "link" } else { "unlink" },
+        "already": exists == add,
+    });
+    if super::tools::dry(args) {
+        return Ok(json!({ "dry_run": true, "would": change }));
+    }
+    if exists == add {
+        return Ok(json!({ "done": change }));
+    }
+    ctx.charge(1)?;
+    if add {
+        drive_spine::links::link(&doc, &ft, &tt, &kind, &ctx.author, drive_files::now_ms())
+    } else {
+        drive_spine::links::unlink(&doc, &ft, &tt, &kind)
+    }
+    .map_err(|e| e.to_string())?;
+    ctx.a.drive.commit(&id);
+    Ok(json!({ "done": change }))
+}
