@@ -258,6 +258,9 @@ fn tools_are_described_and_none_destroys() {
         "graph_neighbors",
         "graph_path",
         "graph_tag",
+        "page_read",
+        "page_write",
+        "page_create",
         "link",
         "unlink",
         "tag",
@@ -882,4 +885,37 @@ async fn a_computers_folder_is_tagged_and_its_tags_follow_a_move() {
     assert!(kinds.contains(&"linked"), "the link went with it too: {back}");
     let tagged = w.call("graph_tag", json!({ "tag": "Bounces" })).await.unwrap();
     assert_eq!(tagged["total"], 1);
+}
+
+#[tokio::test]
+async fn pages_are_live_notes_in_the_graph() {
+    let w = world(10).await;
+    let made = w
+        .call("page_create", json!({ "path": "drive:Wiki/Scales", "text": "# Scales\n\nSee [[Modes]].\n" }))
+        .await
+        .unwrap();
+    assert_eq!(made["done"]["page"], "drive:Wiki/Scales.md");
+    w.call("page_create", json!({ "path": "Wiki/Modes.md", "text": "Dorian, Lydian.\n" }))
+        .await
+        .unwrap();
+    // Linked at once: the graph reads the page's text from its document.
+    let back = w.call("graph_backlinks", json!({ "thing": "drive:Wiki/Modes.md" })).await.unwrap();
+    assert_eq!(back["items"][0]["thing"], "drive:Wiki/Scales.md", "{back}");
+
+    // An edit: only what changed is applied; the new link joins the graph.
+    let read = w.call("page_read", json!({ "page": "drive:Wiki/Scales.md" })).await.unwrap();
+    let text = read["text"].as_str().unwrap().replace("[[Modes]]", "[[Modes]] and [[Circle]]");
+    let dry = w
+        .call("page_write", json!({ "page": "drive:Wiki/Scales.md", "text": text, "dry_run": true }))
+        .await
+        .unwrap();
+    assert_eq!(dry["dry_run"], true);
+    w.call("page_write", json!({ "page": "drive:Wiki/Scales.md", "text": text })).await.unwrap();
+    let missing = w.call("graph_backlinks", json!({ "thing": "missing:circle" })).await.unwrap();
+    assert_eq!(missing["total"], 1, "{missing}");
+    let found = w.call("graph_search", json!({ "query": "lydian" })).await.unwrap();
+    assert_eq!(found["items"][0]["thing"], "drive:Wiki/Modes.md");
+    // A file is not a page.
+    assert!(w.call("page_read", json!({ "page": "drive:Songs/lyrics.txt" })).await.is_err());
+    assert_eq!(w.ctx().writes_used(), 3);
 }

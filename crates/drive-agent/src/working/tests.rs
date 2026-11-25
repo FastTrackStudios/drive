@@ -311,3 +311,56 @@ async fn a_file_replaced_by_the_drives_version_is_kept_in_the_folders_trash() {
         b"bridge twice"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_is_a_markdown_file_on_disk_both_ways() {
+    let (a, _b, folder, _keep) = owned().await;
+    let (w, _) = a.own("Studio/Songs").await.unwrap();
+
+    // A page made in the Drive comes down as a plain .md file.
+    let p = crate::pages::create(
+        &a,
+        "Studio/Songs/Song B/Ideas",
+        "# Ideas\n\nA key change.\n",
+    )
+    .await
+    .unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.down, 1, "{done:?}");
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    let file = folder.join("Song B/Ideas.md");
+    assert_eq!(read(&file), b"# Ideas\n\nA key change.\n");
+
+    // Saved in an editor (Obsidian): the page gets the change as a diff,
+    // keeping what someone typed into the page meanwhile.
+    drive_spine::pages::write(&p.doc, "# Ideas\n\nA key change.\n\nFrom the app.\n").unwrap();
+    std::fs::write(&file, b"# Ideas\n\nA key change, up a tone.\n").unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    // The page changed in the Drive and on disk since the last sync: both
+    // are kept (the disk's beside it as a conflict copy), as for any file.
+    assert_eq!(done.conflicts, 1, "{done:?}");
+
+    // Edited only on disk: the page follows.
+    let level = a.reconcile(&w).await.unwrap();
+    assert!(level.errors.is_empty(), "{:?}", level.errors);
+    std::fs::write(&file, b"# Ideas\n\nKey change at the bridge.\n").unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.up, 1, "{done:?}");
+    assert_eq!(
+        drive_spine::pages::text(&p.doc),
+        "# Ideas\n\nKey change at the bridge.\n"
+    );
+    // Edited only in the Drive: the file follows.
+    drive_spine::pages::write(&p.doc, "# Ideas\n\nKey change at the bridge, then out.\n").unwrap();
+    let done = a.reconcile(&w).await.unwrap();
+    assert_eq!(done.down, 1, "{done:?}");
+    assert_eq!(
+        read(&file),
+        b"# Ideas\n\nKey change at the bridge, then out.\n"
+    );
+    assert_eq!(
+        a.reconcile(&w).await.unwrap(),
+        crate::working::Reconciled::default()
+    );
+}

@@ -44,8 +44,9 @@ use crate::{flag, out};
 /// (offline: the rest keep the extracts they had, or none).
 const GIVE_UP_AFTER: u32 = 3;
 
-/// Every file and folder of the Drive tree, with paths.
-pub fn tree_items(files: &LoroDoc) -> Vec<TreeItem> {
+/// Every file and folder of the Drive tree, with paths, and the page id
+/// of each that is a page (empty for the others).
+pub fn tree_items(files: &LoroDoc) -> Vec<(TreeItem, String)> {
     let mut out = Vec::new();
     let mut stack: Vec<(Option<TreeID>, String)> = vec![(None, String::new())];
     while let Some((parent, prefix)) = stack.pop() {
@@ -58,16 +59,45 @@ pub fn tree_items(files: &LoroDoc) -> Vec<TreeItem> {
             if e.dir {
                 stack.push((Some(e.id), path.clone()));
             }
-            out.push(TreeItem {
-                id: tree::id_string(e.id),
-                path,
-                dir: e.dir,
-                hash: e.hash,
-            });
+            out.push((
+                TreeItem {
+                    id: tree::id_string(e.id),
+                    path,
+                    dir: e.dir,
+                    hash: e.hash,
+                },
+                e.page,
+            ));
         }
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
     out
+}
+
+/// A page's content key: its text's hash (a page has no blob), so its
+/// extract is kept and found again as any note's.
+pub fn page_key(text: &str) -> String {
+    format!("page:{}", blake3::hash(text.as_bytes()).to_hex())
+}
+
+/// The tree, each page given its text's key, and the pages' texts by key.
+async fn tree_and_pages(a: &Agent) -> (Vec<TreeItem>, std::collections::HashMap<String, String>) {
+    let space = a.cfg.lock().expect("cfg").space.clone();
+    let mut texts = std::collections::HashMap::new();
+    let mut items = Vec::new();
+    for (mut item, page) in tree_items(&a.files) {
+        if !page.is_empty() {
+            let doc = a
+                .drive
+                .open(&drive_spine::pages::page_doc(&space, &page))
+                .await;
+            let text = drive_spine::pages::text(&doc);
+            item.hash = page_key(&text);
+            texts.insert(item.hash.clone(), text);
+        }
+        items.push(item);
+    }
+    (items, texts)
 }
 
 /// The embedding model every peer runs (docs/graph.md): Model2Vec's
@@ -136,7 +166,7 @@ pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), 
     let db = GraphDb::open(&a.dir.join("graph.db"))
         .await
         .map_err(|e| e.to_string())?;
-    let items = tree_items(&a.files);
+    let (items, pages) = tree_and_pages(a).await;
     let lib = Library::load(tags);
     let tasks = drive_spine::tasks(&a.spine);
     let events = drive_spine::events(&a.spine);
@@ -155,7 +185,11 @@ pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), 
     let misses = AtomicU32::new(0);
     let report = refresh(&db, &sources, |hash| {
         let misses = &misses;
+        let page = pages.get(&hash).cloned();
         async move {
+            if let Some(text) = page {
+                return Got::Bytes(text.into_bytes());
+            }
             if misses.load(Ordering::Relaxed) >= GIVE_UP_AFTER && !a.is_cached(&hash) {
                 return Got::Nothing;
             }
@@ -179,6 +213,52 @@ pub async fn up_to_date(a: &Agent, tags: &LoroDoc) -> Result<(GraphDb, Report), 
             .map_err(|e| e.to_string())?;
     }
     Ok((db, report))
+}
+
+/// Whether a change to document `id` (of `space`) changes the graph.
+pub fn feeds_graph(space: &str, id: &str) -> bool {
+    let Some(rest) = id.strip_prefix(space).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    matches!(
+        rest,
+        "drive:files" | "drive:space" | "drive:spine" | "drive:tags" | "drive:links"
+    ) || rest.starts_with(drive_spine::pages::PAGE_PREFIX)
+}
+
+/// How long the documents must be quiet before the graph is made again.
+const QUIET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Keep this peer's graph up to date while the service runs: made again a
+/// moment after the documents it is built from change (here or on another
+/// device), so a page's new link or a new tag is in it within seconds.
+pub async fn keep_up(a: std::sync::Arc<Agent>) {
+    let space = a.cfg.lock().expect("cfg").space.clone();
+    let mut events = a.drive.events();
+    let tags_id = drive_spine::tags::tags_doc(&space);
+    let mut dirty = true;
+    loop {
+        let next = if dirty {
+            tokio::time::timeout(QUIET, events.recv()).await.ok()
+        } else {
+            Some(events.recv().await)
+        };
+        match next {
+            Some(Ok(drive_native::Event::Changed(id))) if feeds_graph(&space, &id) => dirty = true,
+            Some(Ok(_)) => {}
+            // Missed some: make it again to be sure.
+            Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => dirty = true,
+            Some(Err(tokio::sync::broadcast::error::RecvError::Closed)) => return,
+            // Quiet for a while after a change: now.
+            None => {
+                let tags = a.drive.open(&tags_id).await;
+                if let Err(e) = up_to_date(&a, &tags).await {
+                    tracing::warn!(error = %e, "the graph was not brought up to date");
+                }
+                dirty = false;
+            }
+        }
+    }
 }
 
 /// A graph key given as it is, if `thing` is one (`project:` is a name in
@@ -517,11 +597,33 @@ mod tests {
         let n = tree::mkdir(&d, None, "Notes").unwrap();
         let f = tree::create_file(&d, Some(n), "A.md").unwrap();
         tree::set_content(&d, f, 3, &"a".repeat(64)).unwrap();
+        let p = tree::create_page(&d, Some(n), "Live.md", "pg1").unwrap();
         let items = tree_items(&d);
-        let paths: Vec<(&str, bool)> = items.iter().map(|i| (i.path.as_str(), i.dir)).collect();
-        assert_eq!(paths, [("Notes", true), ("Notes/A.md", false)]);
-        assert_eq!(items[1].hash, "a".repeat(64));
-        assert_eq!(items[1].node(), format!("file:{}", tree::id_string(f)));
+        let paths: Vec<(&str, bool, &str)> = items
+            .iter()
+            .map(|(i, page)| (i.path.as_str(), i.dir, page.as_str()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("Notes", true, ""),
+                ("Notes/A.md", false, ""),
+                ("Notes/Live.md", false, "pg1")
+            ]
+        );
+        assert_eq!(items[1].0.hash, "a".repeat(64));
+        assert_eq!(items[1].0.node(), format!("file:{}", tree::id_string(f)));
+        assert_eq!(items[2].0.node(), format!("file:{}", tree::id_string(p)));
+    }
+
+    #[test]
+    fn what_feeds_the_graph() {
+        assert!(feeds_graph("home", "home/drive:tags"));
+        assert!(feeds_graph("home", "home/drive:page:abc"));
+        assert!(feeds_graph("home", "home/drive:files"));
+        assert!(!feeds_graph("home", "home/drive:rules"));
+        assert!(!feeds_graph("home", "other/drive:tags"));
+        assert!(!feeds_graph("home", "homeX/drive:tags"));
     }
 
     #[test]

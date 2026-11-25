@@ -195,3 +195,40 @@ pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     });
     Ok(v)
 }
+
+/// `page_read`: a page's text (a note kept as live Loro text).
+pub async fn page_read(ctx: &Ctx, args: &Value) -> Result<Value, String> {
+    let p = crate::pages::open(&ctx.a, need(args, "page")?).await?;
+    Ok(json!({ "page": format!("drive:{}", p.path), "text": drive_spine::pages::text(&p.doc) }))
+}
+
+/// `page_write`: a page's new text; only what changed is applied, so
+/// others' edits elsewhere in the page stay.
+pub async fn page_write(ctx: &Ctx, args: &Value) -> Result<Value, String> {
+    let p = crate::pages::open(&ctx.a, need(args, "page")?).await?;
+    let new = need(args, "text")?;
+    let old = drive_spine::pages::text(&p.doc);
+    let change = json!({ "page": format!("drive:{}", p.path), "chars_before": old.chars().count(), "chars_after": new.chars().count(), "unchanged": old == new });
+    if super::tools::dry(args) {
+        return Ok(json!({ "dry_run": true, "would": change }));
+    }
+    if old != new {
+        ctx.charge(1)?;
+        crate::pages::write(&ctx.a, &p, new)?;
+    }
+    Ok(json!({ "done": change }))
+}
+
+/// `page_create`: a new page at a Drive path (its folders made).
+pub async fn page_create(ctx: &Ctx, args: &Value) -> Result<Value, String> {
+    let path = need(args, "path")?;
+    let text = opt_str(args, "text").unwrap_or_default();
+    if super::tools::dry(args) {
+        return Ok(
+            json!({ "dry_run": true, "would": { "create": path, "chars": text.chars().count() } }),
+        );
+    }
+    ctx.charge(1)?;
+    let p = crate::pages::create(&ctx.a, path, text).await?;
+    Ok(json!({ "done": { "page": format!("drive:{}", p.path) } }))
+}
