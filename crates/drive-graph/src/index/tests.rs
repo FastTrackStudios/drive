@@ -99,6 +99,26 @@ async fn questions<I: Index>(ix: &I, ids: &Ids) {
         ix.outgoing("task:t1").await.unwrap()[0].node.id,
         "doc:studio:song:amazing-grace"
     );
+
+    // Search: a note's words, its title, a tag's name; syntax is just text.
+    let found = ix.search("unknown-tag", 10).await.unwrap();
+    assert!(
+        found.iter().any(|f| f.node.id == ids.chords),
+        "frontmatter tags are searched"
+    );
+    let found = ix.search("Fifths Scales", 10).await.unwrap();
+    assert_eq!(
+        found[0].node.id, ids.scales,
+        "both words, and the title: {found:?}"
+    );
+    assert!(found.windows(2).all(|w| w[0].score >= w[1].score));
+    assert!(found[0].score > 0.0, "ranked, not just matched");
+    let found = ix.search("drums", 10).await.unwrap();
+    assert!(found.iter().any(|f| f.node.id == ids.drums));
+    assert!(ix.search("zzzz", 10).await.unwrap().is_empty());
+    // Quotes and operators are only separators, never query syntax.
+    ix.search("\"' OR 1=1 -- (", 10).await.unwrap();
+    assert!(ix.search("", 10).await.unwrap().is_empty());
 }
 
 /// Backlinks come sorted by label: Chords before Circle.

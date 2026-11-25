@@ -201,6 +201,19 @@ pub fn defs() -> Vec<Def> {
             ),
         },
         Def {
+            name: "graph_search",
+            title: "Search notes and things by their words",
+            description: "Full-text search over this computer's graph of the space: notes' text, titles and aliases, file and folder names and paths, tag names, documents' titles, ranked best first. `tag` keeps only things under a tag (child tags too, Drive or frontmatter). Words only: no query syntax.",
+            write: false,
+            schema: props(
+                paged(json!({
+                    "query": { "type": "string", "description": "The words to find." },
+                    "tag": { "type": "string", "description": "Only things under this tag (name, shorthand, alias, id, or a frontmatter tag)." }
+                })),
+                &["query"],
+            ),
+        },
+        Def {
             name: "graph_backlinks",
             title: "What links here",
             description: "Everything that points at a thing in this computer's graph of the space: notes linking or embedding it ([[wikilinks]], relative Markdown links, frontmatter related:), things carrying a tag, tasks and events naming a document, projects holding it. Each with the edge (its kind and what was written). `coverage` says how many notes could be read here.",
@@ -482,6 +495,7 @@ pub async fn run(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "rules" => read::rules(ctx, args).await,
         "rule_preview" => read::rule_preview(ctx, args).await,
         "journal" => read::journal(ctx, args).await,
+        "graph_search" => graph::search(ctx, args).await,
         "graph_backlinks" => graph::backlinks(ctx, args).await,
         "graph_neighbors" => graph::neighbors(ctx, args).await,
         "graph_path" => graph::path(ctx, args).await,

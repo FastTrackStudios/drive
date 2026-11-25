@@ -190,6 +190,9 @@ pub struct Graph {
     /// Lower-case names a node is found by (a note's title and aliases, a
     /// tag's name, shorthand and aliases, a file's name) → node ids.
     pub aliases: Vec<(String, String)>,
+    /// What each node is searched by: its name, path and other names, and
+    /// a note's text.
+    pub texts: BTreeMap<String, String>,
 }
 
 /// What a graph is built from: everything a peer has in its synced
@@ -231,7 +234,36 @@ pub fn build(i: &Inputs) -> Graph {
     g.edges.dedup();
     g.aliases.sort();
     g.aliases.dedup();
+    g.texts = texts(&g, i);
     g
+}
+
+/// Each node's searchable text: its label and path, the names it is found
+/// by, and for a note its text.
+fn texts(g: &Graph, i: &Inputs) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, Vec<String>> = g
+        .nodes
+        .values()
+        .map(|n| (n.id.clone(), vec![n.label.clone(), n.path.clone()]))
+        .collect();
+    for (name, id) in &g.aliases {
+        if let Some(v) = out.get_mut(id) {
+            v.push(name.clone());
+        }
+    }
+    for t in i.tree.iter().filter(|t| !t.dir) {
+        if let (Some(e), Some(v)) = (i.extracts.get(&t.hash), out.get_mut(&t.node())) {
+            v.extend(e.tags.iter().cloned());
+            v.push(e.text.clone());
+        }
+    }
+    out.into_iter()
+        .map(|(id, mut parts)| {
+            parts.retain(|p| !p.trim().is_empty());
+            parts.dedup();
+            (id, parts.join("\n"))
+        })
+        .collect()
 }
 
 impl Graph {

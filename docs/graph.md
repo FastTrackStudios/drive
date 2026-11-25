@@ -149,6 +149,7 @@ page not written yet" can be asked.
 | `nodes` | id, kind, label (a title or name), path (a Drive path, for files) |
 | `edges` | src, dst, kind, what was written, the anchor (indexed both ways) |
 | `aliases` | a lower-case name → a node (titles, aliases, file names, tag names, shorthands and aliases) |
+| `texts` | each node's searchable text (its name, path, other names; a note's tags and text), under a full-text index (`USING fts`, Turso's tantivy) |
 | `extracts` | content key → the extractor's version and its sidecar |
 
 `drive_graph::refresh` is the one routine every peer runs: the notes'
@@ -163,6 +164,7 @@ content no longer in the space forgotten.
 | neighbours, depth N | a recursive CTE walking edges either way |
 | shortest path | breadth-first over the indexed edges (at most 8 steps unless told) |
 | everything under a tag | a recursive CTE down `parent` edges, then `tagged` and `fm-tag` edges into any of them (child tags count, as tag search does) |
+| search | the full-text index, ranked by BM25 (`fts_score`); words only (letters and digits), so nothing typed reaches the engine's query syntax; optionally only things under a tag. The in-memory index ranks the same way with its own small BM25 |
 
 ## The command line
 
@@ -172,6 +174,7 @@ drive graph neighbors THING [--depth N]
 drive graph path THING THING [--max N]
 drive graph tag TAG
 drive graph refresh                # and what it read: kept, read now, from a peer, out of reach
+drive graph search WORDS… [--tag TAG] [--limit N]
 drive graph link FROM TO [--kind K]  # in drive:links (synced)
 drive graph unlink FROM TO [--kind K]
 ```
@@ -189,7 +192,7 @@ asking and keeps the extracts it had.
 
 ## For agents
 
-`drive mcp` has four read-only tools, `graph_backlinks`,
+`drive mcp` has five read-only tools, `graph_search`, `graph_backlinks`,
 `graph_neighbors`, `graph_path` and `graph_tag` ([agents.md](agents.md)),
 taking the same THINGs, and two that write `drive:links`, `link` and
 `unlink` (with `dry_run`, counted against the session's write cap). Each answer has `coverage`: how many notes this

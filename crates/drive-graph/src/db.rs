@@ -16,7 +16,7 @@ use turso::Value;
 
 use crate::extract::{Extract, Sidecar, VERSION};
 use crate::graph::{Edge, EdgeKind, Graph, Node, NodeKind};
-use crate::index::{Error, Hit, Index, Near, Result};
+use crate::index::{Error, Found, Hit, Index, Near, Result, terms};
 
 /// Rows a single `INSERT` carries.
 const ROWS: usize = 200;
@@ -31,6 +31,8 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)",
     "CREATE TABLE IF NOT EXISTS aliases (name TEXT NOT NULL, id TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS aliases_name ON aliases (name)",
+    "CREATE TABLE IF NOT EXISTS texts (id TEXT PRIMARY KEY, text TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS texts_fts ON texts USING fts (text)",
     "CREATE TABLE IF NOT EXISTS extracts (key TEXT PRIMARY KEY, version INTEGER NOT NULL, \
      data BLOB NOT NULL)",
 ];
@@ -65,6 +67,8 @@ impl GraphDb {
     pub async fn open(path: &Path) -> Result<GraphDb> {
         let db = turso::Builder::new_local(&path.to_string_lossy())
             .experimental_multiprocess_wal(true)
+            // The full-text index (`USING fts`).
+            .experimental_index_method(true)
             .build()
             .await
             .map_err(db_err)?;
@@ -78,6 +82,7 @@ impl GraphDb {
     /// The engine cannot start.
     pub async fn memory() -> Result<GraphDb> {
         let db = turso::Builder::new_local(":memory:")
+            .experimental_index_method(true)
             .build()
             .await
             .map_err(db_err)?;
@@ -254,7 +259,7 @@ async fn in_tx(
 }
 
 async fn write_graph(conn: &turso::Connection, g: &Graph) -> turso::Result<()> {
-    for table in ["nodes", "edges", "aliases"] {
+    for table in ["nodes", "edges", "aliases", "texts"] {
         conn.execute(&format!("DELETE FROM {table}"), ()).await?;
     }
     let nodes: Vec<Vec<Value>> = g
@@ -278,7 +283,9 @@ async fn write_graph(conn: &turso::Connection, g: &Graph) -> turso::Result<()> {
         .collect();
     insert(conn, "edges (src, dst, kind, raw, anchor)", &edges).await?;
     let aliases: Vec<Vec<Value>> = g.aliases.iter().map(|(n, id)| vec![t(n), t(id)]).collect();
-    insert(conn, "aliases (name, id)", &aliases).await
+    insert(conn, "aliases (name, id)", &aliases).await?;
+    let texts: Vec<Vec<Value>> = g.texts.iter().map(|(id, x)| vec![t(id), t(x)]).collect();
+    insert(conn, "texts (id, text)", &texts).await
 }
 
 /// Rows into `table (columns)`, [`ROWS`] an `INSERT`.
@@ -341,6 +348,53 @@ impl Index for GraphDb {
             vec![t(&name.trim().to_lowercase())],
         )
         .await
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<Found>> {
+        // Words only (letters and digits), so the engine's query syntax is
+        // never reached by what a person typed.
+        let q = terms(query).join(" ");
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The shape the full-text index answers with scores (a single
+        // table, by score, limited): the nodes are read after.
+        let scored: Vec<(String, f64)> = {
+            let conn = self.conn.lock().await;
+            let mut rows = conn
+                .query(
+                    "SELECT fts_score(text, ?1) AS score, id FROM texts \
+                     WHERE fts_match(text, ?1) ORDER BY score DESC LIMIT ?2",
+                    vec![
+                        t(&q),
+                        Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
+                    ],
+                )
+                .await
+                .map_err(db_err)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(db_err)? {
+                let score = match row.get_value(0).map_err(db_err)? {
+                    Value::Real(f) => f,
+                    Value::Integer(i) => i as f64,
+                    _ => 0.0,
+                };
+                out.push((text(row.get_value(1).map_err(db_err)?), score));
+            }
+            out
+        };
+        let mut out = Vec::new();
+        for (id, score) in scored {
+            if let Some(node) = self.node(&id).await? {
+                out.push(Found { node, score });
+            }
+        }
+        out.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.node.id.cmp(&b.node.id))
+        });
+        Ok(out)
     }
 
     async fn touching(&self, id: &str) -> Result<Vec<Edge>> {

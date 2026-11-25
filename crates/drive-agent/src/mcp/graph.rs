@@ -155,3 +155,28 @@ pub async fn link(ctx: &Ctx, args: &Value, add: bool) -> Result<Value, String> {
     ctx.a.drive.commit(&id);
     Ok(json!({ "done": change }))
 }
+
+/// `graph_search`: notes, files, tags and documents by their words.
+pub async fn search(ctx: &Ctx, args: &Value) -> Result<Value, String> {
+    let (db, report) = graph(ctx).await?;
+    let (offset, limit) = ctx.paging(args);
+    let found = crate::graph::search(
+        &db,
+        &ctx.tags(),
+        need(args, "query")?,
+        opt_str(args, "tag"),
+        offset + limit,
+    )
+    .await?;
+    let rows: Vec<Value> = found
+        .iter()
+        .map(|f| {
+            let mut v = node_json(&f.node);
+            v["score"] = json!(f.score);
+            v
+        })
+        .collect();
+    let mut v = page(rows, offset, limit);
+    v["coverage"] = coverage(&report);
+    Ok(v)
+}
