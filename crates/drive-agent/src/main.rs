@@ -53,6 +53,10 @@
 //! drive [--dir DIR] tag field THING NAME VALUE [--kind text|multiline|date|datetime]
 //! drive [--dir DIR] tag search QUERY…              # drums NOT archived, path:*.wav, kind:audio …
 //!
+//! The graph (docs/graph.md; this peer's own, from what it has synced):
+//! drive [--dir DIR] graph backlinks THING | neighbors THING [--depth N]
+//! drive [--dir DIR] graph path THING THING [--max N] | tag TAG | refresh
+//!
 //! File rules (docs/rules.md; every rule starts off and as a dry run):
 //! drive [--dir DIR] rules ls | show NAME | journal [NAME] | undo ID
 //! drive [--dir DIR] rules run NAME [--live]       # here now, and asked of every device
@@ -115,6 +119,7 @@ mod devices;
 #[cfg(feature = "mount")]
 mod fs;
 mod fileprovider;
+mod graph;
 // Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]
 mod index_db;
@@ -1045,6 +1050,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
             }
         }
         "tag" => tagging::command(dir, args).await?,
+        "graph" => graph::command(dir, args).await?,
         // An MCP server on stdio for AI agents (docs/agents.md): stdout is
         // the protocol's, so nothing else here may print.
         "mcp" => mcp::serve(dir, args).await?,

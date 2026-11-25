@@ -253,6 +253,10 @@ fn tools_are_described_and_none_destroys() {
         "rules",
         "rule_preview",
         "journal",
+        "graph_backlinks",
+        "graph_neighbors",
+        "graph_path",
+        "graph_tag",
         "tag",
         "untag",
         "set_field",
@@ -739,4 +743,66 @@ async fn a_local_file_is_never_the_agents_own_or_the_systems() {
     // An ordinary file still is one.
     let mix = w.disk.path().join("Mixes/mix.wav");
     assert!(w.ctx().thing(&mix.to_string_lossy()).await.is_ok());
+}
+
+// ── the graph ───────────────────────────────────────────────────────────
+
+/// A note in the Drive tree, its blob on the node.
+async fn note(w: &World, dir: loro::TreeID, name: &str, text: &str) {
+    let bytes = text.as_bytes().to_vec();
+    let hash = blake3::hash(&bytes).to_hex().to_string();
+    let put = reqwest::Client::new()
+        .put(format!("{}/blobs/{hash}", w.url))
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success());
+    let a = &w.ctx().a;
+    let f = tree::create_file(&a.files, Some(dir), name).unwrap();
+    tree::set_content(&a.files, f, bytes.len() as u64, &hash).unwrap();
+    a.commit_files();
+}
+
+#[tokio::test]
+async fn the_graph_tools_read_this_peers_graph() {
+    let w = world(10).await;
+    let notes = tree::mkdir(&w.ctx().a.files, None, "Notes").unwrap();
+    note(&w, notes, "Scales.md", "---\naliases: [Modes]\ntags: [theory]\n---\nSee [[Chords]] and [[Nowhere]].\n").await;
+    note(&w, notes, "Chords.md", "Built from [[Modes|scales]].\n").await;
+
+    let back = w
+        .call("graph_backlinks", json!({ "thing": "drive:Notes/Scales.md" }))
+        .await
+        .unwrap();
+    assert_eq!(back["total"], 1, "{back}");
+    assert_eq!(back["items"][0]["thing"], "drive:Notes/Chords.md");
+    assert_eq!(back["items"][0]["edge"]["written"], "[[Modes|scales]]");
+    assert_eq!(back["coverage"]["out_of_reach"], 0);
+
+    // A name the graph knows, and a page not written yet.
+    let missing = w
+        .call("graph_backlinks", json!({ "thing": "missing:nowhere" }))
+        .await
+        .unwrap();
+    assert_eq!(missing["items"][0]["thing"], "drive:Notes/Scales.md");
+    let near = w
+        .call("graph_neighbors", json!({ "thing": "Modes", "depth": 1 }))
+        .await
+        .unwrap();
+    assert_eq!(near["total"], 3, "Chords, the missing page and the tag: {near}");
+
+    let path = w
+        .call("graph_path", json!({ "from": "drive:Notes/Chords.md", "to": "missing:nowhere" }))
+        .await
+        .unwrap();
+    assert_eq!(path["found"], true);
+    assert_eq!(path["steps"].as_array().unwrap().len(), 3);
+
+    let tagged = w.call("graph_tag", json!({ "tag": "theory" })).await.unwrap();
+    assert_eq!(tagged["items"][0]["thing"], "drive:Notes/Scales.md");
+    assert_eq!(tagged["tag"], "label:theory", "a frontmatter tag no Drive tag has");
+
+    // Read only: nothing was written to the space's documents.
+    assert_eq!(w.ctx().writes_used(), 0);
 }

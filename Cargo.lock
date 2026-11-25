@@ -3022,6 +3022,7 @@ dependencies = [
  "blake3",
  "drive-fileprovider",
  "drive-files",
+ "drive-graph",
  "drive-kache",
  "drive-local",
  "drive-native",

@@ -30,15 +30,15 @@ use loro::LoroDoc;
 use crate::agent::Agent;
 use crate::{flag, human, node_get, out, settle, start};
 
-struct Tags {
-    a: Agent,
+pub(crate) struct Tags {
+    pub(crate) a: Agent,
     id: String,
-    doc: LoroDoc,
+    pub(crate) doc: LoroDoc,
     by: String,
 }
 
 impl Tags {
-    async fn open(dir: &Path) -> Result<Tags, String> {
+    pub(crate) async fn open(dir: &Path) -> Result<Tags, String> {
         let a = start(dir).await?;
         let (space, by) = {
             let cfg = a.cfg.lock().expect("cfg");
@@ -89,7 +89,7 @@ impl Tags {
         }
     }
 
-    async fn target(&self, thing: &str) -> Result<Target, String> {
+    pub(crate) async fn target(&self, thing: &str) -> Result<Target, String> {
         if let Some(t) = Target::parse(thing)
             && !matches!(t, Target::Project(_))
         {
