@@ -21,8 +21,14 @@ use crate::index::{Error, Found, Hit, Index, Near, Result, terms};
 /// Rows a single `INSERT` carries.
 const ROWS: usize = 200;
 
+/// Changes when the tables change: a database of another version is
+/// emptied and made again (everything in it is derived).
+const SCHEMA_VERSION: &str = "3";
+
+/// The tables, dropped when the schema version changes.
+const TABLES: &[&str] = &["nodes", "edges", "aliases", "texts", "vectors", "extracts"];
+
 const SCHEMA: &[&str] = &[
-    "PRAGMA busy_timeout = 5000",
     "CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, \
      label TEXT NOT NULL, path TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS edges (src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, \
@@ -31,7 +37,11 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)",
     "CREATE TABLE IF NOT EXISTS aliases (name TEXT NOT NULL, id TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS aliases_name ON aliases (name)",
-    "CREATE TABLE IF NOT EXISTS texts (id TEXT PRIMARY KEY, text TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS texts (id TEXT PRIMARY KEY, key TEXT NOT NULL, text TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS texts_key ON texts (key)",
+    "CREATE TABLE IF NOT EXISTS vectors (key TEXT NOT NULL, model TEXT NOT NULL, chunk INTEGER NOT NULL, \
+     vec BLOB NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS vectors_key ON vectors (model, key)",
     "CREATE INDEX IF NOT EXISTS texts_fts ON texts USING fts (text)",
     "CREATE TABLE IF NOT EXISTS extracts (key TEXT PRIMARY KEY, version INTEGER NOT NULL, \
      data BLOB NOT NULL)",
@@ -91,12 +101,164 @@ impl GraphDb {
 
     async fn ready(db: turso::Database) -> Result<GraphDb> {
         let conn = db.connect().map_err(db_err)?;
+        conn.execute("PRAGMA busy_timeout = 5000", ())
+            .await
+            .map_err(db_err)?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+            (),
+        )
+        .await
+        .map_err(db_err)?;
+        if schema_version(&conn).await?.as_deref() != Some(SCHEMA_VERSION) {
+            for table in TABLES {
+                conn.execute(&format!("DROP TABLE IF EXISTS {table}"), ())
+                    .await
+                    .map_err(db_err)?;
+            }
+        }
         for sql in SCHEMA {
             conn.execute(sql, ()).await.map_err(db_err)?;
         }
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?1)",
+            vec![t(SCHEMA_VERSION)],
+        )
+        .await
+        .map_err(db_err)?;
         Ok(GraphDb {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// The content keys with vectors of `model`.
+    ///
+    /// # Errors
+    ///
+    /// A read failed.
+    pub async fn vector_keys(&self, model: &str) -> Result<std::collections::HashSet<String>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT DISTINCT key FROM vectors WHERE model = ?1",
+                vec![t(model)],
+            )
+            .await
+            .map_err(db_err)?;
+        let mut out = std::collections::HashSet::new();
+        while let Some(row) = rows.next().await.map_err(db_err)? {
+            out.insert(text(row.get_value(0).map_err(db_err)?));
+        }
+        Ok(out)
+    }
+
+    /// Keep a text's vectors (one per chunk) under its key and `model`, in
+    /// place of any it had.
+    ///
+    /// # Errors
+    ///
+    /// A write failed.
+    pub async fn put_vectors(&self, model: &str, items: &[(String, Vec<Vec<f32>>)]) -> Result<()> {
+        let conn = self.conn.lock().await;
+        in_tx(&conn, async {
+            for (key, vecs) in items {
+                conn.execute(
+                    "DELETE FROM vectors WHERE model = ?1 AND key = ?2",
+                    vec![t(model), t(key)],
+                )
+                .await?;
+                for (i, v) in vecs.iter().enumerate() {
+                    conn.execute(
+                        "INSERT INTO vectors (key, model, chunk, vec) VALUES (?1, ?2, ?3, vector32(?4))",
+                        vec![t(key), t(model), Value::Integer(i as i64), t(&vector_text(v))],
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Forget vectors of texts no longer in the graph, and of other models.
+    ///
+    /// # Errors
+    ///
+    /// A write failed.
+    pub async fn prune_vectors(&self, model: &str) -> Result<()> {
+        let conn = self.conn.lock().await;
+        in_tx(&conn, async {
+            conn.execute(
+                "DELETE FROM vectors WHERE model <> ?1 OR key NOT IN (SELECT key FROM texts)",
+                vec![t(model)],
+            )
+            .await
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// The nodes whose text has a chunk nearest `vector` (of `model`), best
+    /// first: the score is the best chunk's cosine similarity.
+    ///
+    /// # Errors
+    ///
+    /// A read failed.
+    pub async fn nearest(&self, model: &str, vector: &[f32], limit: usize) -> Result<Vec<Found>> {
+        let scored: Vec<(String, f64)> = {
+            let conn = self.conn.lock().await;
+            let mut rows = conn
+                .query(
+                    "SELECT x.id, MIN(vector_distance_cos(v.vec, vector32(?1))) AS d \
+                     FROM vectors v JOIN texts x ON x.key = v.key WHERE v.model = ?2 \
+                     GROUP BY x.id ORDER BY d, x.id LIMIT ?3",
+                    vec![
+                        t(&vector_text(vector)),
+                        t(model),
+                        Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
+                    ],
+                )
+                .await
+                .map_err(db_err)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(db_err)? {
+                let d = match row.get_value(1).map_err(db_err)? {
+                    Value::Real(f) => f,
+                    Value::Integer(i) => i as f64,
+                    _ => 1.0,
+                };
+                out.push((text(row.get_value(0).map_err(db_err)?), 1.0 - d));
+            }
+            out
+        };
+        let mut out = Vec::new();
+        for (id, score) in scored {
+            if let Some(node) = self.node(&id).await? {
+                out.push(Found { node, score });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Each node's text and its key (what its vectors are kept under).
+    ///
+    /// # Errors
+    ///
+    /// A read failed.
+    pub async fn texts(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query("SELECT DISTINCT key, text FROM texts ORDER BY key", ())
+            .await
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(db_err)? {
+            out.push((
+                text(row.get_value(0).map_err(db_err)?),
+                text(row.get_value(1).map_err(db_err)?),
+            ));
+        }
+        Ok(out)
     }
 
     /// Keep `g` as the graph, in place of whatever was there (one
@@ -243,6 +405,30 @@ impl GraphDb {
     }
 }
 
+/// What a text's vectors are kept under: its BLAKE3 hash, so the same
+/// text anywhere is embedded once.
+#[must_use]
+pub fn text_key(text: &str) -> String {
+    blake3::hash(text.as_bytes()).to_hex().to_string()
+}
+
+/// A vector as Turso's `vector32` reads it: `[0.1,0.2,…]`.
+fn vector_text(v: &[f32]) -> String {
+    let parts: Vec<String> = v.iter().map(|x| format!("{x}")).collect();
+    format!("[{}]", parts.join(","))
+}
+
+async fn schema_version(conn: &turso::Connection) -> Result<Option<String>> {
+    let mut rows = conn
+        .query("SELECT v FROM meta WHERE k = 'schema'", ())
+        .await
+        .map_err(db_err)?;
+    Ok(match rows.next().await.map_err(db_err)? {
+        Some(row) => Some(text(row.get_value(0).map_err(db_err)?)),
+        None => None,
+    })
+}
+
 /// Run `writes` in one transaction: committed if they all succeed.
 async fn in_tx(
     conn: &turso::Connection,
@@ -284,8 +470,12 @@ async fn write_graph(conn: &turso::Connection, g: &Graph) -> turso::Result<()> {
     insert(conn, "edges (src, dst, kind, raw, anchor)", &edges).await?;
     let aliases: Vec<Vec<Value>> = g.aliases.iter().map(|(n, id)| vec![t(n), t(id)]).collect();
     insert(conn, "aliases (name, id)", &aliases).await?;
-    let texts: Vec<Vec<Value>> = g.texts.iter().map(|(id, x)| vec![t(id), t(x)]).collect();
-    insert(conn, "texts (id, text)", &texts).await
+    let texts: Vec<Vec<Value>> = g
+        .texts
+        .iter()
+        .map(|(id, x)| vec![t(id), t(&text_key(x)), t(x)])
+        .collect();
+    insert(conn, "texts (id, key, text)", &texts).await
 }
 
 /// Rows into `table (columns)`, [`ROWS`] an `INSERT`.
