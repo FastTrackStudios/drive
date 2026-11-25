@@ -8,3 +8,7 @@ license.workspace = true
 [dependencies]
 regex = "1"
 serde_yaml_ng = "0.10"
+drive-spine.workspace = true
+drive-files = { path = "../drive-files", default-features = false }
+serde.workspace = true
+serde_json.workspace = true

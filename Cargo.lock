@@ -3161,7 +3161,11 @@ dependencies = [
 name = "drive-graph"
 version = "0.1.0"
 dependencies = [
+ "drive-files",
+ "drive-spine",
  "regex",
+ "serde",
+ "serde_json",
  "serde_yaml_ng",
 ]
 

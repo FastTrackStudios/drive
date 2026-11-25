@@ -70,15 +70,22 @@ impl<T: Clone> Resolver<T> {
         self.by_title.entry(title.to_lowercase()).or_insert(e);
     }
 
+    /// What `target` names by path alone.
+    #[must_use]
+    pub fn find_path(&self, target: &str) -> Option<&Entry<T>> {
+        let t = target.trim().trim_start_matches('/').to_lowercase();
+        self.by_path.get(t.strip_suffix(".md").unwrap_or(&t))
+    }
+
     /// What `[[target]]` (or a relative link, already joined to the note's
     /// folder) names, for a note in `from_dir`.
     #[must_use]
     pub fn find(&self, target: &str, from_dir: &str) -> Option<&Entry<T>> {
-        let t = target.trim().trim_start_matches('/').to_lowercase();
-        let no_md = t.strip_suffix(".md").unwrap_or(&t);
-        if let Some(x) = self.by_path.get(no_md) {
+        if let Some(x) = self.find_path(target) {
             return Some(x);
         }
+        let t = target.trim().trim_start_matches('/').to_lowercase();
+        let no_md = t.strip_suffix(".md").unwrap_or(&t);
         let name = no_md.rsplit('/').next().unwrap_or(no_md);
         if let Some(c) = self.by_name.get(name) {
             let here = from_dir.to_lowercase();
