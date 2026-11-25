@@ -126,6 +126,7 @@ mod devices;
 mod fs;
 mod fileprovider;
 mod graph;
+mod graph_share;
 mod pages;
 // Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]

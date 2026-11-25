@@ -128,13 +128,35 @@ pub struct Ask<'a> {
     pub query: &'a str,
     /// The model for the meaning half; none: words only.
     pub model: Option<&'a dyn Embedder>,
-    /// A model that finds images by what they show; none: images by
-    /// their names only.
-    pub images: Option<&'a dyn ImageEmbedder>,
+    /// The query in an image model's space (its id and the query's
+    /// vector: made here, or by a peer that has the model); none: images
+    /// by their names only.
+    pub images: Option<ImageQuery>,
     /// Rank things near this node higher (within two edges), among what
     /// the words and meaning found.
     pub near: Option<&'a str>,
     pub limit: usize,
+}
+
+/// A search's words as an image model sees them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageQuery {
+    pub model: String,
+    pub vector: Vec<f32>,
+}
+
+impl ImageQuery {
+    /// The query made by a model this peer has.
+    ///
+    /// # Errors
+    ///
+    /// The model failed.
+    pub fn local(model: &dyn ImageEmbedder, words: &str) -> Result<ImageQuery> {
+        Ok(ImageQuery {
+            model: model.id().to_string(),
+            vector: model.embed_query(words).map_err(crate::index::Error)?,
+        })
+    }
 }
 
 /// What a search finds, best first: the words' ranking (full text) and the
@@ -160,9 +182,10 @@ pub async fn hybrid(db: &GraphDb, ask: &Ask<'_>) -> Result<Vec<Found>> {
             lists.push(ids_of(&meaning, &mut nodes));
         }
     }
-    if let Some(images) = ask.images {
-        let q = images.embed_query(ask.query).map_err(crate::index::Error)?;
-        let pictures = db.nearest_content(images.id(), &q, wide).await?;
+    if let Some(images) = &ask.images {
+        let pictures = db
+            .nearest_content(&images.model, &images.vector, wide)
+            .await?;
         lists.push(ids_of(&pictures, &mut nodes));
     }
     if let Some(near) = ask.near {
@@ -286,7 +309,7 @@ mod tests {
             &Ask {
                 query: "a red sunset",
                 model: None,
-                images: Some(&Colours),
+                images: Some(ImageQuery::local(&Colours, "a red sunset").unwrap()),
                 near: None,
                 limit: 5,
             },
@@ -294,6 +317,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(found[0].node.id, "file:r", "{found:?}");
+        // Kept vectors read back as they were, to hand to another peer.
+        let back = db
+            .vectors_of("image:colours@1", &["kr".into(), "zz".into()])
+            .await
+            .unwrap();
+        assert_eq!(back, vec![("kr".to_string(), vec![vec![1.0, 0.0]])]);
         // Text vectors and image vectors are pruned apart.
         db.prune_vectors("tiny@1").await.unwrap();
         assert_eq!(db.vector_keys("image:colours@1").await.unwrap().len(), 2);

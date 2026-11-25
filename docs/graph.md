@@ -167,6 +167,26 @@ What a peer knows of a note:
 | no bytes, but another peer's sidecar for that content | the note's own edges |
 | neither (the file lives on a computer out of reach) | only the edges that point at the note |
 
+## Between peers
+
+What one peer derived can save another the work, or give it what it
+could never make: `drive_graph::share`, one protocol on a device's iroh
+endpoint (ALPN `drive/graph/1`), behind the same door as its files (only
+the space's own devices get in). The agent's `drive serve` answers it from
+its `graph.db` and asks the other devices (their endpoints are in the
+space's registry):
+
+| Ask | Answer | Used when |
+|---|---|---|
+| `extract` of a content key | the note's sidecar | the note's bytes are out of reach (on a computer that is off); used only for that content and this extractor's version, never over the bytes |
+| `vectors` of a model for content keys | each key's vectors | this device has no CLIP: it takes the picture vectors of the space's images from the devices that made them (only of the model it asked for, only of its size) |
+| `query` in a model's space | the words' vector | a search on a device without CLIP: the words go to one that has it, the vector comes back, and the search runs here, over the vectors it was given |
+
+So a phone finds the photo of "a drum kit on a stage" that thebattleship
+embedded, without the 600 MB model, and with the battleship off it still
+has the vectors it took (only the query needs a device with CLIP on).
+Text vectors are not handed over: every peer makes them in microseconds.
+
 ## Resolving links across the space
 
 Not just one vault. A `[[Name]]` in a note is looked for, in order:
@@ -316,12 +336,9 @@ peer could read, so an agent knows when some were out of reach.
 ## Not yet
 
 - **App UI**: a backlinks panel in the inspector and a graph view.
-- **Handing sidecars between peers.** The format and its checks are here;
-  the transport waits for peer-to-peer sync (`drive-sync`, `drive-net`).
-  Vectors cannot be checked as cheaply as extracts; a peer will take them
-  only from the owner's own devices, and make its own when it has the model.
-- Images' text (OCR) into the full-text index, and picture vectors handed
-  from the machines that make them to those that cannot.
+- Apps on `drive-sync`'s own endpoint (no agent) answering and asking
+  `drive/graph/1` too (its `Net` takes only its own protocol today).
+- Images' text (OCR) into the full-text index.
 - An approximate nearest-neighbour index once vectors run past a few
   hundred thousand pieces (Turso's vector index is not ready yet; the
   search reads every vector of the model).

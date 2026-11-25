@@ -90,6 +90,12 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
             None
         }
     };
+    // The graph's derived data (docs/graph.md): extracts and vectors for
+    // the space's other devices, and search words as CLIP sees them.
+    match crate::graph_share::protocol(&a).await {
+        Ok(p) => extra.push(p),
+        Err(e) => tracing::warn!(error = %e, "the graph is not shared with other devices"),
+    }
     let transfer = a.start_transfer(extra).await;
     if let Some(x) = apps
         && let Err(e) = crate::apps::serve(x).await
