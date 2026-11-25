@@ -1,0 +1,200 @@
+=== content/_index.md
++++
+description = "Site wide"
+title = "Music Theory"
+weight = 1
+
+[extra]
+description = ""
+tags = []
++++
+
+Start at [Scales](/basics/scales/) or [chords](/harmony/chords/).
+[Top](#top) and [Basics](/basics/) and [Harmony](/harmony/).
+
+=== content/basics/_index.md
++++
+title = "Basics"
+
+[extra]
+description = ""
+tags = []
++++
+
+The basics, Don't skip them.
+
+=== content/basics/circle-of-fifths.md
++++
+title = "Circle of Fifths"
+
+[extra]
+description = ""
+tags = []
++++
+
+> **Remember**
+> Sharps go clockwise.
+
+> **Warning**
+> > **Folded**
+
+## Key Signatures
+
+Back to [Scale](/basics/scales/) or [the modes](/basics/scales/) or [Welcome](/).
+[Circle of Fifths > block-id](/basics/circle-of-fifths/#block-id) [spaced](/basics/scales/) [Scales > ](/basics/scales/)
+
+=== content/basics/scales.md
++++
+title = "Scales"
+weight = 2
+
+[extra]
+aliases = ["Scale", "Modes"]
+description = ""
+related = "[[Chords]]"
+tags = ["basics", "theory"]
++++
+
+See [Circle of Fifths > Key Signatures](/basics/circle-of-fifths/#key-signatures) and <span class="missing-link">Nowhere</span> and <span class="missing-link">gone</span>.
+
+![circle](/basics/circle.png) ![alt text](/basics/circle.png) ![circle](/basics/circle.png) [Sheet.pdf](/basics/sheet.pdf)
+
+```
+[[not a link]]
+```
+
+~~~rust
+[x](Chords.md)
+~~~
+
+Inline `[[code]]` too. [Chords](/harmony/chords/) [Top](#top) [Web](https://example.com/a.md)
+[Spaced](/harmony/chords/#voice-leading) [Enc](/basics/circle-of-fifths/ "title") ![pic](/basics/circle.png-2)
+[Mail](mailto:a@b.c) [Data](data:x) [Abs](/abs.md) [None](Missing.md)
+
+=== content/bom.md
++++
+title = "BOM"
+
+[extra]
+description = ""
+tags = []
++++
+
+body
+
+=== content/broken-fm.md
++++
+title = "broken-fm"
+
+[extra]
+description = ""
+tags = []
++++
+
+Still [Scales](/basics/scales/).
+
+=== content/crlf.md
++++
+title = "CRLF"
+
+[extra]
+description = ""
+tags = []
++++
+
+line [Scales](/basics/scales/)
+
+=== content/deep/_index.md
++++
+title = "README"
+
+[extra]
+description = ""
+tags = []
++++
+
+Deep section, [Er](/deep/er/).
+
+=== content/deep/er/_index.md
++++
+title = "Er"
+
+[extra]
+description = ""
+tags = []
++++
+
+=== content/deep/er/note-ü.md
++++
+title = "Note Ü"
+
+[extra]
+description = ""
+tags = []
++++
+
+Unicode [Note Ü](/deep/er/note-ü/) and [up](/).
+
+=== content/harmony/_index.md
++++
+title = "Harmony index"
+
+[extra]
+description = ""
+tags = []
++++
+
+The index wins.
+
+=== content/harmony/chords.md
++++
+title = "Chords"
+
+[extra]
+description = ""
+tags = []
++++
+
+Built from [scales](/harmony/scales/). ![circle](/basics/circle.png) [Scales](/basics/scales/) [scales.md](/basics/scales/)
+
+=== content/harmony/harmony.md
++++
+title = "Harmony"
+
+[extra]
+description = ""
+tags = []
++++
+
+Chords and how they move.
+
+=== content/harmony/scales.md
++++
+title = "Scales"
+
+[extra]
+description = ""
+tags = []
++++
+
+A second Scales, nearer [Scales](/harmony/scales/) links here.
+
+=== content/no-close.md
++++
+title = "no-close"
+
+[extra]
+description = ""
+tags = []
++++
+
+---
+title: x
+no end
+
+--- asset static/basics/circle.png <- Basics/circle.png
+--- asset static/basics/circle.png-2 <- Basics/Circle.PNG
+--- asset static/basics/sheet.pdf <- Basics/Sheet.pdf
+--- unresolved [[Nowhere]] in Basics/Scales.md
+--- unresolved [[Nowhere]] in Basics/Scales.md
+--- pages 15
