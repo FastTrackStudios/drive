@@ -115,6 +115,8 @@ A page (a note kept as live Loro text, [graph.md](graph.md)) under a
 working copy's root is a plain `.md` file in its folder: its text comes
 down when the page changes, and a save on disk goes up as a diff of the
 page's text (not a blob), so edits others make to the page meanwhile stay.
-A page changed on both sides since the last sync is a conflict like any
-file's.
+A page changed on both sides since the last sync is merged by the page
+itself (its version at the last sync is kept in the sync state), not set
+aside as a conflict. A new `.md` saved in an Obsidian vault (`.obsidian/`
+at or above it) becomes a page.
 

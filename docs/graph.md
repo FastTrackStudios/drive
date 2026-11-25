@@ -120,8 +120,15 @@ MCP: `page_read`, `page_write` (a diff, with `dry_run`) and `page_create`.
 page is a plain `.md` file: written from the page's text, and when an
 editor saves it the new text goes into the page as a diff. So a vault
 folder can be open in Obsidian on one computer while people and agents
-edit the same pages live everywhere else. A page changed on both sides
-since the last sync keeps both, the disk's beside it as a conflict copy.
+edit the same pages live everywhere else.
+
+- A page changed on disk **and** in the Drive since the last sync is
+  merged, not copied aside: each sync records the page's version, the
+  disk's text is applied to a fork of the page at that version and
+  imported, so the CRDT keeps both edits; the merged text goes back to
+  the file.
+- A new `.md` file saved in an Obsidian vault (a folder at or above it
+  holds `.obsidian/`) becomes a page. Other Markdown stays an ordinary file.
 
 ## Notes: what one file says
 
@@ -292,10 +299,6 @@ peer could read, so an agent knows when some were out of reach.
 - An approximate nearest-neighbour index once vectors run past a few
   hundred thousand pieces (Turso's vector index is not ready yet; the
   search reads every vector of the model).
-- **A three-way merge for a page edited on disk and in the Drive at once**
-  (today both are kept, the disk's as a conflict copy, as for any file).
-- New `.md` files saved in a working copy becoming pages (today they are
-  files; pages made in the Drive are pages on disk too).
 - An editor for pages in the Drive app (live cursors through presence), and
   pages as a source for sites (docs/sites.md's "Loro page documents").
 - **Refreshing as documents change** in apps that embed the engine (the

@@ -33,6 +33,10 @@ pub struct Synced {
     pub size: u64,
     /// The file's modified time on disk then (ms).
     pub mtime: i64,
+    /// For a page: its version then (`drive_spine::pages::version`), so a
+    /// file saved on disk since merges with the page's own edits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_at: Vec<u8>,
 }
 
 /// One thing to do.
@@ -227,6 +231,7 @@ mod tests {
             hash: hash.into(),
             size,
             mtime,
+            page_at: Vec::new(),
         }
     }
     fn m<V: Clone>(items: &[(&str, V)]) -> BTreeMap<String, V> {
