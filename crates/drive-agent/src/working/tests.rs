@@ -318,9 +318,13 @@ async fn a_page_is_a_markdown_file_on_disk_both_ways() {
     let (w, _) = a.own("Studio/Songs").await.unwrap();
 
     // A page made in the Drive comes down as a plain .md file.
-    let p = crate::pages::create(&a, "Studio/Songs/Song B/Ideas", "# Ideas\n\nA key change.\n")
-        .await
-        .unwrap();
+    let p = crate::pages::create(
+        &a,
+        "Studio/Songs/Song B/Ideas",
+        "# Ideas\n\nA key change.\n",
+    )
+    .await
+    .unwrap();
     let done = a.reconcile(&w).await.unwrap();
     assert_eq!(done.down, 1, "{done:?}");
     assert!(done.errors.is_empty(), "{:?}", done.errors);
@@ -351,6 +355,12 @@ async fn a_page_is_a_markdown_file_on_disk_both_ways() {
     drive_spine::pages::write(&p.doc, "# Ideas\n\nKey change at the bridge, then out.\n").unwrap();
     let done = a.reconcile(&w).await.unwrap();
     assert_eq!(done.down, 1, "{done:?}");
-    assert_eq!(read(&file), b"# Ideas\n\nKey change at the bridge, then out.\n");
-    assert_eq!(a.reconcile(&w).await.unwrap(), crate::working::Reconciled::default());
+    assert_eq!(
+        read(&file),
+        b"# Ideas\n\nKey change at the bridge, then out.\n"
+    );
+    assert_eq!(
+        a.reconcile(&w).await.unwrap(),
+        crate::working::Reconciled::default()
+    );
 }

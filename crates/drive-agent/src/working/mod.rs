@@ -426,7 +426,9 @@ impl Agent {
     /// A page's document.
     async fn page(&self, page: &str) -> LoroDoc {
         let space = self.cfg.lock().expect("cfg").space.clone();
-        self.drive.open(&drive_spine::pages::page_doc(&space, page)).await
+        self.drive
+            .open(&drive_spine::pages::page_doc(&space, page))
+            .await
     }
 
     /// A tree file's hash now: a page's by its text ("" if not a file).
@@ -500,7 +502,8 @@ impl Agent {
             if drive_spine::pages::text(&doc) != text {
                 drive_spine::pages::write(&doc, &text).map_err(|e| format!("{rel}: {e}"))?;
                 let space = self.cfg.lock().expect("cfg").space.clone();
-                self.drive.commit(&drive_spine::pages::page_doc(&space, &page));
+                self.drive
+                    .commit(&drive_spine::pages::page_doc(&space, &page));
             }
             last.insert(rel.to_string(), record(&tree::id_string(tid)));
             return Ok(());
