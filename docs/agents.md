@@ -113,6 +113,7 @@ changes nothing (and costs no writes).
 |---|---|
 | `tag`, `untag` | Put tags on things or take them off; a computer's file is tagged by its content, so every copy shows it. `create_missing` makes missing tags. All the things and tags are checked first: all of it, or nothing. |
 | `page_create`, `page_write` | Make a page (a Markdown note kept as live text) at a Drive path, or give one its new text: only what differs is applied, so others' edits elsewhere in it stay. `page_read` reads one. |
+| `adopt_frontmatter_tags` | Notes' frontmatter `tags:` as Drive tags (made where missing, nested as `music/drums`); run with `dry_run` first and show the person. |
 | `link`, `unlink` | Say one thing refers to another in an app's words (`kind`: uses, built-on), in `drive:links`; the graph tools see it ([graph.md](graph.md)). |
 | `set_field` | A named value on a thing (Artist, Source, Date created, …); the old value is in the answer. |
 | `create_tag` | A tag with parents, colour, shorthand, aliases, category and hidden switches; a duplicate (same name and parents) is refused. |

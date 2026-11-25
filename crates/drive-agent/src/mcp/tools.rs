@@ -295,6 +295,13 @@ pub fn defs() -> Vec<Def> {
             ),
         },
         Def {
+            name: "adopt_frontmatter_tags",
+            title: "Notes' tags as Drive tags",
+            description: "Put each note's frontmatter `tags:` on it as Drive tags (shared by every app and search), making the ones that do not exist, nested as Obsidian nests them (music/drums: Drums under Music). A name several Drive tags share is left alone. Run it with dry_run first and show the person: the tags sync to every device.",
+            write: true,
+            schema: props(json!({}), &[]),
+        },
+        Def {
             name: "link",
             title: "Link two things",
             description: "Say that one thing refers to another, in an app's words (`kind`: uses, built-on, in-setlist; empty: a plain reference): an episode uses a song, a preset is built on another. Kept by what the things are (as tags are), synced to every device, and read by the graph_* tools.",
@@ -537,6 +544,7 @@ pub async fn run(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "page_read" => graph::page_read(ctx, args).await,
         "page_write" => graph::page_write(ctx, args).await,
         "page_create" => graph::page_create(ctx, args).await,
+        "adopt_frontmatter_tags" => graph::adopt_tags(ctx, args).await,
         "link" => graph::link(ctx, args, true).await,
         "unlink" => graph::link(ctx, args, false).await,
         "tag" => write::tag(ctx, args, true).await,

@@ -3,6 +3,8 @@
 //! - [`markdown`]: reading Markdown, Obsidian's included (frontmatter,
 //!   headings, `[[wikilinks]]`, embeds, relative links), code left alone.
 //! - [`resolve`]: what a link names within one folder of notes.
+//! - [`adopt_tags`]: notes' frontmatter tags as Drive tags (planned; written
+//!   only when the owner asks).
 //! - [`extract`]: what one Markdown file says (links, embeds, aliases,
 //!   headings, tags), kept by content hash.
 //! - [`space`]: what a link names across the whole space.
@@ -17,6 +19,7 @@
 
 #[cfg(feature = "turso")]
 pub mod db;
+pub mod adopt_tags;
 pub mod extract;
 #[cfg(feature = "embed")]
 pub mod embed;

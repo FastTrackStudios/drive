@@ -261,6 +261,7 @@ fn tools_are_described_and_none_destroys() {
         "page_read",
         "page_write",
         "page_create",
+        "adopt_frontmatter_tags",
         "link",
         "unlink",
         "tag",
@@ -918,4 +919,38 @@ async fn pages_are_live_notes_in_the_graph() {
     // A file is not a page.
     assert!(w.call("page_read", json!({ "page": "drive:Songs/lyrics.txt" })).await.is_err());
     assert_eq!(w.ctx().writes_used(), 3);
+}
+
+#[tokio::test]
+async fn frontmatter_tags_become_drive_tags_only_when_asked() {
+    let w = world(20).await;
+    let notes = tree::mkdir(&w.ctx().a.files, None, "Notes").unwrap();
+    note(&w, notes, "Kick.md", "---\ntags: [music/drums, theory]\n---\nKick.\n").await;
+    let dry = w
+        .call("adopt_frontmatter_tags", json!({ "dry_run": true }))
+        .await
+        .unwrap();
+    assert_eq!(dry["writes"], 2, "{dry}");
+    assert!(w.call("tags", json!({})).await.unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["name"] != "Drums"), "a dry run makes nothing");
+    w.call("adopt_frontmatter_tags", json!({})).await.unwrap();
+    let on = w.call("tags", json!({ "thing": "drive:Notes/Kick.md" })).await.unwrap();
+    let mut names: Vec<&str> = on["tags"].as_array().unwrap().iter().map(|t| t["tag"].as_str().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["drums", "theory"], "named as written: {on}");
+    // Now a Drive tag: under Music in tag search and the graph.
+    let under = w.call("graph_tag", json!({ "tag": "Music" })).await.unwrap();
+    assert!(
+        under["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["thing"] == "drive:Notes/Kick.md"),
+        "{under}"
+    );
+    let again = w.call("adopt_frontmatter_tags", json!({ "dry_run": true })).await.unwrap();
+    assert_eq!(again["writes"], 0, "nothing left to do");
 }
