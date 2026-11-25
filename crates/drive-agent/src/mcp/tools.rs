@@ -262,6 +262,39 @@ pub fn defs() -> Vec<Def> {
             ),
         },
         Def {
+            name: "page_read",
+            title: "Read a page",
+            description: "The text of a page: a Markdown note kept as live text that everyone edits at once (wikilinks, frontmatter and all, as in Obsidian).",
+            write: false,
+            schema: props(json!({ "page": { "type": "string", "description": "The page's Drive path (drive:Wiki/Scales.md)." } }), &["page"]),
+        },
+        Def {
+            name: "page_write",
+            title: "Write a page",
+            description: "Give a page its new text. Only what differs from the current text is applied, so edits others make elsewhere in the page at the same time stay. Read it first (page_read) and change what you mean to.",
+            write: true,
+            schema: props(
+                json!({
+                    "page": { "type": "string", "description": "The page's Drive path." },
+                    "text": { "type": "string", "description": "The whole new text (Markdown)." }
+                }),
+                &["page", "text"],
+            ),
+        },
+        Def {
+            name: "page_create",
+            title: "Create a page",
+            description: "A new page (a live Markdown note) at a Drive path, its folders made; `.md` is added when the path has none. Its [[wikilinks]] join the graph at once.",
+            write: true,
+            schema: props(
+                json!({
+                    "path": { "type": "string", "description": "Where in the Drive (drive:Wiki/Modes.md)." },
+                    "text": { "type": "string", "description": "Its text (Markdown); empty if not given." }
+                }),
+                &["path"],
+            ),
+        },
+        Def {
             name: "link",
             title: "Link two things",
             description: "Say that one thing refers to another, in an app's words (`kind`: uses, built-on, in-setlist; empty: a plain reference): an episode uses a song, a preset is built on another. Kept by what the things are (as tags are), synced to every device, and read by the graph_* tools.",
@@ -501,6 +534,9 @@ pub async fn run(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, String> {
         "graph_neighbors" => graph::neighbors(ctx, args).await,
         "graph_path" => graph::path(ctx, args).await,
         "graph_tag" => graph::tagged(ctx, args).await,
+        "page_read" => graph::page_read(ctx, args).await,
+        "page_write" => graph::page_write(ctx, args).await,
+        "page_create" => graph::page_create(ctx, args).await,
         "link" => graph::link(ctx, args, true).await,
         "unlink" => graph::link(ctx, args, false).await,
         "tag" => write::tag(ctx, args, true).await,

@@ -60,6 +60,9 @@
 //! drive [--dir DIR] graph model fetch             # the embedding model, once per device
 //! drive [--dir DIR] graph link|unlink FROM TO [--kind K]   # an app's kind of link, in drive:links
 //!
+//! Pages (notes kept as live Loro text, edited by everyone at once):
+//! drive [--dir DIR] page new PATH [FILE|-] | cat PATH | write PATH [FILE|-] | ls
+//!
 //! File rules (docs/rules.md; every rule starts off and as a dry run):
 //! drive [--dir DIR] rules ls | show NAME | journal [NAME] | undo ID
 //! drive [--dir DIR] rules run NAME [--live]       # here now, and asked of every device
@@ -123,6 +126,7 @@ mod devices;
 mod fs;
 mod fileprovider;
 mod graph;
+mod pages;
 // Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]
 mod index_db;
@@ -1054,6 +1058,7 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
         }
         "tag" => tagging::command(dir, args).await?,
         "graph" => graph::command(dir, args).await?,
+        "page" => pages::command(dir, args).await?,
         // An MCP server on stdio for AI agents (docs/agents.md): stdout is
         // the protocol's, so nothing else here may print.
         "mcp" => mcp::serve(dir, args).await?,

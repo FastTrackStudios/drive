@@ -1,7 +1,8 @@
 //! A space's file tree: a Loro movable tree of folders and files. Each
 //! node's metadata map holds `name`, `kind` (`dir` or `file`), and for
 //! files `size`, `mtime` (ms), `hash` (BLAKE3 hex, empty until uploaded)
-//! and `mime`. Moves and renames from several devices merge; two files
+//! and `mime`, and for a page (a note kept as Loro text, `drive_spine::pages`)
+//! `page`, its id. Moves and renames from several devices merge; two files
 //! given the same name at once both survive, and listings tell them apart.
 
 use std::collections::HashMap;
@@ -18,6 +19,8 @@ pub struct Entry {
     pub mtime: i64,
     pub hash: String,
     pub mime: String,
+    /// A page's id: its text is in the page's document, not a blob.
+    pub page: String,
 }
 
 fn tree(doc: &LoroDoc) -> LoroTree {
@@ -65,6 +68,7 @@ pub fn entry(doc: &LoroDoc, id: TreeID) -> Option<Entry> {
         mtime: n(&m, "mtime"),
         hash: s(&m, "hash"),
         mime: s(&m, "mime"),
+        page: s(&m, "page"),
     })
 }
 
@@ -162,6 +166,21 @@ pub fn create_file(doc: &LoroDoc, parent: Option<TreeID>, name: &str) -> loro::L
     m.insert("mtime", crate::now_ms())?;
     m.insert("hash", "")?;
     m.insert("mime", mime_of(name))?;
+    Ok(id)
+}
+
+/// A page in the tree: a Markdown file whose text is the page document
+/// `page` (`drive_spine::pages`), edited live rather than uploaded.
+pub fn create_page(
+    doc: &LoroDoc,
+    parent: Option<TreeID>,
+    name: &str,
+    page: &str,
+) -> loro::LoroResult<TreeID> {
+    let id = create_file(doc, parent, name)?;
+    let m = tree(doc).get_meta(id)?;
+    m.insert("page", page)?;
+    m.insert("mime", "text/markdown")?;
     Ok(id)
 }
 

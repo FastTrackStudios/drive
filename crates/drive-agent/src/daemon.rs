@@ -108,6 +108,8 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
     }
     let mut events = a.drive.events();
     a.report_volumes();
+    // This peer's graph (docs/graph.md), kept up to date as its documents change.
+    tokio::spawn(crate::graph::keep_up(a.clone()));
 
     // Indexing runs beside the loop, one pass at a time: a big location
     // (millions of files) takes hours to walk, and the node's fetches,

@@ -84,6 +84,38 @@ at once leave one link. The kind is the app's own word, one line; empty is
 a plain reference. Every app writes the same shape (`links::link`,
 `links::unlink`), so an agent needs one tool for every app's links.
 
+## Pages: notes everyone edits at once
+
+A vault's notes can be **pages**: Markdown kept as live Loro text
+(`drive_spine::pages`), so several people and agents edit one note at once,
+offline included, and every device merges the same (Google Docs' way, on
+the same documents that sync peer to peer).
+
+- A page is one document, `<org>/drive:page:<id>`, its whole text in `body`
+  (frontmatter, wikilinks and all, so it reads exactly as an Obsidian
+  note).
+- It sits in its vault at a Drive path: a tree file whose `page` names it
+  (`tree::create_page`). Folders, tags, links and moves treat it as any
+  file; wikilinks resolve to it by its name, title and aliases.
+- A write takes the whole new text and applies only what differs (a text
+  diff, `LoroText::update`), so an agent that changes one line keeps what
+  someone else is typing further down.
+- The graph reads a page's text from its document; its content key is
+  `page:<BLAKE3 of the text>`, so it is parsed and embedded once per text.
+- `drive serve` keeps the graph up to date: a couple of seconds after the
+  tree, the registry, the spine, the tags, the links or any page changes
+  (here or on another device), it is made again, so a link typed into a
+  page is a backlink a moment later.
+
+```text
+drive page new PATH [FILE|-]     # a page at PATH (folders made, `.md` added)
+drive page cat PATH
+drive page write PATH [FILE|-]   # only what changed is applied
+drive page ls
+```
+
+MCP: `page_read`, `page_write` (a diff, with `dry_run`) and `page_create`.
+
 ## Notes: what one file says
 
 `drive_graph::extract` reads one Markdown file into an `Extract`: its
@@ -253,8 +285,14 @@ peer could read, so an agent knows when some were out of reach.
 - An approximate nearest-neighbour index once vectors run past a few
   hundred thousand pieces (Turso's vector index is not ready yet; the
   search reads every vector of the model).
-- **Refreshing as documents change**, in `drive serve` and in apps, rather
-  than on each question.
+- **Pages as files on disk**, both ways: a page's working copy (a `.md` in a
+  folder, docs/working-copies.md), so Obsidian and any editor open it, and
+  saving it applies the diff to the page.
+- An editor for pages in the Drive app (live cursors through presence), and
+  pages as a source for sites (docs/sites.md's "Loro page documents").
+- **Refreshing as documents change** in apps that embed the engine (the
+  agent's service does it), and an incremental refresh (today the whole
+  graph is made again, which for a very large tree is a second or two).
 - Inline `#tags` in a note's body, and block references as their own nodes.
 - Markdown on computers' locations (not in the Drive tree): their bytes are
   on one computer, so other peers would know them only by shared sidecars.
