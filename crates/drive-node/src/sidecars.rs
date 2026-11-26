@@ -924,7 +924,7 @@ mod tests {
         assert_eq!((st.count, st.bytes), (1, 3));
         // An older producer's sidecar is stale: needed again.
         sc.put(
-            &[a.clone()],
+            std::slice::from_ref(&a),
             Kind::Peaks,
             0,
             "application/x-drive-peaks",
@@ -935,9 +935,15 @@ mod tests {
         assert!(sc.needs(&a, Kind::Peaks).await);
         // Nothing a browser would run.
         assert!(
-            sc.put(&[a.clone()], Kind::Thumb256, 1, "text/html", vec![1])
-                .await
-                .is_err()
+            sc.put(
+                std::slice::from_ref(&a),
+                Kind::Thumb256,
+                1,
+                "text/html",
+                vec![1]
+            )
+            .await
+            .is_err()
         );
         // Replacing drops the old blob once nothing uses it.
         let new = sc
@@ -959,7 +965,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sc = store(dir.path()).await;
         let a = key('c');
-        sc.record_miss(&[a.clone()], &[Kind::Thumb256], "no ffmpeg")
+        sc.record_miss(std::slice::from_ref(&a), &[Kind::Thumb256], "no ffmpeg")
             .await;
         assert_eq!(
             sc.miss(&a, Kind::Thumb256).await.as_deref(),

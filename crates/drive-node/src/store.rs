@@ -41,8 +41,11 @@ pub struct Store {
 struct Listing {
     /// Bumped by every write to `docs`.
     generation: u64,
-    rows: Option<(u64, std::sync::Arc<Vec<(String, u64)>>)>,
+    rows: Option<(u64, DocList)>,
 }
+
+/// Every stored document id with its snapshot size, shared.
+pub type DocList = std::sync::Arc<Vec<(String, u64)>>;
 
 /// Read connections, handed out one request at a time.
 struct ReadPool {
@@ -434,7 +437,7 @@ impl Store {
 
     /// Every stored document id with its snapshot size.
     #[tracing::instrument(name = "drive.store.docs", skip_all, fields(store.conn = Empty, store.wait_ms = Empty, store.query_ms = Empty))]
-    pub async fn list(&self) -> turso::Result<std::sync::Arc<Vec<(String, u64)>>> {
+    pub async fn list(&self) -> turso::Result<DocList> {
         let generation = {
             let l = self.listing.lock().expect("listing");
             if let Some((g, rows)) = &l.rows
@@ -756,7 +759,7 @@ impl Store {
                     out.push(Self::found(&row)?);
                 }
             }
-            out.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+            out.sort_by_key(|f| std::cmp::Reverse(f.mtime));
             out.truncate(limit.clamp(1, 1000) as usize);
             return Ok(out);
         }
