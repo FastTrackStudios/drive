@@ -230,6 +230,8 @@ impl Drive {
                 name: guest_name(),
                 hue: (platform::random() * 360.0) as u32,
             });
+        // On wasm the transport is not Send (one thread), but native needs the Arc.
+        #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
         let drive = Drive(Arc::new(Inner {
             transport: Box::new(transport),
             url,

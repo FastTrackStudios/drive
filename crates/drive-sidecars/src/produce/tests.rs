@@ -107,7 +107,7 @@ fn pdf() -> Vec<u8> {
     let xref = out.len();
     write!(out, "xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).unwrap();
     for o in offsets {
-        write!(out, "{o:010} 00000 n \n").unwrap();
+        writeln!(out, "{o:010} 00000 n ").unwrap();
     }
     write!(
         out,

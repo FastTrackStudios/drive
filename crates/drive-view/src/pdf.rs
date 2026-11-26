@@ -203,7 +203,7 @@ fn comment(info: &DocInfo, a: &Annotation) -> Comment {
 
 /// Premultiplied RGBA8 → straight, in place.
 fn unpremultiply(px: &mut [u8]) {
-    for p in px.chunks_exact_mut(4) {
+    for p in px.as_chunks_mut::<4>().0 {
         let a = p[3] as u32;
         if a != 0 && a != 255 {
             for c in &mut p[..3] {
@@ -260,7 +260,7 @@ pub(crate) mod tests {
         assert_eq!((p.width, p.height), (306, 396));
         assert_eq!(p.rgba.len(), 306 * 396 * 4);
         // Somewhere on the page is ink.
-        assert!(p.rgba.chunks_exact(4).any(|px| px[0] < 128));
+        assert!(p.rgba.as_chunks::<4>().0.iter().any(|px| px[0] < 128));
 
         // Page 2 is too small to show its text (it sits at y = 700): one hit.
         let hits = d.search("hello DRIVE");
