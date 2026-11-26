@@ -37,7 +37,9 @@ opentelemetry = "0.30"
 opentelemetry_sdk = "0.30"
 tracing-opentelemetry = "0.31"
 getrandom = "0.3"
+# The loopback port a sign-in in the system's browser comes back to.
+tokio = { version = "1", features = ["net", "io-util", "time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "macros", "rt-multi-thread"] }
 tempfile = "3"

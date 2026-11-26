@@ -3,8 +3,8 @@
 //! calls, and a restart where a page would reload.
 //!
 //! There is no page, so no location: an app is always at its root, and
-//! the issuer's sign-in (a redirect back to `/auth/callback`) is not
-//! available here yet. See `crate::auth` for how a native app is signed in.
+//! the issuer's sign-in comes back to a loopback port of the app's instead
+//! of a page (`crate::auth::sign_in`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
