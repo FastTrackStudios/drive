@@ -160,6 +160,7 @@ impl AppCache {
         self.budget.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub fn set_budget(&self, budget: u64, pinned: &dyn Fn(&str) -> bool) {
         self.budget.store(budget, Ordering::Relaxed);
         self.evict(None, 0, pinned);

@@ -4,19 +4,20 @@
 default:
     @just --list
 
-# The full check: tests, clippy, the browser build. What a release tag runs first.
+# The full check: tests, rustfmt, clippy, the browser build. What a release tag runs first.
 ci: ci-tests ci-lint ci-wasm
 
 ci-tests:
     cargo test --workspace --locked
 
 ci-lint:
-    cargo clippy --workspace --all-targets --locked
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
     bash scripts/release.sh self-test
 
 ci-wasm:
-    cargo check --locked -p drive-app --target wasm32-unknown-unknown --features web
-    cargo check --locked -p drive-client -p drive-dioxus --target wasm32-unknown-unknown
+    cargo clippy --locked -p drive-app --target wasm32-unknown-unknown --features web --all-targets -- -D warnings
+    cargo clippy --locked -p drive-client -p drive-dioxus --target wasm32-unknown-unknown --all-targets -- -D warnings
 
 # The release binaries (drive, drive-node) for TARGET (default: this machine), packed into OUT.
 dist out="dist" target="":

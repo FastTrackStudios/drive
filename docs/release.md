@@ -35,8 +35,11 @@ Other.
 ## What the tag runs
 
 1. **Checks**, in parallel on THEBATTLESHIP's `thebattleship` runners: the
-   tests (`just ci-tests`), clippy and the release script's self-test
-   (`just ci-lint`), and the browser build (`just ci-wasm`).
+   tests (`just ci-tests`), rustfmt, clippy and the release script's
+   self-test (`just ci-lint`), and the browser build (`just ci-wasm`).
+   Clippy runs with `-D warnings` (natively and for the browser build) and
+   rustfmt with `--check`, so any warning or unformatted code fails the
+   checks.
 2. **Binaries**, only if every check passed. Each build stamps the tag's
    version into its checkout, checks that the tag is on `main` and matches,
    and runs `scripts/dist.sh`:

@@ -409,13 +409,12 @@ impl Engine {
                         o.run.skipped += 1;
                         continue;
                     }
-                    if let Some(why) =
-                        self.state
-                            .lock()
-                            .await
-                            .guard
-                            .holds_off(&rule.id, &item.key(), &c.sampled, now)
-                    {
+                    if let Some(why) = self.state.lock().await.guard.holds_off(
+                        &rule.id,
+                        &item.key(),
+                        &c.sampled,
+                        now,
+                    ) {
                         tracing::debug!(rule.name = %rule.name, rules.held = %why, "a rule left a file alone");
                         o.run.skipped += 1;
                         continue;
@@ -440,7 +439,8 @@ impl Engine {
                     // Unchanged since it was indexed, or not now.
                     let changed = !c.bundle
                         && (meta.len() != c.size
-                            || file_ms(meta.modified()).is_some_and(|m| (m - c.mtime).abs() > 2_000));
+                            || file_ms(meta.modified())
+                                .is_some_and(|m| (m - c.mtime).abs() > 2_000));
                     if changed {
                         o.run.skipped += 1;
                         continue;
@@ -1367,7 +1367,10 @@ mod engine_tests {
         let (songs, backup) = (disk.path().join("songs"), disk.path().join("backup"));
         aged(&songs.join("a.wav"), b"the same take");
         aged(&songs.join("b.wav"), b"only here");
-        aged(&songs.join("Song.logicx/Alternatives/inside.wav"), b"the same take");
+        aged(
+            &songs.join("Song.logicx/Alternatives/inside.wav"),
+            b"the same take",
+        );
         aged(&backup.join("old/a.wav"), b"the same take");
         let loc = a.add_location("Songs", &songs).unwrap();
         let other = a.add_location("Backup", &backup).unwrap();
@@ -1384,7 +1387,10 @@ mod engine_tests {
                 all: true,
                 groups: vec![Group {
                     all: true,
-                    conditions: vec![Condition::is(Test::Copies { cmp: Cmp::More, n: 1 })],
+                    conditions: vec![Condition::is(Test::Copies {
+                        cmp: Cmp::More,
+                        n: 1,
+                    })],
                 }],
             },
             ..Rule::default()

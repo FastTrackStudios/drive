@@ -86,7 +86,13 @@ pub async fn browse(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     if let Some(l) = opt_str(args, "location") {
         let loc = ctx.location(l)?;
         ctx.has_index(&loc).await?;
-        if !path.is_empty() && ctx.a.index_entry(&loc.id, &path).await.is_none_or(|e| !e.dir) {
+        if !path.is_empty()
+            && ctx
+                .a
+                .index_entry(&loc.id, &path)
+                .await
+                .is_none_or(|e| !e.dir)
+        {
             return Err(format!(
                 "{path} is not a folder of {} (as of its last index)",
                 loc.name
@@ -584,7 +590,13 @@ pub async fn duplicates(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     // copies: no location is read whole.
     ctx.sync_indexes().await;
     let mut groups: HashMap<(String, u64), Vec<(String, String)>> = HashMap::new();
-    for (sampled, size, _) in ctx.a.index_db.duplicates(min).await.map_err(|e| e.to_string())? {
+    for (sampled, size, _) in ctx
+        .a
+        .index_db
+        .duplicates(min)
+        .await
+        .map_err(|e| e.to_string())?
+    {
         let copies = ctx
             .a
             .index_db

@@ -207,13 +207,17 @@ impl Agent {
         let space = self.cfg.lock().expect("cfg").space.clone();
         let tags_id = drive_spine::tags::tags_doc(&space);
         let links_id = drive_spine::links::links_doc(&space);
-        let (tags, links) = (self.drive.open(&tags_id).await, self.drive.open(&links_id).await);
+        let (tags, links) = (
+            self.drive.open(&tags_id).await,
+            self.drive.open(&links_id).await,
+        );
         let lib = drive_spine::tags::Library::load(&tags);
         let all_links = drive_spine::links::all(&links);
-        let keyed = lib
-            .targets()
-            .map(|(t, _)| t)
-            .chain(all_links.iter().flat_map(|l| [l.from.clone(), l.to.clone()]));
+        let keyed = lib.targets().map(|(t, _)| t).chain(
+            all_links
+                .iter()
+                .flat_map(|l| [l.from.clone(), l.to.clone()]),
+        );
         let mut wanted: Vec<String> = keyed
             .filter_map(|t| match t {
                 Target::Folder { location: l, path } if l == location => Some(path),
@@ -234,8 +238,14 @@ impl Agent {
         };
         for (from, to) in &moves {
             let (f, t) = (
-                Target::Folder { location: location.into(), path: from.clone() },
-                Target::Folder { location: location.into(), path: to.clone() },
+                Target::Folder {
+                    location: location.into(),
+                    path: from.clone(),
+                },
+                Target::Folder {
+                    location: location.into(),
+                    path: to.clone(),
+                },
             );
             let _ = drive_spine::tags::rekey(&tags, &f, &t);
             let _ = drive_spine::links::rekey(&links, &f, &t);
@@ -339,7 +349,11 @@ impl Agent {
         let published = space::locations(&self.space)
             .into_iter()
             .any(|l| l.id == loc.id && !l.index.is_empty());
-        let retry = self.unpublished.lock().expect("unpublished").contains(&loc.id);
+        let retry = self
+            .unpublished
+            .lock()
+            .expect("unpublished")
+            .contains(&loc.id);
         if published && written == 0 && !retry {
             tracing::debug!(location.name = %loc.name, index.files = stats.files, "unchanged: nothing published");
             return Ok(stats);
@@ -349,7 +363,10 @@ impl Agent {
             .await
             .map_err(|e| e.to_string())?
             .ok_or("the index database lost the index it was given")?;
-        self.unpublished.lock().expect("unpublished").insert(loc.id.clone());
+        self.unpublished
+            .lock()
+            .expect("unpublished")
+            .insert(loc.id.clone());
         let (node, space_name) = {
             let c = self.cfg.lock().expect("cfg");
             (c.node_http(), c.space.clone())
@@ -365,7 +382,10 @@ impl Agent {
             return Err(format!("the node refused the index ({})", resp.status()));
         }
         let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        self.unpublished.lock().expect("unpublished").remove(&loc.id);
+        self.unpublished
+            .lock()
+            .expect("unpublished")
+            .remove(&loc.id);
         // Removed while the index was on its way: the node drops it again,
         // so no rows stay behind for a location nobody has.
         if !self.has_location(&loc.id) {
@@ -516,7 +536,9 @@ impl Agent {
                         .expect("fetched")
                         .insert(loc.id.clone(), loc.built);
                 }
-                Err(e) => tracing::warn!(location.id = %loc.id, error = %e, "a downloaded index was not put in the index database"),
+                Err(e) => {
+                    tracing::warn!(location.id = %loc.id, error = %e, "a downloaded index was not put in the index database")
+                }
             }
         }
         tracing::Span::current().record("indexes.fetched", fetched);
@@ -619,7 +641,10 @@ mod tests {
         std::fs::write(outside.join("secret"), "S").unwrap();
         std::fs::write(agent.join("config.json"), "{}").unwrap();
         let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
-        assert_eq!(confined(&loc, "a.wav", &agent), Some(canon(&loc.join("a.wav"))));
+        assert_eq!(
+            confined(&loc, "a.wav", &agent),
+            Some(canon(&loc.join("a.wav")))
+        );
         // Not there yet: judged by the folder it would be in.
         assert_eq!(
             confined(&loc, "new/b.wav", &agent),
@@ -655,7 +680,10 @@ mod reindex_tests {
     use crate::adopt::tests::{device, node, songs};
 
     fn built(a: &crate::agent::Agent, id: &str) -> (String, i64) {
-        let l = space::locations(&a.space).into_iter().find(|l| l.id == id).unwrap();
+        let l = space::locations(&a.space)
+            .into_iter()
+            .find(|l| l.id == id)
+            .unwrap();
         (l.index, l.built)
     }
 
@@ -672,20 +700,28 @@ mod reindex_tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         a.index_location(&loc).await.unwrap();
-        assert_eq!(built(&a, &loc.id), first, "nothing changed: not published again");
+        assert_eq!(
+            built(&a, &loc.id),
+            first,
+            "nothing changed: not published again"
+        );
 
         std::fs::write(songs.join("new take.wav"), b"new").unwrap();
         a.index_location(&loc).await.unwrap();
         let after = built(&a, &loc.id);
-        assert!(after.1 > first.1 && after.0 != first.0, "a change is published");
         assert!(
-            a.index_db.get(&loc.id, "new take.wav").await.unwrap().is_some(),
+            after.1 > first.1 && after.0 != first.0,
+            "a change is published"
+        );
+        assert!(
+            a.index_db
+                .get(&loc.id, "new take.wav")
+                .await
+                .unwrap()
+                .is_some(),
             "and kept in the index database"
         );
-        assert!(
-            !dir.path().join("indexes").exists(),
-            "and in no index file"
-        );
+        assert!(!dir.path().join("indexes").exists(), "and in no index file");
     }
 
     #[tokio::test(flavor = "multi_thread")]

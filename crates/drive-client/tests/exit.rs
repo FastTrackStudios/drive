@@ -32,7 +32,9 @@ fn an_edit_just_before_exit_is_kept() {
     let doc = loro::LoroDoc::new();
     doc.import(&bytes).unwrap();
     assert_eq!(
-        doc.get_map("song").get("title").and_then(|v| v.into_value().ok()),
+        doc.get_map("song")
+            .get("title")
+            .and_then(|v| v.into_value().ok()),
         Some("Last words".into())
     );
 }

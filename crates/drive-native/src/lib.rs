@@ -650,13 +650,26 @@ mod tests {
 
     #[test]
     fn ids_that_differ_keep_copies_apart() {
-        let ids = ["a/b", "a:b", "a_b", "a.b", "A_b", "a%2fb", "home/drive:files"];
+        let ids = [
+            "a/b",
+            "a:b",
+            "a_b",
+            "a.b",
+            "A_b",
+            "a%2fb",
+            "home/drive:files",
+        ];
         let names: std::collections::HashSet<String> = ids.iter().map(|i| file_name(i)).collect();
         assert_eq!(names.len(), ids.len(), "{names:?}");
         // Case-insensitive disks (macOS, Windows) too.
-        let lower: std::collections::HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let lower: std::collections::HashSet<String> =
+            names.iter().map(|n| n.to_lowercase()).collect();
         assert_eq!(lower.len(), ids.len());
-        assert!(names.iter().all(|n| n.ends_with(".loro") && !n.contains('/')));
+        assert!(
+            names
+                .iter()
+                .all(|n| n.ends_with(".loro") && !n.contains('/'))
+        );
     }
 
     #[test]
@@ -676,7 +689,10 @@ mod tests {
         let (a, b) = tokio::join!(drive.open("me/x"), drive.open("me/x"));
         a.get_map("m").insert("k", 1).unwrap();
         drive.commit("me/x");
-        assert!(b.get_map("m").get("k").is_some(), "both opens share the document");
+        assert!(
+            b.get_map("m").get("k").is_some(),
+            "both opens share the document"
+        );
     }
 
     #[tokio::test]
@@ -697,5 +713,4 @@ mod tests {
         }
         panic!("the connection and saver tasks kept the drive alive");
     }
-
 }

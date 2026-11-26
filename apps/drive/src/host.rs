@@ -17,7 +17,10 @@ pub fn random() -> f64 {
 
 /// A random id, 32 hex digits.
 pub fn uuid() -> String {
-    env::random_hex32().get(..32).unwrap_or_default().to_string()
+    env::random_hex32()
+        .get(..32)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// (month 0–11, day, year) of a time in ms.
@@ -50,7 +53,8 @@ pub fn origin() -> String {
 /// The node's host and port.
 pub fn host() -> String {
     let o = origin();
-    o.split_once("://").map_or(o.clone(), |(_, h)| h.to_string())
+    o.split_once("://")
+        .map_or(o.clone(), |(_, h)| h.to_string())
 }
 
 pub fn copy_text(text: &str) {

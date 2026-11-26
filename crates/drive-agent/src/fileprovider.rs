@@ -60,7 +60,13 @@ fn visible(doc: &LoroDoc) -> HashMap<TreeID, Seen> {
             if e.dir {
                 stack.push(Some(e.id));
             }
-            out.insert(e.id, Seen { parent: p, entry: e });
+            out.insert(
+                e.id,
+                Seen {
+                    parent: p,
+                    entry: e,
+                },
+            );
         }
     }
     out
@@ -105,7 +111,8 @@ impl Agent {
 
     /// A shown item: not the top, not the Trash or in it.
     fn fp_entry(&self, id: TreeID) -> Result<(Option<TreeID>, Entry), String> {
-        let e = tree::entry(&self.files, id).ok_or_else(|| format!("no item {}", tree::id_string(id)))?;
+        let e = tree::entry(&self.files, id)
+            .ok_or_else(|| format!("no item {}", tree::id_string(id)))?;
         if tree::in_trash(&self.files, id) {
             return Err(format!("no item {}", tree::id_string(id)));
         }
@@ -132,7 +139,12 @@ impl Agent {
         }
     }
 
-    pub fn fp_list(&self, parent: &str, after: Option<&str>, limit: Option<usize>) -> Result<FpPage, String> {
+    pub fn fp_list(
+        &self,
+        parent: &str,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<FpPage, String> {
         let p = parse(parent)?;
         if let Some(t) = p {
             let (_, e) = self.fp_entry(t)?;
@@ -246,7 +258,12 @@ impl Agent {
     }
 
     fn fp_name(name: &str) -> Result<&str, String> {
-        if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\0')
+        {
             return Err(format!("{name:?} is not a name"));
         }
         Ok(name)

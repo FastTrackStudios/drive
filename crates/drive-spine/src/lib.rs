@@ -238,17 +238,17 @@ pub fn put_event(doc: &LoroDoc, e: &Event) {
         // The dates left out, as a set (one added elsewhere meanwhile
         // merges, unless this replaces it).
         let has = child_map(m.get("except"));
-        if !e.except.is_empty() || has.is_some() {
-            if let Ok(x) = m.ensure_mergeable_map("except") {
-                for k in x.keys().map(|k| k.to_string()).collect::<Vec<_>>() {
-                    if !e.except.contains(&k) {
-                        let _ = x.delete(&k);
-                    }
+        if (!e.except.is_empty() || has.is_some())
+            && let Ok(x) = m.ensure_mergeable_map("except")
+        {
+            for k in x.keys().map(|k| k.to_string()).collect::<Vec<_>>() {
+                if !e.except.contains(&k) {
+                    let _ = x.delete(&k);
                 }
-                for d in &e.except {
-                    if x.get(d).is_none() {
-                        let _ = x.insert(d, true);
-                    }
+            }
+            for d in &e.except {
+                if x.get(d).is_none() {
+                    let _ = x.insert(d, true);
                 }
             }
         }
@@ -530,5 +530,4 @@ mod tests {
             .collect();
         assert_eq!(left, ["other"]);
     }
-
 }

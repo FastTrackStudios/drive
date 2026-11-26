@@ -596,7 +596,7 @@ mod tests {
 
         // Undo (the rule is off): back where it was.
         let entry = rooms
-            .read(&journal::journal_doc(org), |d| journal::entries(d))
+            .read(&journal::journal_doc(org), journal::entries)
             .await
             .remove(0);
         rooms

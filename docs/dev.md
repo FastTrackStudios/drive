@@ -20,9 +20,10 @@ or with parallel worktrees:
 cargo test -p drive-node
 cargo test -p drive-agent
 
-# Full verification before committing
+# Full verification before committing (what `just ci` runs)
 cargo test --workspace
-cargo clippy --workspace --all-targets
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## 2. Isolated live dev stack (`scripts/dev.sh`)

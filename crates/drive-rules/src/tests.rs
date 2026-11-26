@@ -341,7 +341,7 @@ fn tags_fields_and_projects() {
         &fx.tags,
         NewTag {
             name: "Kick",
-            parents: &[drums.clone()],
+            parents: std::slice::from_ref(&drums),
             ..NewTag::default()
         },
         "me",

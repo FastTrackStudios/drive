@@ -270,10 +270,10 @@ impl Resolved {
 
 /// Bring a file's bytes to the node from the best online source; its hash.
 async fn bring(c: &Catalog, r: &Resolved, part: &Part, f: &Found) -> Result<Got, &'static str> {
-    if let Some(a) = r.kept(part, f) {
-        if c.blobs.has(&a.hash).await.unwrap_or(false) {
-            return Ok(Got::Blob(a.hash.clone()));
-        }
+    if let Some(a) = r.kept(part, f)
+        && c.blobs.has(&a.hash).await.unwrap_or(false)
+    {
+        return Ok(Got::Blob(a.hash.clone()));
     }
     let space_id = r.space_of(part);
     let Some(v) = r.view(part) else {

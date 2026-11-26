@@ -25,7 +25,7 @@ pub fn sample_ranges(len: u64) -> Vec<std::ops::Range<u64>> {
         return Vec::new();
     }
     if len <= SAMPLE {
-        return vec![0..len];
+        return std::iter::once(0..len).collect();
     }
     [0, len / 2, len - SAMPLE]
         .into_iter()

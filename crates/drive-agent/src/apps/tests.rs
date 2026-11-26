@@ -648,7 +648,10 @@ async fn only_this_user_on_loopback_gets_in() {
     let port_dir = tempfile::tempdir().unwrap();
     let (l, token) = bind_port(port_dir.path(), 0).await.unwrap();
     #[cfg(unix)]
-    assert_eq!(mode_of(&port_dir.path().join(drive_local::PORT_FILE)), 0o600);
+    assert_eq!(
+        mode_of(&port_dir.path().join(drive_local::PORT_FILE)),
+        0o600
+    );
     tokio::spawn(accept_tcp(d.apps.clone(), l, token));
     let (pd, a2) = (port_dir.path().to_path_buf(), abs.clone());
     tokio::task::spawn_blocking(move || {
@@ -1070,7 +1073,11 @@ async fn fetching_a_blob_leaves_an_apps_partial_alone() {
     std::fs::write(&part, b"half").unwrap();
     let got = d.a.fetch(&e.hash).await.unwrap();
     assert_eq!(std::fs::read(got).unwrap(), pattern(4096, 9));
-    assert_eq!(std::fs::read(&part).unwrap(), b"half", "the partial is the app's");
+    assert_eq!(
+        std::fs::read(&part).unwrap(),
+        b"half",
+        "the partial is the app's"
+    );
 }
 
 #[test]
@@ -1087,8 +1094,15 @@ fn concurrent_atomic_writes_each_land_whole() {
         w.join().unwrap().unwrap();
     }
     let got = std::fs::read(&dest).unwrap();
-    assert!((0..8u8).any(|i| got == pattern(1 << 20, i)), "one writer's bytes, whole");
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no temp files left");
+    assert!(
+        (0..8u8).any(|i| got == pattern(1 << 20, i)),
+        "one writer's bytes, whole"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        1,
+        "no temp files left"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -132,7 +132,9 @@ impl Tags {
                 });
             }
             if e.sampled.is_empty() {
-                return Err(format!("{path} could not be read, so it has no content hash"));
+                return Err(format!(
+                    "{path} could not be read, so it has no content hash"
+                ));
             }
             return Ok(Target::Content(e.sampled));
         }

@@ -233,7 +233,8 @@ impl IndexDb {
         self.abandon(&conn).await;
         let ops = diff_rows(&conn, index).await?;
         for batch in ops.chunks(BATCH) {
-            self.in_tx(&conn, apply(&conn, index.location.as_str(), batch)).await?;
+            self.in_tx(&conn, apply(&conn, index.location.as_str(), batch))
+                .await?;
             checkpoint(&conn).await;
         }
         self.in_tx(&conn, put_meta(&conn, index)).await?;
@@ -359,11 +360,19 @@ impl IndexDb {
 
     /// Entries of every location whose name contains `words` (any case):
     /// (location, entry), at most `limit`.
-    pub async fn find(&self, words: &str, limit: usize) -> turso::Result<Vec<(String, IndexEntry)>> {
+    pub async fn find(
+        &self,
+        words: &str,
+        limit: usize,
+    ) -> turso::Result<Vec<(String, IndexEntry)>> {
         let r = self.reader().await;
         let like = format!(
             "%{}%",
-            words.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+            words
+                .to_lowercase()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         );
         let mut rows = r
             .query(
@@ -441,7 +450,11 @@ impl IndexDb {
         // Everything under `dir/` sorts at or after `dir/` and before
         // `dir0` ('0' is the byte after '/').
         let low = format!("{dir}/");
-        let after = if after < low.as_str() { low.as_str() } else { after };
+        let after = if after < low.as_str() {
+            low.as_str()
+        } else {
+            after
+        };
         let r = self.reader().await;
         let mut rows = r
             .query(
@@ -449,7 +462,12 @@ impl IndexDb {
                     "SELECT {ENTRY} FROM entries WHERE location = ?1 AND path > ?2 AND path < ?3 \
                      ORDER BY path LIMIT ?4"
                 ),
-                vec![t(location), t(after), t(&format!("{dir}0")), Value::Integer(limit as i64)],
+                vec![
+                    t(location),
+                    t(after),
+                    t(&format!("{dir}0")),
+                    Value::Integer(limit as i64),
+                ],
             )
             .await?;
         let mut out = Vec::new();
@@ -462,11 +480,17 @@ impl IndexDb {
     /// Which locations hold each of `sampled` (one per file holding it, so
     /// a location twice when it has two copies), in as few queries as the
     /// list's length allows.
-    pub async fn locations_of(&self, sampled: &[String]) -> turso::Result<HashMap<String, Vec<String>>> {
+    pub async fn locations_of(
+        &self,
+        sampled: &[String],
+    ) -> turso::Result<HashMap<String, Vec<String>>> {
         let mut out: HashMap<String, Vec<String>> = HashMap::new();
         let r = self.reader().await;
         for chunk in sampled.chunks(500) {
-            let marks = (1..=chunk.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ");
+            let marks = (1..=chunk.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             let mut rows = r
                 .query(
                     &format!("SELECT sampled, location FROM entries WHERE dir = 0 AND sampled IN ({marks})"),
@@ -474,7 +498,9 @@ impl IndexDb {
                 )
                 .await?;
             while let Some(row) = rows.next().await? {
-                out.entry(text(row.get_value(0)?)).or_default().push(text(row.get_value(1)?));
+                out.entry(text(row.get_value(0)?))
+                    .or_default()
+                    .push(text(row.get_value(1)?));
             }
         }
         Ok(out)
@@ -551,9 +577,7 @@ impl IndexDb {
                 vec![t(sampled), Value::Integer(n as i64)],
             ),
             None => (
-                format!(
-                    "SELECT location, {ENTRY} FROM entries WHERE sampled = ?1 AND dir = 0"
-                ),
+                format!("SELECT location, {ENTRY} FROM entries WHERE sampled = ?1 AND dir = 0"),
                 vec![t(sampled)],
             ),
         };
@@ -739,10 +763,17 @@ enum Op<'a> {
 /// How the rows there differ from `index`'s entries, found by reading
 /// them beside the entries in the same (path) order: only the differences
 /// are kept, never the rows.
-async fn diff_rows<'a>(conn: &turso::Connection, index: &'a LocationIndex) -> turso::Result<Vec<Op<'a>>> {
+async fn diff_rows<'a>(
+    conn: &turso::Connection,
+    index: &'a LocationIndex,
+) -> turso::Result<Vec<Op<'a>>> {
     let mut order: Vec<u32> = (0..index.entries.len() as u32).collect();
     if !index.entries.is_sorted_by(|a, b| a.path <= b.path) {
-        order.sort_by(|a, b| index.entries[*a as usize].path.cmp(&index.entries[*b as usize].path));
+        order.sort_by(|a, b| {
+            index.entries[*a as usize]
+                .path
+                .cmp(&index.entries[*b as usize].path)
+        });
     }
     let mut ops = Vec::new();
     let mut added: Vec<u32> = Vec::new();

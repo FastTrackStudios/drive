@@ -18,10 +18,10 @@
 //! - [`refresh`]: bringing a peer's graph up to date, the same on every peer.
 
 pub mod adopt_tags;
-#[cfg(feature = "turso")]
-pub mod db;
 #[cfg(feature = "clip")]
 pub mod clip;
+#[cfg(feature = "turso")]
+pub mod db;
 #[cfg(feature = "embed")]
 pub mod embed;
 pub mod extract;

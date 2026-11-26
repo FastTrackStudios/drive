@@ -585,7 +585,10 @@ async fn import_index_files(dir: &Path, indexes: &crate::indexes::Indexes) {
             let _ = std::fs::remove_file(&path);
             continue;
         }
-        let Some(index) = std::fs::read(&path).ok().and_then(|b| drive_files::index::decode(&b)) else {
+        let Some(index) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| drive_files::index::decode(&b))
+        else {
             continue;
         };
         if index.location != id {
@@ -596,7 +599,9 @@ async fn import_index_files(dir: &Path, indexes: &crate::indexes::Indexes) {
                 tracing::info!(location.id = %id, index.entries = n, "an index file was put in the index database");
                 let _ = std::fs::remove_file(&path);
             }
-            Err(e) => tracing::warn!(location.id = %id, error = %e, "an index file could not be put in the index database"),
+            Err(e) => {
+                tracing::warn!(location.id = %id, error = %e, "an index file could not be put in the index database")
+            }
         }
     }
 }

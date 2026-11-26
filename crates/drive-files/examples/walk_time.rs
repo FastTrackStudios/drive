@@ -6,7 +6,9 @@ use drive_files::index::{Previous, Tree, walk_with};
 
 fn main() {
     let root = std::path::PathBuf::from(std::env::args().nth(1).expect("a folder"));
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(2, 8);
     // Once first so both timed runs find the disk's metadata cached.
     let (warm, _) = walk_with("w", &root, None, threads);
     for t in [1, threads] {

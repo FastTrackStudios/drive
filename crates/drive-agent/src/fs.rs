@@ -296,13 +296,10 @@ impl DriveFs {
     /// The scratch copy's bytes, as the file's content (the copy stays).
     fn upload_scratch(&self, id: TreeID, path: &std::path::Path, f: &File) -> Result<(), Errno> {
         let _ = f.sync_all();
-        let (hash, size) = self
-            .rt
-            .block_on(self.agent.upload(id, path))
-            .map_err(|e| {
-                tracing::warn!(error = %e, "an upload failed");
-                Errno::EIO
-            })?;
+        let (hash, size) = self.rt.block_on(self.agent.upload(id, path)).map_err(|e| {
+            tracing::warn!(error = %e, "an upload failed");
+            Errno::EIO
+        })?;
         tree::set_content(&self.agent.files, id, size, &hash).map_err(|_| Errno::EIO)?;
         self.agent.commit_files();
         Ok(())
@@ -404,8 +401,7 @@ impl Filesystem for DriveFs {
                     let uploaded = self.rt.block_on(self.agent.upload(e.id, &tmp));
                     let _ = std::fs::remove_file(&tmp);
                     let (hash, _) = uploaded.map_err(|_| Errno::EIO)?;
-                    tree::set_content(&self.agent.files, e.id, 0, &hash)
-                        .map_err(|_| Errno::EIO)?;
+                    tree::set_content(&self.agent.files, e.id, 0, &hash).map_err(|_| Errno::EIO)?;
                     self.agent.commit_files();
                 } else {
                     return Err(Errno::ENOTSUP);
@@ -858,5 +854,4 @@ mod tests {
         assert_eq!(t.by_ino.get(&kept), Some(&id(0)));
         assert_eq!(t.by_id.len(), t.by_ino.len());
     }
-
 }

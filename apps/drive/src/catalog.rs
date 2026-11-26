@@ -61,7 +61,7 @@ pub fn Overview(space: String) -> Element {
             }
         }
     }
-    by_kind.sort_by(|a, b| b.2.cmp(&a.2));
+    by_kind.sort_by_key(|k| std::cmp::Reverse(k.2));
 
     // Protection: files meeting every policy, over all.
     let reports = prot()
@@ -74,7 +74,7 @@ pub fn Overview(space: String) -> Element {
             a + r["files"].as_u64().unwrap_or(0),
         )
     });
-    let score = if all == 0 { None } else { Some(ok * 100 / all) };
+    let score = (ok * 100).checked_div(all);
     let live = devices.iter().filter(|d| up.contains(&d.id)).count();
     rsx! {
         div { class: "pane wide",
@@ -271,7 +271,7 @@ pub fn Protection(space: String) -> Element {
                     let ok = rep["ok"].as_u64().unwrap_or(0);
                     let bytes = rep["bytes"].as_u64().unwrap_or(0);
                     let risk = bytes.saturating_sub(rep["bytes_ok"].as_u64().unwrap_or(0));
-                    let pct = if files == 0 { 100 } else { ok * 100 / files };
+                    let pct = (ok * 100).checked_div(files).unwrap_or(100);
                     let short = files - ok.min(files);
                     let at = Place::AtRisk(s(p, "id"));
                     rsx! {
@@ -294,7 +294,7 @@ pub fn Protection(space: String) -> Element {
                                 {
                                     let lf = l["files"].as_u64().unwrap_or(0);
                                     let lo = l["ok"].as_u64().unwrap_or(0);
-                                    let lp = if lf == 0 { 100 } else { lo * 100 / lf };
+                                    let lp = (lo * 100).checked_div(lf).unwrap_or(100);
                                     rsx! {
                                         div { class: "locbar",
                                             span { class: "ln", "{lname(l[\"location\"].as_str().unwrap_or_default())}" }

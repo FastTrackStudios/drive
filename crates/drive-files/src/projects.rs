@@ -244,7 +244,7 @@ pub fn projects(doc: &LoroDoc) -> Vec<Project> {
         })
         .filter(|p| !p.id.is_empty())
         .collect();
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|p| p.name.to_lowercase());
     out
 }
 
@@ -421,7 +421,7 @@ pub fn shares(doc: &LoroDoc, project: &str) -> Vec<Share> {
         .map(|m| share_of(&m))
         .filter(|x| x.project == project)
         .collect();
-    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out.sort_by_key(|x| std::cmp::Reverse(x.created));
     out
 }
 
@@ -670,10 +670,7 @@ mod tests {
 
         // Existing share records without download/comments keys default to both enabled.
         let legacy = "44444444-4444-4444-8444-444444444444";
-        let m = d
-            .get_map("shares")
-            .ensure_mergeable_map(legacy)
-            .unwrap();
+        let m = d.get_map("shares").ensure_mergeable_map(legacy).unwrap();
         m.insert("token", legacy).unwrap();
         m.insert("project", p.as_str()).unwrap();
         let s_legacy = share(&d, legacy).unwrap();

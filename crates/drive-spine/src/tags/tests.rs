@@ -45,11 +45,11 @@ fn tags_with_names_colours_aliases_and_parents() {
     assert_eq!(t.shorthand, "dr");
     assert_eq!(t.color, Color::Red);
     assert_eq!(t.aliases, ["Percussion", "kit"]);
-    assert_eq!(t.parents, [music.clone()]);
+    assert_eq!(t.parents, std::slice::from_ref(&music));
     assert_eq!(t.by, "cody@example.com");
     assert!(lib.get(&music).unwrap().category);
-    assert_eq!(lib.resolve("KIT"), [drums.clone()]);
-    assert_eq!(lib.resolve("dr"), [drums.clone()]);
+    assert_eq!(lib.resolve("KIT"), std::slice::from_ref(&drums));
+    assert_eq!(lib.resolve("dr"), std::slice::from_ref(&drums));
     assert_eq!(lib.descendants(&music).len(), 2);
     assert_eq!(lib.children(&music)[0].id, drums);
     // Built-ins are there without being written.

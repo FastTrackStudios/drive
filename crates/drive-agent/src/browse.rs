@@ -245,7 +245,7 @@ pub fn list(
         let Ok(e) = e else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
-        if (!hidden && hidden_name(&name)) || rules.deny.iter().any(|d| path == *d) {
+        if (!hidden && hidden_name(&name)) || rules.deny.contains(&path) {
             left_out += 1;
             continue;
         }

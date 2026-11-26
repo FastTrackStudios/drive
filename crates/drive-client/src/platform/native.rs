@@ -368,14 +368,20 @@ mod node_tests {
     #[test]
     fn drive_node_wins_over_the_agents_node() {
         let config = r#"{"node":"wss://node.example/sync"}"#;
-        assert_eq!(node_url(Some("ws://other/sync"), Some(config)), "ws://other/sync");
+        assert_eq!(
+            node_url(Some("ws://other/sync"), Some(config)),
+            "ws://other/sync"
+        );
     }
 
     #[test]
     fn without_drive_node_the_agents_node_is_used() {
         let config = r#"{"device_id":"d","node":"wss://node.example/sync"}"#;
         assert_eq!(node_url(None, Some(config)), "wss://node.example/sync");
-        assert_eq!(node_url(Some("  "), Some(config)), "wss://node.example/sync");
+        assert_eq!(
+            node_url(Some("  "), Some(config)),
+            "wss://node.example/sync"
+        );
     }
 
     #[test]

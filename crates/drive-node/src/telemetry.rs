@@ -130,7 +130,7 @@ pub async fn requests(req: Request, next: Next) -> Response {
         http.response.status_code = tracing::field::Empty,
     );
     let parent = TraceContextPropagator::new().extract(&HeaderMap(req.headers()));
-    let _ = span.set_parent(parent);
+    span.set_parent(parent);
     let res = next.run(req).instrument(span.clone()).await;
     span.record("http.response.status_code", res.status().as_u16());
     res
