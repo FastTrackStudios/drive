@@ -375,8 +375,8 @@ async fn guard_sidecars(
         Err(status) => return (status, "invalid org parameter").into_response(),
     };
     let q = query_map(req.uri());
-    let asks_make =
-        q.get("make").map(String::as_str) != Some("0") && (q.contains_key("name") || q.contains_key("hash"));
+    let asks_make = q.get("make").map(String::as_str) != Some("0")
+        && (q.contains_key("name") || q.contains_key("hash"));
     let stats = req.uri().path() == "/sidecars/stats";
     if read && !names_space && !asks_make && !stats {
         return next.run(req).await;
@@ -687,7 +687,8 @@ async fn sync(
     peer: Remote,
 ) -> impl IntoResponse {
     let local = auth::is_local(peer_addr(&peer), &headers);
-    ws.max_message_size(64 << 20)
+    ws.max_message_size(drive_proto::MAX_MESSAGE)
+        .max_frame_size(drive_proto::MAX_MESSAGE)
         .on_upgrade(move |socket: WebSocket| rooms::serve(rooms, socket, local))
 }
 

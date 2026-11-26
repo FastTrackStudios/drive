@@ -298,7 +298,17 @@ impl Socket {
             // wss:// to a node behind TLS: rustls has two crypto backends
             // compiled in here, so name one.
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-            let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
+            let ws = match tokio_tungstenite::connect_async_with_config(
+                url.as_str(),
+                Some(
+                    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                        .max_message_size(Some(drive_proto::MAX_MESSAGE))
+                        .max_frame_size(Some(drive_proto::MAX_MESSAGE)),
+                ),
+                false,
+            )
+            .await
+            {
                 Ok((ws, _)) => ws,
                 Err(e) => {
                     tracing::debug!(drive.url = %url, error = %e, "connect failed");

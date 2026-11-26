@@ -56,7 +56,7 @@ async fn rooms(dir: &std::path::Path, issuer: String) -> Arc<Rooms> {
 struct Client {
     send: mpsc::UnboundedSender<ToNode>,
     recv: mpsc::UnboundedReceiver<ToClient>,
-    done: tokio::task::JoinHandle<()>,
+    done: tokio::task::JoinHandle<super::ConnectionEnd>,
 }
 
 impl Client {
@@ -93,16 +93,18 @@ impl Client {
         assert!(matches!(self.next().await, ToClient::Synced { .. }));
     }
 
-    /// The session ends by itself, after saying `why`.
-    async fn ended(mut self, why: &str) {
+    /// The session ends by itself, after saying `why`, for the reason
+    /// `end` (what the node logs).
+    async fn ended(mut self, why: &str, end: super::Ended) {
         assert!(
             matches!(self.next().await, ToClient::Error { message } if message == why),
             "expected {why}"
         );
-        tokio::time::timeout(Duration::from_secs(5), self.done)
+        let logged = tokio::time::timeout(Duration::from_secs(5), self.done)
             .await
             .expect("the session ended")
             .unwrap();
+        assert_eq!(logged.ended, end);
     }
 }
 
@@ -120,7 +122,7 @@ async fn an_expired_or_revoked_sign_in_ends_the_connection() {
     assert_eq!(peers_of(&rooms, "a/notes").await, 1);
     // The issuer's minute is up and it no longer accepts the token.
     rooms.auth.forget("t").await;
-    c.ended("sign in").await;
+    c.ended("sign in", super::Ended::SignInExpired).await;
     assert_eq!(peers_of(&rooms, "a/notes").await, 0);
 }
 
@@ -132,7 +134,8 @@ async fn leaving_an_org_ends_the_connection() {
     let mut c = Client::connect(&rooms, "t", FAST).await;
     c.join("a/notes").await;
     rooms.auth.remember("t", person("alice", &["b"])).await;
-    c.ended("access changed: reconnect").await;
+    c.ended("access changed: reconnect", super::Ended::AccessNarrowed)
+        .await;
     assert_eq!(peers_of(&rooms, "a/notes").await, 0);
 }
 
@@ -248,7 +251,8 @@ async fn a_second_sign_in_on_one_connection_ends_it() {
         name: "t".into(),
         token: Some("u".into()),
     });
-    c.ended("already signed in: reconnect").await;
+    c.ended("already signed in: reconnect", super::Ended::SecondHello)
+        .await;
     assert_eq!(peers_of(&rooms, "a/notes").await, 0);
 }
 
@@ -289,11 +293,60 @@ async fn a_token_that_expires_during_the_session_ends_it_without_waiting_for_the
     let started = std::time::Instant::now();
     let mut c = Client::connect(&rooms, &token, Duration::from_secs(3600)).await;
     c.join("a/notes").await;
-    c.ended("sign in").await;
+    c.ended("sign in", super::Ended::SignInExpired).await;
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "{:?}",
         started.elapsed()
     );
     assert_eq!(peers_of(&rooms, "a/notes").await, 0);
+}
+
+/// drive#172: an agent's connection says, when it ends, which device it
+/// was and why, so a device that keeps reconnecting is never silent.
+#[tokio::test]
+async fn an_agents_connection_says_which_device_it_was_when_it_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let rooms = rooms(dir.path(), refusing_issuer().await).await;
+    rooms.auth.remember("ta", person("agent", &["a"])).await;
+    let c = Client::connect(&rooms, "ta", Duration::from_secs(3600)).await;
+    c.send(ToNode::Agent {
+        space: "a".into(),
+        device: "voyager".into(),
+    });
+    while !rooms.agent_online("a", "voyager").await {
+        tokio::task::yield_now().await;
+    }
+    drop(c.send);
+    let end = c.done.await.unwrap();
+    assert_eq!(end.ended, super::Ended::Hangup);
+    assert_eq!(end.agent, Some(("a".into(), "voyager".into())));
+    assert_eq!(end.who.as_deref(), Some("agent"));
+    assert_eq!(end.messages_in, 2);
+    assert!(!rooms.agent_online("a", "voyager").await);
+}
+
+#[tokio::test]
+async fn a_refused_sign_in_ends_the_connection_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let rooms = rooms(dir.path(), refusing_issuer().await).await;
+    let (send, rx) = mpsc::unbounded_channel();
+    let (out, mut recv) = mpsc::unbounded_channel();
+    let done = tokio::spawn(session(
+        rooms.clone(),
+        Incoming(rx),
+        out,
+        false,
+        Duration::from_secs(3600),
+    ));
+    send.send(ToNode::Hello {
+        version: drive_proto::VERSION,
+        name: "voyager".into(),
+        token: Some("nobody".into()),
+    })
+    .unwrap();
+    assert!(matches!(recv.recv().await, Some(ToClient::Error { message }) if message == "sign in"));
+    let end = done.await.unwrap();
+    assert_eq!(end.ended, super::Ended::SignInRefused);
+    assert_eq!(end.name, "voyager");
 }

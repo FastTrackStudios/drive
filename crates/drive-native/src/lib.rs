@@ -24,6 +24,8 @@ use loro::{ExportMode, LoroDoc, Subscription, VersionVector};
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
+mod connection;
+
 /// What happened.
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -384,52 +386,70 @@ impl Drive {
         }
     }
 
-    /// The connection, reconnecting with backoff.
+    /// The connection, reconnecting with a capped, jittered backoff. Each
+    /// connection leaves one event saying why it ended (drive#172).
     async fn run(self, url: String) {
-        let mut wait = 500u64;
+        let mut backoff = connection::Backoff::default();
         loop {
             // wss:// to a node behind TLS (the tailnet, a domain): rustls
             // has two crypto backends compiled in here, so name one.
             let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
             let connected = tokio::select! {
-                c = tokio_tungstenite::connect_async(url.as_str()) => c,
+                c = tokio_tungstenite::connect_async_with_config(
+                    url.as_str(),
+                    Some(connection::ws_config()),
+                    false,
+                ) => c,
                 _ = self.stopped() => return,
             };
-            match connected {
+            let mut summary = connection::Summary::default();
+            let (ended, lasted) = match connected {
                 Ok((ws, _)) => {
-                    wait = 500;
-                    tokio::select! {
-                        _ = self.session(ws) => {}
+                    let opened = tokio::time::Instant::now();
+                    let ended = tokio::select! {
+                        e = self.session(ws, &mut summary) => e,
                         _ = self.stopped() => {
                             *self.0.tx.lock().expect("tx") = None;
                             return;
                         }
-                    }
-                    tracing::debug!(drive.url = %url, "connection closed");
+                    };
+                    (ended, opened.elapsed())
                 }
-                Err(e) => tracing::debug!(drive.url = %url, error = %e, "connect failed"),
-            }
-            *self.0.tx.lock().expect("tx") = None;
-            self.0.online.send_replace(false);
-            let _ = self.0.events.send(Event::Online(false));
-            for d in self.0.docs.lock().expect("docs").values_mut() {
-                d.synced.send_replace(false);
-                d.others.clear();
-            }
+                Err(e) => (
+                    connection::Ended::ConnectFailed(e.to_string()),
+                    Duration::ZERO,
+                ),
+            };
+            self.went_offline();
+            let wait = backoff.next(lasted, connection::jitter());
+            connection::log_ended(&url, &ended, &summary, lasted, wait);
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
+                _ = tokio::time::sleep(wait) => {}
                 _ = self.stopped() => return,
             }
-            wait = (wait * 2).min(8000);
         }
     }
 
+    /// The connection is gone: nothing is synced until the next one.
+    fn went_offline(&self) {
+        *self.0.tx.lock().expect("tx") = None;
+        self.0.online.send_replace(false);
+        let _ = self.0.events.send(Event::Online(false));
+        for d in self.0.docs.lock().expect("docs").values_mut() {
+            d.synced.send_replace(false);
+            d.others.clear();
+        }
+    }
+
+    /// One connection, from the handshake until it ends: why it ended,
+    /// with what it did in `summary`.
     async fn session(
         &self,
         ws: tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
-    ) {
+        summary: &mut connection::Summary,
+    ) -> connection::Ended {
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<ToNode>();
         // This computer's own agent needs no token; an agent elsewhere
@@ -439,12 +459,11 @@ impl Drive {
             name: self.0.name.clone(),
             token: self.0.token.clone(),
         };
-        if sink
+        if let Err(e) = sink
             .send(Message::Binary(drive_proto::encode(&hello).into()))
             .await
-            .is_err()
         {
-            return;
+            return connection::Ended::HelloFailed(e.to_string());
         }
         let writer = tokio::spawn(async move {
             while let Some(m) = rx.recv().await {
@@ -458,17 +477,34 @@ impl Drive {
             }
         });
         *self.0.tx.lock().expect("tx") = Some(tx);
-        while let Some(Ok(frame)) = stream.next().await {
-            let Message::Binary(bytes) = frame else {
+        let ended = loop {
+            let frame = match stream.next().await {
+                None => break connection::Ended::Hangup,
+                Some(Err(e)) => break connection::Ended::ReadFailed(e.to_string()),
+                Some(Ok(Message::Close(close))) => {
+                    break connection::Ended::NodeClosed {
+                        code: close.as_ref().map_or(1005, |c| u16::from(c.code)),
+                        reason: close.map(|c| c.reason.to_string()).unwrap_or_default(),
+                    };
+                }
+                Some(Ok(Message::Binary(bytes))) => bytes,
+                Some(Ok(_)) => continue,
+            };
+            summary.received(frame.len());
+            let Ok(msg) = drive_proto::decode::<ToClient>(&frame) else {
+                summary.undecoded += 1;
                 continue;
             };
-            let Ok(msg) = drive_proto::decode::<ToClient>(&bytes) else {
-                continue;
-            };
+            match &msg {
+                ToClient::Welcome { .. } => summary.welcomed = true,
+                ToClient::Error { message } => summary.refused = Some(message.clone()),
+                _ => {}
+            }
             self.receive(msg);
-        }
+        };
         *self.0.tx.lock().expect("tx") = None;
         writer.abort();
+        ended
     }
 
     fn receive(&self, msg: ToClient) {
