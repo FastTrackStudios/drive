@@ -31,8 +31,9 @@ pub struct Store {
     /// what is worked out from them is good while it stays the same.
     generations: std::sync::Mutex<HashMap<String, u64>>,
     /// The last [`Store::list`], kept until a document is saved, renamed
-    /// or deleted: every open view asks for a listing every few seconds,
-    /// and each used to read the whole `docs` table (drive#61).
+    /// or deleted: every listing reads it (a view of version 2 asks every
+    /// few seconds; one of 3 once, then hears changes, drive#159), and
+    /// each used to read the whole `docs` table (drive#61).
     listing: std::sync::Mutex<Listing>,
 }
 

@@ -6,15 +6,15 @@ use std::sync::Arc;
 use drive_proto::{ToClient, ToNode};
 use futures::{Stream, StreamExt};
 
-use crate::{Outbox, Rooms};
+use crate::{Heard, Listings, Outbox, Rooms};
 
 /// Whether a connection may open (`false`) or change (`true`) a document.
 pub type Access = Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
 
 /// Answer one connection's messages on `out` until `incoming` ends: its
 /// handshake ([`ToNode::Hello`], answered [`ToClient::Welcome`]), then
-/// joins, updates, presence and listings of the documents `access` lets
-/// it have. `via`: the other device the connection is with (its endpoint
+/// joins, updates, presence and listings (once, or live) of the documents
+/// `access` lets it have. `via`: the other device the connection is with (its endpoint
 /// id), when it is not a window on this one. What only a node does (an
 /// agent's files) is not answered here.
 pub async fn serve(
@@ -27,12 +27,23 @@ pub async fn serve(
     let peer = rooms.new_peer(via.as_deref());
     let mut name: Option<String> = None;
     let mut joined = HashSet::new();
-    while let Some(msg) = incoming.next().await {
+    let mut listings = Listings::default();
+    loop {
+        let msg = tokio::select! {
+            m = incoming.next() => match m {
+                Some(m) => m,
+                None => break,
+            },
+            heard = listings.next() => {
+                tell(&rooms, &out, &listings, &access, heard).await;
+                continue;
+            }
+        };
         if let ToNode::Hello {
             version, name: n, ..
         } = &msg
         {
-            if *version != drive_proto::VERSION {
+            if !drive_proto::speaks(*version) {
                 let _ = out.send(ToClient::Error {
                     message: "protocol version mismatch".into(),
                 });
@@ -84,14 +95,15 @@ pub async fn serve(
                 joined.remove(&doc);
             }
             ToNode::List { prefix } => {
-                let docs = rooms
-                    .list(&prefix)
-                    .await
-                    .into_iter()
-                    .filter(|d| access(&d.id, false))
-                    .collect();
+                let docs = listing(&rooms, &access, &prefix).await;
                 let _ = out.send(ToClient::Docs { prefix, docs });
             }
+            ToNode::ListSubscribe { prefix } => {
+                listings.subscribe(&rooms, prefix.clone());
+                let docs = listing(&rooms, &access, &prefix).await;
+                let _ = out.send(ToClient::Docs { prefix, docs });
+            }
+            ToNode::ListUnsubscribe { prefix } => listings.unsubscribe(&prefix),
             ToNode::Hello { .. }
             | ToNode::Agent { .. }
             | ToNode::Fetched { .. }
@@ -103,4 +115,39 @@ pub async fn serve(
         rooms.leave(peer, &name, &id).await;
     }
     rooms.forget_peer(peer);
+}
+
+/// The documents under `prefix` this connection may have.
+async fn listing(rooms: &Rooms, access: &Access, prefix: &str) -> Vec<drive_proto::DocInfo> {
+    rooms
+        .list(prefix)
+        .await
+        .into_iter()
+        .filter(|d| access(&d.id, false))
+        .collect()
+}
+
+/// Pass on what a connection's listings heard: a change to a document it
+/// may have, or (when it missed some) every listing again.
+async fn tell(rooms: &Rooms, out: &Outbox, listings: &Listings, access: &Access, heard: Heard) {
+    match heard {
+        Heard::Change(c) => {
+            let deltas = listings.deltas(&c);
+            if deltas.is_empty() || !access(c.id(), false) {
+                return;
+            }
+            for m in deltas {
+                let _ = out.send(m);
+            }
+        }
+        Heard::Missed => {
+            for prefix in listings.prefixes() {
+                let docs = listing(rooms, access, prefix).await;
+                let _ = out.send(ToClient::Docs {
+                    prefix: prefix.to_string(),
+                    docs,
+                });
+            }
+        }
+    }
 }

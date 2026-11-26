@@ -452,3 +452,104 @@ mod another_protocol {
         net.shutdown().await;
     }
 }
+
+/// What a window that subscribed to a listing hears next, within a while.
+async fn next_listing(from: &mut mpsc::UnboundedReceiver<ToClient>) -> ToClient {
+    loop {
+        let m = tokio::time::timeout(Duration::from_secs(2), from.recv())
+            .await
+            .expect("a listing in time")
+            .expect("the connection is open");
+        if matches!(m, ToClient::Docs { .. } | ToClient::Listed { .. }) {
+            return m;
+        }
+    }
+}
+
+/// An app as its own peer: a window's live listing hears documents
+/// appear, change and go under its prefix, and nothing outside it or
+/// that it may not have, until it unsubscribes (drive#159).
+#[tokio::test]
+async fn a_live_listing_hears_what_changes_under_its_prefix() {
+    let r = rooms();
+    let (to, rx) = mpsc::unbounded_channel();
+    let (out, mut from) = mpsc::unbounded_channel();
+    let access: Access = Arc::new(|id, _| !id.contains("secret"));
+    tokio::spawn(serve(r.clone(), Rx(rx), out, None, access));
+    to.send(ToNode::Hello {
+        version: drive_proto::VERSION,
+        name: "w".into(),
+        token: None,
+    })
+    .unwrap();
+    let ToClient::Welcome { .. } = from.recv().await.unwrap() else {
+        panic!("welcome first");
+    };
+    let mine = Window::open(&r, "home/studio:a").await;
+    to.send(ToNode::ListSubscribe {
+        prefix: "home/studio:".into(),
+    })
+    .unwrap();
+    let ToClient::Docs { docs, .. } = next_listing(&mut from).await else {
+        panic!("the listing first");
+    };
+    assert_eq!(docs.len(), 1);
+    assert_eq!((docs[0].id.as_str(), docs[0].peers), ("home/studio:a", 1));
+
+    // A document made under the prefix is heard; one outside it, or one
+    // this connection may not have, is not.
+    let _outside = Window::open(&r, "home/canvas:b").await;
+    let _secret = Window::open(&r, "home/studio:secret").await;
+    let _new = Window::open(&r, "home/studio:c").await;
+    let mut heard = Vec::new();
+    while let Ok(m) =
+        tokio::time::timeout(Duration::from_millis(200), next_listing(&mut from)).await
+    {
+        heard.push(m);
+    }
+    assert!(!heard.is_empty());
+    for m in &heard {
+        let ToClient::Listed {
+            prefix,
+            docs,
+            removed,
+        } = m
+        else {
+            panic!("only deltas: {m:?}");
+        };
+        assert_eq!(prefix, "home/studio:");
+        assert!(removed.is_empty());
+        assert!(docs.iter().all(|d| d.id == "home/studio:c"), "{docs:?}");
+    }
+
+    // Closing it changes who has it open; once evicted it is gone.
+    drop(_new);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    r.evict_idle(Duration::ZERO).await;
+    let mut gone = false;
+    while let Ok(m) =
+        tokio::time::timeout(Duration::from_millis(200), next_listing(&mut from)).await
+    {
+        if let ToClient::Listed { removed, .. } = m {
+            gone |= removed == ["home/studio:c"];
+        }
+    }
+    assert!(
+        gone,
+        "an unsaved document nobody has open is no longer listed"
+    );
+
+    // Unsubscribed: nothing more.
+    to.send(ToNode::ListUnsubscribe {
+        prefix: "home/studio:".into(),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let _later = Window::open(&r, "home/studio:d").await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), next_listing(&mut from))
+            .await
+            .is_err()
+    );
+    drop(mine);
+}

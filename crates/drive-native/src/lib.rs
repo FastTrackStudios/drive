@@ -638,6 +638,8 @@ impl Drive {
             ToClient::Error { message } => {
                 tracing::warn!(drive.error = %message, "the node refused something")
             }
+            // Only for live listings, which this client does not ask for.
+            ToClient::Listed { .. } => {}
         }
     }
 }

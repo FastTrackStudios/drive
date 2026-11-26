@@ -37,3 +37,7 @@ opentelemetry = "0.30"
 opentelemetry_sdk = "0.30"
 tracing-opentelemetry = "0.31"
 getrandom = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tempfile = "3"

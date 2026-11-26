@@ -106,7 +106,9 @@ pub enum Event {
         name: String,
         json: Option<String>,
     },
-    /// The node's answer to [`Drive::list`].
+    /// The documents under a prefix: the node's answer to [`Drive::list`],
+    /// and a live listing ([`Drive::subscribe_list`]) whole, each time it
+    /// changes.
     Docs {
         prefix: String,
         docs: Vec<DocInfo>,
@@ -164,6 +166,17 @@ struct Inner {
     token: Mutex<Option<String>>,
     /// Who this device's changes are by (in every change's history).
     author: Mutex<String>,
+    /// The live listings asked for, by prefix: how many asked, and the
+    /// listing as the node last said it.
+    lists: Mutex<HashMap<String, Listing>>,
+}
+
+/// One live listing ([`Drive::subscribe_list`]).
+#[derive(Default)]
+struct Listing {
+    holders: u32,
+    /// `None` until the node has answered.
+    docs: Option<Vec<DocInfo>>,
 }
 
 /// A lock that a panic elsewhere did not poison for good.
@@ -230,6 +243,7 @@ impl Drive {
             generation: AtomicU32::new(0),
             token: Mutex::new(token),
             author: Mutex::new(String::new()),
+            lists: Mutex::new(HashMap::new()),
         }));
         drive.save_me();
         platform::drop_old_copies();
@@ -509,12 +523,93 @@ impl Drive {
         });
     }
 
-    /// Ask the node which documents it holds under a prefix; the answer
-    /// comes as [`Event::Docs`].
+    /// Ask the node once which documents it holds under a prefix; the
+    /// answer comes as [`Event::Docs`]. To follow a listing, use
+    /// [`Drive::subscribe_list`].
     pub fn list(&self, prefix: &str) {
         self.send(&ToNode::List {
             prefix: prefix.to_string(),
         });
+    }
+
+    /// Follow the documents under a prefix: the listing comes as
+    /// [`Event::Docs`] now (when it is known) and again whole each time the
+    /// node says it changed, also after a reconnect. Each call is undone
+    /// by one [`Drive::unsubscribe_list`]; the node is told once.
+    pub fn subscribe_list(&self, prefix: &str) {
+        let (first, known) = {
+            let mut lists = lock(&self.0.lists);
+            let l = lists.entry(prefix.to_string()).or_default();
+            l.holders += 1;
+            (l.holders == 1, l.docs.clone())
+        };
+        // Offline, the next welcome subscribes.
+        if first && self.is_welcomed() {
+            self.send(&ToNode::ListSubscribe {
+                prefix: prefix.to_string(),
+            });
+        } else if let Some(docs) = known {
+            // Asked already: the listing as it is (one still coming is
+            // told to everyone who asked).
+            self.emit(Event::Docs {
+                prefix: prefix.to_string(),
+                docs,
+            });
+        }
+    }
+
+    /// Undo one [`Drive::subscribe_list`]; the last tells the node to stop.
+    pub fn unsubscribe_list(&self, prefix: &str) {
+        let last = {
+            let mut lists = lock(&self.0.lists);
+            let Some(l) = lists.get_mut(prefix) else {
+                return;
+            };
+            l.holders = l.holders.saturating_sub(1);
+            let last = l.holders == 0;
+            if last {
+                lists.remove(prefix);
+            }
+            last
+        };
+        if last && self.is_welcomed() {
+            self.send(&ToNode::ListUnsubscribe {
+                prefix: prefix.to_string(),
+            });
+        }
+    }
+
+    /// Whether the node has welcomed this connection (what is sent before
+    /// is sent again on the welcome, or not needed).
+    fn is_welcomed(&self) -> bool {
+        lock(&self.0.peer).is_some()
+    }
+
+    /// The prefixes followed now.
+    fn followed(&self) -> Vec<String> {
+        lock(&self.0.lists).keys().cloned().collect()
+    }
+
+    /// A listing from the node: kept when it is followed, and told.
+    fn listed(&self, prefix: String, docs: Vec<DocInfo>, removed: Option<Vec<DocId>>) {
+        let docs = {
+            let mut lists = lock(&self.0.lists);
+            match (lists.get_mut(&prefix), removed) {
+                (Some(l), None) => {
+                    l.docs = Some(docs.clone());
+                    docs
+                }
+                (Some(l), Some(removed)) => {
+                    let list = l.docs.get_or_insert_with(Vec::new);
+                    drive_proto::apply_listed(list, docs, &removed);
+                    list.clone()
+                }
+                // A delta for a listing no longer followed.
+                (None, Some(_)) => return,
+                (None, None) => docs,
+            }
+        };
+        self.emit(Event::Docs { prefix, docs });
     }
 
     // ── internals ───────────────────────────────────────────────────────
@@ -678,6 +773,11 @@ impl Drive {
                 for id in ids {
                     self.join(&id);
                 }
+                // A new connection follows nothing yet: what changed while
+                // offline comes in each listing as it is now.
+                for prefix in self.followed() {
+                    self.send(&ToNode::ListSubscribe { prefix });
+                }
             }
             ToClient::Synced {
                 doc: id,
@@ -737,7 +837,12 @@ impl Drive {
                     json,
                 });
             }
-            ToClient::Docs { prefix, docs } => self.emit(Event::Docs { prefix, docs }),
+            ToClient::Docs { prefix, docs } => self.listed(prefix, docs, None),
+            ToClient::Listed {
+                prefix,
+                docs,
+                removed,
+            } => self.listed(prefix, docs, Some(removed)),
             // What the node refused (a document outside your orgs, an
             // update it could not import): nothing to undo here, but said.
             ToClient::Error { message } => {
@@ -995,6 +1100,93 @@ mod tests {
                 .map(|s| s.to_string()),
             Some("Ours".to_string()),
             "the stored copy is in the document once it is restored"
+        );
+    }
+
+    /// The next listing of `prefix` in `events` that `ok` accepts, within
+    /// `within` (and nothing asked for in between).
+    async fn listing(
+        events: &mut EventStream,
+        prefix: &str,
+        within: std::time::Duration,
+        ok: impl Fn(&[DocInfo]) -> bool,
+    ) -> Option<Vec<DocInfo>> {
+        use futures_util::StreamExt;
+        tokio::time::timeout(within, async {
+            while let Some(e) = events.next().await {
+                if let Event::Docs { prefix: p, docs } = e
+                    && p == prefix
+                    && ok(&docs)
+                {
+                    return Some(docs);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// A followed listing is pushed by the node as documents come and go
+    /// (drive#159): no asking again, before or after a reconnect.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_followed_listing_is_pushed_not_polled() {
+        copies();
+        let (url, _data) = node().await;
+        let prefix = "home/test:live:";
+        let (watcher, mut events) = Drive::connect(Some(url.clone()));
+        let (maker, _maker_events) = Drive::connect(Some(url));
+        watcher.subscribe_list(prefix);
+        watcher.subscribe_list(prefix); // a second view of it: one listing
+        online(&watcher).await;
+        online(&maker).await;
+        let quick = std::time::Duration::from_millis(1500);
+        assert!(
+            listing(&mut events, prefix, quick, <[_]>::is_empty)
+                .await
+                .is_some()
+        );
+
+        // Made elsewhere: heard well before a poll would have asked.
+        let _a = maker.open("home/test:live:a");
+        let has = |id: &'static str| move |d: &[DocInfo]| d.iter().any(|x| x.id == id);
+        assert!(
+            listing(&mut events, prefix, quick, has("home/test:live:a"))
+                .await
+                .is_some(),
+            "a document made under the prefix is pushed"
+        );
+
+        // Reconnected (a new token closes the socket): followed again.
+        watcher.set_token(Some("t".into()));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        online(&watcher).await;
+        let _b = maker.open("home/test:live:b");
+        let docs = listing(&mut events, prefix, quick, has("home/test:live:b"))
+            .await
+            .expect("still followed after a reconnect");
+        assert!(docs.iter().any(|d| d.id == "home/test:live:a"), "{docs:?}");
+
+        // Let go by both views: nothing more.
+        watcher.unsubscribe_list(prefix);
+        watcher.unsubscribe_list(prefix);
+        // What was already on its way still arrives; then nothing.
+        let settle = std::time::Duration::from_millis(300);
+        while listing(&mut events, prefix, settle, |_| true)
+            .await
+            .is_some()
+        {}
+        let _c = maker.open("home/test:live:c");
+        assert!(
+            listing(
+                &mut events,
+                prefix,
+                std::time::Duration::from_millis(500),
+                |_| true
+            )
+            .await
+            .is_none()
         );
     }
 }

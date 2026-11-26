@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use drive_proto::{DocId, DocInfo, Peer, ToClient};
 use loro::{ExportMode, LoroDoc, VersionVector};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::Store;
 
@@ -28,13 +28,42 @@ struct Room {
     /// When it was last read, changed or joined: a room nobody has open,
     /// with nothing left to save, goes once it has been idle for [`IDLE`].
     used: Instant,
+    /// The size of its snapshot in the store (`None`: not stored), as a
+    /// listing says it.
+    stored: Option<u64>,
 }
+
+/// A change to what [`Rooms::list`] says, for live listings (drive#159).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Change {
+    /// A document appeared, or its entry changed (who has it open, the
+    /// size of its snapshot): this is its entry now.
+    Entry(DocInfo),
+    /// A document is no longer listed.
+    Gone(DocId),
+}
+
+impl Change {
+    /// The document it is about.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Change::Entry(d) => &d.id,
+            Change::Gone(id) => id,
+        }
+    }
+}
+
+/// How many changes a slow listener may fall behind before it is told it
+/// missed some (and lists again).
+const CHANGES: usize = 1024;
 
 /// How long a room nobody has open stays loaded after its last use.
 pub const IDLE: Duration = Duration::from_secs(60);
 
 impl Room {
     fn from_snapshot(id: &str, snapshot: Option<Vec<u8>>) -> Room {
+        let stored = snapshot.as_ref().map(|s| s.len() as u64);
         let doc = LoroDoc::new();
         if let Some(snapshot) = snapshot
             && let Err(e) = doc.import(&snapshot)
@@ -48,6 +77,16 @@ impl Room {
             dirty: 0,
             saved: 0,
             used: Instant::now(),
+            stored,
+        }
+    }
+
+    /// Its entry in a listing.
+    fn info(&self, id: &str) -> DocInfo {
+        DocInfo {
+            id: id.to_string(),
+            peers: self.peers.len() as u32,
+            bytes: self.stored.unwrap_or(0),
         }
     }
 }
@@ -87,6 +126,8 @@ pub struct Rooms {
     store: Arc<dyn Store>,
     next_peer: AtomicU64,
     book: std::sync::Mutex<Book>,
+    /// What changes in listings, for whoever listens.
+    changes: broadcast::Sender<Change>,
 }
 
 impl Rooms {
@@ -97,7 +138,25 @@ impl Rooms {
             store,
             next_peer: AtomicU64::new(1),
             book: std::sync::Mutex::new(Book::default()),
+            changes: broadcast::channel(CHANGES).0,
         }
+    }
+
+    /// Hear every change to what [`Rooms::list`] says from now on.
+    pub fn changes(&self) -> broadcast::Receiver<Change> {
+        self.changes.subscribe()
+    }
+
+    /// How many listen to changes now (a connection's live listings each
+    /// hold one while they list anything).
+    #[must_use]
+    pub fn listening(&self) -> usize {
+        self.changes.receiver_count()
+    }
+
+    fn changed(&self, c: Change) {
+        // Nobody listening is fine.
+        let _ = self.changes.send(c);
     }
 
     pub fn store(&self) -> &Arc<dyn Store> {
@@ -167,7 +226,13 @@ impl Rooms {
                     None
                 }
             };
-            rooms.insert(id.to_string(), Room::from_snapshot(id, snapshot));
+            let room = Room::from_snapshot(id, snapshot);
+            // A stored document was listed already; a new one is listed
+            // from now on (open, not yet saved).
+            if room.stored.is_none() {
+                self.changed(Change::Entry(room.info(id)));
+            }
+            rooms.insert(id.to_string(), room);
         }
         let room = rooms.get_mut(id).expect("just inserted");
         room.used = Instant::now();
@@ -178,9 +243,13 @@ impl Rooms {
     fn enter(&self, room: &mut Room, peer: Peer, out: &Outbox, id: &str) {
         let mut book = self.book();
         let first_here = book.local(peer) && !room.peers.keys().any(|p| book.local(*p));
-        room.peers.insert(peer, out.clone());
+        let new = room.peers.insert(peer, out.clone()).is_none();
         if first_here {
             book.tell(Interest::Opened(id.to_string()));
+        }
+        drop(book);
+        if new {
+            self.changed(Change::Entry(room.info(id)));
         }
     }
 
@@ -217,7 +286,9 @@ impl Rooms {
     pub(crate) async fn attach(&self, peer: Peer, out: &Outbox, id: &str) -> Vec<u8> {
         let mut rooms = self.rooms.lock().await;
         let room = self.ensure(&mut rooms, id).await;
-        room.peers.insert(peer, out.clone());
+        if room.peers.insert(peer, out.clone()).is_none() {
+            self.changed(Change::Entry(room.info(id)));
+        }
         room.doc.oplog_vv().encode()
     }
 
@@ -329,7 +400,9 @@ impl Rooms {
         let Some(room) = rooms.get_mut(id) else {
             return;
         };
-        room.peers.remove(&peer);
+        if room.peers.remove(&peer).is_some() {
+            self.changed(Change::Entry(room.info(id)));
+        }
         let mut book = self.book();
         if room.presence.remove(&peer).is_some() {
             Self::fan(
@@ -383,10 +456,7 @@ impl Rooms {
                 .map(|(id, r)| (id.clone(), r.peers.len() as u32))
                 .collect()
         };
-        let matches = |id: &str| match prefix.strip_prefix("*/") {
-            Some(rest) => id.split_once('/').is_some_and(|(_, r)| r.starts_with(rest)),
-            None => id.starts_with(prefix),
-        };
+        let matches = |id: &str| drive_proto::under(prefix, id);
         let mut docs: Vec<DocInfo> = match self.store.list().await {
             Ok(list) => list
                 .iter()
@@ -507,10 +577,18 @@ impl Rooms {
     /// Let go of every room nobody has open, with nothing left to save,
     /// unused for `idle`: it is loaded again from the store when asked for.
     pub async fn evict_idle(&self, idle: Duration) {
-        self.rooms
-            .lock()
-            .await
-            .retain(|_, r| !r.peers.is_empty() || r.dirty > r.saved || r.used.elapsed() < idle);
+        let mut gone = Vec::new();
+        self.rooms.lock().await.retain(|id, r| {
+            let keep = !r.peers.is_empty() || r.dirty > r.saved || r.used.elapsed() < idle;
+            // One never stored was listed only while it was open.
+            if !keep && r.stored.is_none() {
+                gone.push(id.clone());
+            }
+            keep
+        });
+        for id in gone {
+            self.changed(Change::Gone(id));
+        }
     }
 
     /// Save every changed document now (before a backup, before quitting).
@@ -534,10 +612,14 @@ impl Rooms {
                 .collect()
         };
         for (id, rev, snapshot) in dirty {
+            let size = snapshot.len() as u64;
             match self.store.save(&id, snapshot).await {
                 Ok(()) => {
                     if let Some(r) = self.rooms.lock().await.get_mut(&id) {
                         r.saved = r.saved.max(rev);
+                        if r.stored.replace(size) != Some(size) {
+                            self.changed(Change::Entry(r.info(&id)));
+                        }
                     }
                 }
                 Err(e) => {
