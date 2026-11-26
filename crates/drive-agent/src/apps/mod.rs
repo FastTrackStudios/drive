@@ -180,6 +180,13 @@ impl Apps {
 /// (or where there are no Unix sockets). Runs until the process stops.
 pub async fn serve(apps: Arc<Apps>) -> Result<(), String> {
     let dir = apps.a.dir.clone();
+    // Serving the socket makes this process the running agent: `drive`
+    // commands ask it for the location indexes, so it holds them itself.
+    apps.a
+        .index_db
+        .claim()
+        .await
+        .map_err(|e| format!("the index database: {e}"))?;
     #[allow(unused_mut)]
     let mut port = apps.a.cfg.lock().expect("cfg").apps.port;
     // On macOS also a loopback port: Drive's File Provider extension is
@@ -573,6 +580,7 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
                 .await;
             c.answer(id, r.map(json));
         }
+        Op::Index(q) => c.answer(id, crate::indexes::answer(&apps.a, q).await),
         Op::FpDelete { item } => {
             c.answer(id, apps.a.fp_delete(&item).map(|()| serde_json::Value::Null))
         }

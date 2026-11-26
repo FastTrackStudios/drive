@@ -3,11 +3,13 @@
 //! the node when someone elsewhere opens one of their files.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use drive_files::index::{self, IndexEntry, WalkStats};
 use drive_files::space::{self, Location, Volume};
 
 use crate::agent::Agent;
+use crate::index_db::IndexDb;
 
 /// Pseudo and system file systems: never volumes worth showing.
 const SKIP_FS: &[&str] = &[
@@ -199,7 +201,7 @@ impl Agent {
     /// the last walk (found by what they hold, `IndexDb::moved_folders`:
     /// the last walk is the location's rows, the new one `walk`) to their
     /// new paths.
-    async fn carry_folder_keys(&self, walk: &crate::index_db::Walk) -> usize {
+    async fn carry_folder_keys(&self, db: &IndexDb, walk: &crate::index_db::Walk) -> usize {
         let location = walk.location();
         use drive_spine::tags::Target;
         let space = self.cfg.lock().expect("cfg").space.clone();
@@ -223,7 +225,7 @@ impl Agent {
         if wanted.is_empty() {
             return 0;
         }
-        let moves = match self.index_db.moved_folders(walk, &wanted).await {
+        let moves = match db.moved_folders(walk, &wanted).await {
             Ok(moves) => moves,
             Err(e) => {
                 tracing::warn!(location.id = %location, error = %e, "moved folders were not looked for");
@@ -264,13 +266,22 @@ impl Agent {
         if loc.storage.is_empty() {
             unreadable_root(Path::new(&loc.path))?;
         }
-        let walk = self
+        // A `drive` command beside the running agent: the agent walks it,
+        // into the database it holds (drive#157).
+        if let Some(done) = self.index_db.reindex_by_daemon(&loc.id).await {
+            return done.map_err(|e| e.to_string());
+        }
+        let db = self
             .index_db
+            .db()
+            .await
+            .map_err(|e| format!("the index database: {e}"))?;
+        let walk = db
             .begin_walk(&loc.id)
             .await
             .map_err(|e| format!("the index database: {e}"))?;
-        let done = self.walk_and_publish(loc, &walk).await;
-        if let Err(e) = self.index_db.discard_walk(walk).await {
+        let done = self.walk_and_publish(db, loc, &walk).await;
+        if let Err(e) = db.discard_walk(walk).await {
             tracing::debug!(location.id = %loc.id, error = %e, "a walk's table was left for the next start");
         }
         done
@@ -279,24 +290,25 @@ impl Agent {
     /// Walk `loc` into `walk`, make it the location's index and publish it.
     async fn walk_and_publish(
         &self,
+        db: &Arc<IndexDb>,
         loc: &Location,
         walk: &crate::index_db::Walk,
     ) -> Result<WalkStats, String> {
-        let previous = self.index_db.meta(&loc.id).await.ok().flatten();
+        let previous = db.meta(&loc.id).await.ok().flatten();
         let had = self
             .space_files_of(&loc.id)
             .unwrap_or(0)
             .max(previous.as_ref().map_or(0, |p| (p.files + p.dirs) as usize));
         // The last walk, asked of the index database a folder at a time.
         let last = previous.is_some().then(|| crate::index_db::Previous {
-            db: self.index_db.clone(),
+            db: db.clone(),
             location: loc.id.clone(),
             rt: tokio::runtime::Handle::current(),
         });
         let (stats, built) = if loc.storage.is_empty() {
-            self.walk_folder(loc, walk, last).await?
+            self.walk_folder(db, loc, walk, last).await?
         } else {
-            self.walk_storage(loc, walk, last.as_ref()).await?
+            self.walk_storage(db, loc, walk, last.as_ref()).await?
         };
         if stats.files + stats.dirs == 0 && had > 0 {
             return Err(format!(
@@ -310,13 +322,12 @@ impl Agent {
         }
         // Tagged or linked folders that moved: their tags and links go with
         // them (this device walks the location, so it alone decides).
-        let moved = self.carry_folder_keys(walk).await;
+        let moved = self.carry_folder_keys(db, walk).await;
         if moved > 0 {
             tracing::Span::current().record("folders.moved", moved);
         }
         // Into the location's rows: only those that changed are written.
-        let (written, _) = self
-            .index_db
+        let (written, _) = db
             .commit_walk(walk, &loc.path, built)
             .await
             .map_err(|e| format!("the index database: {e}"))?;
@@ -333,8 +344,7 @@ impl Agent {
             tracing::debug!(location.name = %loc.name, index.files = stats.files, "unchanged: nothing published");
             return Ok(stats);
         }
-        let bytes = self
-            .index_db
+        let bytes = db
             .encode(&loc.id)
             .await
             .map_err(|e| e.to_string())?
@@ -391,6 +401,7 @@ impl Agent {
     /// what it found and when it finished.
     async fn walk_folder(
         &self,
+        db: &IndexDb,
         loc: &Location,
         walk: &crate::index_db::Walk,
         last: Option<crate::index_db::Previous>,
@@ -407,7 +418,7 @@ impl Agent {
                 &emit,
             )
         });
-        let filled = self.index_db.fill_walk(walk, batches).await;
+        let filled = db.fill_walk(walk, batches).await;
         let stats = walking.await.map_err(|e| e.to_string())?;
         filled.map_err(|e| format!("the index database: {e}"))?;
         Ok((stats, drive_files::now_ms()))
@@ -416,6 +427,7 @@ impl Agent {
     /// Walk a location in one of this device's storages into `walk`.
     async fn walk_storage(
         &self,
+        db: &IndexDb,
         loc: &Location,
         walk: &crate::index_db::Walk,
         last: Option<&crate::index_db::Previous>,
@@ -433,8 +445,7 @@ impl Agent {
         let (idx, stats) = index::walk_storage(&loc.id, &op, &loc.path, last)
             .await
             .map_err(|e| e.to_string())?;
-        self.index_db
-            .walk_put(walk, &idx.entries)
+        db.walk_put(walk, &idx.entries)
             .await
             .map_err(|e| format!("the index database: {e}"))?;
         Ok((stats, idx.built))
@@ -460,6 +471,16 @@ impl Agent {
     /// holding each only while it is put there.
     #[tracing::instrument(name = "drive.indexes.sync", skip_all, fields(indexes.fetched = tracing::field::Empty, process.rss_mb = tracing::field::Empty))]
     pub async fn sync_indexes(&self) {
+        // Beside the running agent: it downloads them, into its database.
+        if let Some(done) = self.index_db.sync_by_daemon().await {
+            if let Err(e) = done {
+                tracing::debug!(error = %e, "the running agent did not download the indexes");
+            }
+            return;
+        }
+        let Ok(db) = self.index_db.db().await else {
+            return;
+        };
         let mut fetched = 0;
         for loc in space::locations(&self.space) {
             // This device's own locations are indexed here: its copy is the
@@ -487,7 +508,7 @@ impl Agent {
                 tracing::warn!(location.id = %loc.id, "a downloaded index did not decode as that location's");
                 continue;
             };
-            match self.index_db.put(&index).await {
+            match db.put(&index).await {
                 Ok(_) => {
                     fetched += 1;
                     self.fetched
@@ -676,7 +697,15 @@ mod reindex_tests {
         let loc = a.add_location("Songs", &songs).unwrap();
         a.index_location(&loc).await.unwrap();
         // An agent from before the database: only the file.
-        let idx = a.index_db.load(&loc.id).await.unwrap().unwrap();
+        let idx = a
+            .index_db
+            .db()
+            .await
+            .unwrap()
+            .load(&loc.id)
+            .await
+            .unwrap()
+            .unwrap();
         a.index_db.remove(&loc.id).await.unwrap();
         let file = dir.path().join("indexes").join(format!("{}.idx", loc.id));
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -684,7 +713,16 @@ mod reindex_tests {
         drop(a);
         let again = device(&url, dir.path(), "studio", "Studio PC").await;
         assert_eq!(
-            again.index_db.load(&loc.id).await.unwrap().unwrap().entries,
+            again
+                .index_db
+                .db()
+                .await
+                .unwrap()
+                .load(&loc.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .entries,
             idx.entries,
             "imported at start"
         );

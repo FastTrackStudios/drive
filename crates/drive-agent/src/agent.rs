@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use drive_files::blob::BlobStore;
 use drive_files::space::{self, Device};
@@ -175,9 +175,10 @@ pub struct Agent {
     /// Locations whose index changed here but did not reach the node:
     /// published again on their next walk, changed or not.
     pub(crate) unpublished: Mutex<HashSet<String>>,
-    /// Every location's index on disk (drive#47), shared with this
-    /// device's other agent processes.
-    pub(crate) index_db: Arc<crate::index_db::IndexDb>,
+    /// Every location's index (drive#47): this process's own database
+    /// when it is the running agent (or none runs), else asked of the
+    /// running agent over the app socket (drive#157).
+    pub(crate) index_db: crate::indexes::Indexes,
     /// Each other device's location: the published index (its registry
     /// `built`) this device last downloaded, so it is not fetched again.
     pub(crate) fetched: Mutex<std::collections::HashMap<String, i64>>,
@@ -219,11 +220,7 @@ impl Agent {
         // sync connection does: a node reached from another computer refuses
         // uploads (an index, a blob) without it.
         let http = http_client(cfg.token.as_deref());
-        let index_db = Arc::new(
-            crate::index_db::IndexDb::open(&dir.join("indexes.db"))
-                .await
-                .expect("the index database opens in the agent's folder"),
-        );
+        let index_db = crate::indexes::Indexes::new(dir);
         import_index_files(dir, &index_db).await;
         Agent {
             dir: dir.to_path_buf(),
@@ -557,11 +554,24 @@ pub fn this_device(id: &str, name: &str) -> Device {
 /// Indexes kept as files (`indexes/<location>.idx`) before the database:
 /// put in it once, each, the first time an agent starts with it, and the
 /// file removed.
-async fn import_index_files(dir: &Path, db: &crate::index_db::IndexDb) {
-    let have: HashSet<String> = db.locations().await.unwrap_or_default().into_iter().collect();
+async fn import_index_files(dir: &Path, indexes: &crate::indexes::Indexes) {
     let Ok(files) = std::fs::read_dir(dir.join("indexes")) else {
         return;
     };
+    // Into this process's own database only: a running agent imported
+    // them when it started.
+    if indexes.asks_daemon().await {
+        return;
+    }
+    let Ok(db) = indexes.db().await else {
+        return;
+    };
+    let have: HashSet<String> = db
+        .locations()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     for f in files.flatten() {
         let path = f.path();
         let Some(id) = path
