@@ -327,28 +327,6 @@ impl Drive {
         }
         let doc = LoroDoc::new();
         drive_spine::history::prepare(&doc, &self.author());
-        // This device's copy arrives a moment later (storage is async); it
-        // merges with whatever the node has sent by then.
-        {
-            let me = self.clone();
-            let id = id.to_string();
-            platform::spawn(async move {
-                let bytes = platform::load_doc(&id).await;
-                let imported = {
-                    let mut docs = lock(&me.0.docs);
-                    let Some(d) = docs.get_mut(&id) else { return };
-                    d.restored = true;
-                    bytes.is_some_and(|b| d.doc.import(&b).is_ok())
-                };
-                // Edits made offline last time: join again so the node
-                // says what it lacks and they are sent.
-                if imported && me.status() == Status::Online {
-                    me.join(&id);
-                }
-                // Said either way: found or not, the copy is in.
-                me.emit(Event::Changed(id.clone()));
-            });
-        }
         let outbox = Arc::new(Mutex::new(Vec::new()));
         let ob = outbox.clone();
         let sub = doc.subscribe_local_update(Box::new(move |bytes| {
@@ -371,6 +349,29 @@ impl Drive {
                 released: 0,
             },
         );
+        // This device's copy arrives a moment later (storage is async); it
+        // merges with whatever the node has sent by then. Spawned only once
+        // the document is in `docs`, or a quick load finds nothing to mark.
+        {
+            let me = self.clone();
+            let id = id.to_string();
+            platform::spawn(async move {
+                let bytes = platform::load_doc(&id).await;
+                let imported = {
+                    let mut docs = lock(&me.0.docs);
+                    let Some(d) = docs.get_mut(&id) else { return };
+                    d.restored = true;
+                    bytes.is_some_and(|b| d.doc.import(&b).is_ok())
+                };
+                // Edits made offline last time: join again so the node
+                // says what it lacks and they are sent.
+                if imported && me.status() == Status::Online {
+                    me.join(&id);
+                }
+                // Said either way: found or not, the copy is in.
+                me.emit(Event::Changed(id.clone()));
+            });
+        }
         if self.status() == Status::Online {
             self.join(id);
         }
