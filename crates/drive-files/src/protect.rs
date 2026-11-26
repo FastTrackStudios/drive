@@ -171,7 +171,7 @@ pub fn check(
                     });
                 }
             }
-            short.sort_by(|a, b| b.size.cmp(&a.size));
+            short.sort_by_key(|x| std::cmp::Reverse(x.size));
             short.truncate(limit);
             let mut locations: Vec<LocationReport> = per.into_values().collect();
             locations.sort_by(|a, b| a.location.cmp(&b.location));

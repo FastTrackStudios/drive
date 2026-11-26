@@ -244,7 +244,7 @@ pub fn projects(doc: &LoroDoc) -> Vec<Project> {
         })
         .filter(|p| !p.id.is_empty())
         .collect();
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|p| p.name.to_lowercase());
     out
 }
 
@@ -421,7 +421,7 @@ pub fn shares(doc: &LoroDoc, project: &str) -> Vec<Share> {
         .map(|m| share_of(&m))
         .filter(|x| x.project == project)
         .collect();
-    out.sort_by(|a, b| b.created.cmp(&a.created));
+    out.sort_by_key(|x| std::cmp::Reverse(x.created));
     out
 }
 
