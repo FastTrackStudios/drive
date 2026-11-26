@@ -724,7 +724,10 @@ impl Drive {
         if !self.is_current(generation) {
             return;
         }
-        self.0.retry_ms.store(500, Ordering::Relaxed);
+        // The wait before a retry restarts only once the node lets this
+        // connection in (Welcome): a socket that opens and is refused at
+        // once (a token the node no longer takes) keeps backing off,
+        // instead of redialling every half second.
         let name = lock(&self.0.me).name.clone();
         let token = lock(&self.0.token).clone();
         self.send(&ToNode::Hello {
@@ -770,6 +773,7 @@ impl Drive {
     fn receive(&self, msg: ToClient) {
         match msg {
             ToClient::Welcome { peer } => {
+                self.0.retry_ms.store(500, Ordering::Relaxed);
                 *lock(&self.0.peer) = Some(peer);
                 self.set_status(Status::Online);
                 let ids: Vec<DocId> = lock(&self.0.docs).keys().cloned().collect();
@@ -881,6 +885,30 @@ mod tests {
         lock(&drive.0.docs)
             .get(id)
             .map_or(0, |d| lock(&d.outbox).len())
+    }
+
+    /// A socket that opens but whose sign-in the node refuses keeps
+    /// backing off; only the node letting it in starts the waits over.
+    #[test]
+    fn the_retry_wait_restarts_only_once_the_node_lets_the_connection_in() {
+        copies();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (drive, _events) = Drive::connect(Some(format!("ws://127.0.0.1:{port}/sync")));
+        let wait = || drive.0.retry_ms.load(Ordering::Relaxed);
+        drive.0.retry_ms.store(4000, Ordering::Relaxed);
+        let generation = drive.0.generation.load(Ordering::SeqCst);
+        drive.socket_opened(generation);
+        assert_eq!(wait(), 4000, "an open socket alone is not let in");
+        drive.receive(ToClient::Error {
+            message: "sign in".into(),
+        });
+        assert_eq!(wait(), 4000, "a refused sign-in keeps the wait");
+        drive.receive(ToClient::Welcome { peer: 7 });
+        assert_eq!(wait(), 500, "let in: the waits start over");
     }
 
     #[test]
