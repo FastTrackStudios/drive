@@ -25,6 +25,7 @@
 
 pub mod frames;
 mod link;
+mod listings;
 mod rooms;
 mod serve;
 mod store;
@@ -34,7 +35,8 @@ pub mod net;
 
 pub use drive_proto::{DocId, DocInfo, Peer, ToClient, ToNode};
 pub use link::{Hello, link};
-pub use rooms::{IDLE, Outbox, Rooms};
+pub use listings::{Heard, Listings};
+pub use rooms::{Change, IDLE, Outbox, Rooms};
 pub use serve::{Access, serve};
 pub use store::{BoxFuture, DirStore, MemStore, Store};
 

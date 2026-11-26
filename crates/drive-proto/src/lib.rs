@@ -11,11 +11,42 @@
 //!
 //! Presence (cursors, selections, who is here) is never stored: it is the
 //! latest JSON each peer set, dropped when the peer leaves.
+//!
+//! Listing documents: [`ToNode::ListSubscribe`] answers once with
+//! [`ToClient::Docs`], then sends [`ToClient::Listed`] whenever a document
+//! under the prefix appears, goes, or changes what [`DocInfo`] says of it
+//! (drive#159). [`ToNode::List`] answers once and is kept for clients of
+//! version 2, which asked again every few seconds.
 
 use serde::{Deserialize, Serialize};
 
-/// The protocol's version; a node refuses a client that speaks another.
-pub const VERSION: u32 = 2;
+/// The protocol's version: what this build speaks.
+///
+/// 3 added [`ToNode::ListSubscribe`], [`ToNode::ListUnsubscribe`] and
+/// [`ToClient::Listed`] (drive#159), at the ends of their enums, so every
+/// message of version 2 is encoded as it was.
+pub const VERSION: u32 = 3;
+
+/// The oldest version still answered: a client of version 2 lists by
+/// asking again ([`ToNode::List`]) and is never sent what it does not know.
+pub const OLDEST: u32 = 2;
+
+/// Whether a peer that says it speaks `version` is answered.
+#[must_use]
+pub fn speaks(version: u32) -> bool {
+    (OLDEST..=VERSION).contains(&version)
+}
+
+/// Whether a document id is under a listing's prefix: `*/rest` matches
+/// `rest` in every org (`*/studio:` is `studio:` everywhere), anything
+/// else is a plain prefix of the full id.
+#[must_use]
+pub fn under(prefix: &str, id: &str) -> bool {
+    match prefix.strip_prefix("*/") {
+        Some(rest) => id.split_once('/').is_some_and(|(_, r)| r.starts_with(rest)),
+        None => id.starts_with(prefix),
+    }
+}
 
 /// The biggest websocket message (and frame) a node or a native client
 /// takes. A document's join is answered with one message holding all of
@@ -113,6 +144,13 @@ pub enum ToNode {
         req: u64,
         result: Result<Browsed, String>,
     },
+    /// Version 3: list the documents under `prefix` now
+    /// ([`ToClient::Docs`]), then say what changes under it
+    /// ([`ToClient::Listed`]) until [`ToNode::ListUnsubscribe`] or the
+    /// connection ends. Subscribing to a prefix twice is once.
+    ListSubscribe { prefix: String },
+    /// Version 3: stop hearing about `prefix`.
+    ListUnsubscribe { prefix: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -162,6 +200,15 @@ pub enum ToClient {
     /// (docs/browse.md); answer with [`ToNode::Browsed`]. An agent that
     /// does not know this message skips it (the node times out).
     Browse { req: u64, ask: Browse },
+    /// Version 3, to a [`ToNode::ListSubscribe`]r: what changed under
+    /// `prefix` since the last listing. `docs`: documents that appeared or
+    /// whose entry changed (replace them by id); `removed`: ids that went.
+    /// A rename is its old id removed and its new one in `docs`.
+    Listed {
+        prefix: String,
+        docs: Vec<DocInfo>,
+        removed: Vec<DocId>,
+    },
 }
 
 /// What the node asks of a device's disks. Every path is relative to a
@@ -319,6 +366,19 @@ pub struct DocInfo {
     pub peers: u32,
     /// Its size, in bytes of its snapshot.
     pub bytes: u64,
+}
+
+/// A listing with a [`ToClient::Listed`] applied: `removed` ids go, each
+/// of `docs` replaces the entry with its id (or joins), and it stays in
+/// id order, as the node lists.
+pub fn apply_listed(list: &mut Vec<DocInfo>, docs: Vec<DocInfo>, removed: &[DocId]) {
+    list.retain(|d| !removed.contains(&d.id));
+    for d in docs {
+        match list.binary_search_by(|x| x.id.cmp(&d.id)) {
+            Ok(i) => list[i] = d,
+            Err(i) => list.insert(i, d),
+        }
+    }
 }
 
 /// Encode a message for the wire.
@@ -502,5 +562,91 @@ mod tests {
             })),
         };
         assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
+    }
+
+    fn info(id: &str, peers: u32) -> DocInfo {
+        DocInfo {
+            id: id.into(),
+            peers,
+            bytes: 0,
+        }
+    }
+
+    /// Version 3's messages sit at the ends of their enums: what a
+    /// version-2 peer sends and is sent decodes as it did.
+    #[test]
+    fn listing_subscriptions_leave_version_2_alone() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        #[allow(dead_code)]
+        enum OldToNode {
+            Hello {
+                version: u32,
+                name: String,
+                token: Option<String>,
+            },
+            Join {
+                doc: DocId,
+                version_vector: Vec<u8>,
+            },
+            Update {
+                doc: DocId,
+                bytes: Vec<u8>,
+            },
+            Presence {
+                doc: DocId,
+                json: String,
+            },
+            Leave {
+                doc: DocId,
+            },
+            List {
+                prefix: String,
+            },
+        }
+        let list = encode(&ToNode::List {
+            prefix: "home/".into(),
+        });
+        assert_eq!(
+            decode::<OldToNode>(&list).unwrap(),
+            OldToNode::List {
+                prefix: "home/".into()
+            }
+        );
+        for m in [
+            ToNode::ListSubscribe {
+                prefix: "home/".into(),
+            },
+            ToNode::ListUnsubscribe {
+                prefix: "home/".into(),
+            },
+        ] {
+            assert_eq!(decode::<ToNode>(&encode(&m)).unwrap(), m);
+        }
+        let listed = ToClient::Listed {
+            prefix: "home/".into(),
+            docs: vec![info("home/a:b", 1)],
+            removed: vec!["home/a:c".into()],
+        };
+        assert_eq!(decode::<ToClient>(&encode(&listed)).unwrap(), listed);
+        assert!(speaks(2) && speaks(VERSION) && !speaks(1) && !speaks(VERSION + 1));
+    }
+
+    #[test]
+    fn a_prefix_is_in_one_org_or_every_org() {
+        assert!(under("home/studio:", "home/studio:song:a"));
+        assert!(!under("home/studio:", "work/studio:song:a"));
+        assert!(under("*/studio:", "work/studio:song:a"));
+        assert!(!under("*/studio:", "work/canvas:a"));
+        assert!(!under("*/studio:", "studio:no-org"));
+    }
+
+    #[test]
+    fn a_delta_replaces_adds_and_removes_in_id_order() {
+        let mut list = vec![info("a", 0), info("c", 0)];
+        apply_listed(&mut list, vec![info("b", 1), info("c", 2)], &["a".into()]);
+        assert_eq!(list, vec![info("b", 1), info("c", 2)]);
+        // A rename: the old id goes, the new one comes.
+        apply_listed(&mut list, vec![info("a2", 0)], &["b".into()]);
+        assert_eq!(list, vec![info("a2", 0), info("c", 2)]);
     }
 }

@@ -59,8 +59,11 @@ pub async fn link(
         joined.insert(id);
     }
 
+    // A link only joins, updates and says where it is: it speaks the
+    // oldest version still answered, so it links to a device of an older
+    // build as well as a newer one.
     if !send(ToNode::Hello {
-        version: drive_proto::VERSION,
+        version: drive_proto::OLDEST,
         name: hello.name,
         token: hello.token,
     }) {
@@ -111,6 +114,7 @@ pub async fn link(
                         tracing::warn!(sync.via = %via, error = %message, "a linked peer refused a message");
                     }
                     ToClient::Docs { .. }
+                    | ToClient::Listed { .. }
                     | ToClient::Fetch { .. }
                     | ToClient::Sidecars { .. }
                     | ToClient::Browse { .. } => {}

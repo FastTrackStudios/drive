@@ -483,39 +483,115 @@ impl Rooms {
                 joined.remove(&id);
             }
             ToNode::List { prefix } => {
-                let mut docs = self.sync.list(&prefix).await;
-                if !who.all {
-                    // Another org's registry is read once per listing, and
-                    // without opening its room (a listing runs every few
-                    // seconds per open view).
-                    let mut registries: HashMap<String, Vec<drive_files::projects::Project>> =
-                        HashMap::new();
-                    let mut kept = Vec::new();
-                    for d in docs {
-                        let Some(org) = drive_proto::org_of(&d.id).map(str::to_string) else {
-                            continue;
-                        };
-                        if who.member_of(&org) {
-                            kept.push(d);
-                            continue;
-                        }
-                        if !registries.contains_key(&org) {
-                            let projects = self
-                                .inspect(
-                                    &drive_files::space_doc(&org),
-                                    drive_files::projects::projects,
-                                )
-                                .await;
-                            registries.insert(org.clone(), projects);
-                        }
-                        if Self::lent(who, &org, &d.id, &registries[&org]) {
-                            kept.push(d);
-                        }
-                    }
-                    docs = kept;
-                }
-                docs.sort_by(|a, b| a.id.cmp(&b.id));
+                let docs = self.listing(who, &prefix).await;
                 let _ = out.send(ToClient::Docs { prefix, docs });
+            }
+            // A connection's live listings are its session's.
+            ToNode::ListSubscribe { .. } | ToNode::ListUnsubscribe { .. } => {}
+        }
+    }
+
+    /// The documents under `prefix` someone may see, by id.
+    async fn listing(
+        &self,
+        who: &crate::auth::Principal,
+        prefix: &str,
+    ) -> Vec<drive_proto::DocInfo> {
+        let mut docs = self
+            .visible(who, self.sync.list(prefix).await, |d| &d.id)
+            .await;
+        docs.sort_by(|a, b| a.id.cmp(&b.id));
+        docs
+    }
+
+    /// Those of `items` (each naming a document by `id`) that someone may
+    /// see: their orgs', and what another org's projects lend them. Each
+    /// other org's registry is read once, without opening its room (a
+    /// listing must not open rooms, nor change what it lists).
+    async fn visible<T>(
+        &self,
+        who: &crate::auth::Principal,
+        items: Vec<T>,
+        id: impl Fn(&T) -> &str,
+    ) -> Vec<T> {
+        if who.all {
+            return items;
+        }
+        let mut registries: HashMap<String, Vec<drive_files::projects::Project>> = HashMap::new();
+        let mut kept = Vec::new();
+        for item in items {
+            let Some(org) = drive_proto::org_of(id(&item)).map(str::to_string) else {
+                continue;
+            };
+            if who.member_of(&org) {
+                kept.push(item);
+                continue;
+            }
+            if !registries.contains_key(&org) {
+                let projects = self
+                    .inspect(
+                        &drive_files::space_doc(&org),
+                        drive_files::projects::projects,
+                    )
+                    .await;
+                registries.insert(org.clone(), projects);
+            }
+            if Self::lent(who, &org, id(&item), &registries[&org]) {
+                kept.push(item);
+            }
+        }
+        kept
+    }
+
+    /// Start or stop a connection's live listing; a new one is answered
+    /// with the listing as it is now.
+    async fn subscription(
+        &self,
+        who: &crate::auth::Principal,
+        out: &Outbox,
+        listings: &mut drive_sync::Listings,
+        msg: ToNode,
+    ) {
+        match msg {
+            ToNode::ListSubscribe { prefix } => {
+                listings.subscribe(&self.sync, prefix.clone());
+                let docs = self.listing(who, &prefix).await;
+                let _ = out.send(ToClient::Docs { prefix, docs });
+            }
+            ToNode::ListUnsubscribe { prefix } => listings.unsubscribe(&prefix),
+            _ => {}
+        }
+    }
+
+    /// Pass on what a connection's live listings heard: a change to a
+    /// document it may see now (asked again for every change, so access
+    /// lost since is respected), or every listing again when it missed
+    /// some.
+    async fn tell(
+        &self,
+        who: &crate::auth::Principal,
+        out: &Outbox,
+        listings: &drive_sync::Listings,
+        heard: drive_sync::Heard,
+    ) {
+        match heard {
+            drive_sync::Heard::Change(c) => {
+                let deltas = listings.deltas(&c);
+                if deltas.is_empty() || self.visible(who, vec![c], |c| c.id()).await.is_empty() {
+                    return;
+                }
+                for m in deltas {
+                    let _ = out.send(m);
+                }
+            }
+            drive_sync::Heard::Missed => {
+                for prefix in listings.prefixes() {
+                    let docs = self.listing(who, prefix).await;
+                    let _ = out.send(ToClient::Docs {
+                        prefix: prefix.to_string(),
+                        docs,
+                    });
+                }
             }
         }
     }
@@ -705,6 +781,7 @@ pub(crate) async fn session(
     let mut agent: Option<(String, String)> = None;
     let mut messages_in = 0u64;
     let mut joined = HashSet::new();
+    let mut listings = drive_sync::Listings::default();
     let mut every = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let ended = loop {
@@ -720,6 +797,12 @@ pub(crate) async fn session(
                     message: "sign in".into(),
                 });
                 break Ended::SignInExpired;
+            }
+            heard = listings.next() => {
+                if let Some(p) = &who {
+                    rooms.tell(p, &out, &listings, heard).await;
+                }
+                continue;
             }
             _ = every.tick() => {
                 let Some(old) = &who else { continue };
@@ -754,7 +837,7 @@ pub(crate) async fn session(
             token: t,
         } = &msg
         {
-            if *version != drive_proto::VERSION {
+            if !drive_proto::speaks(*version) {
                 let _ = out.send(ToClient::Error {
                     message: "protocol version mismatch".into(),
                 });
@@ -791,6 +874,13 @@ pub(crate) async fn session(
             continue;
         }
         let Some(p) = &who else { continue };
+        if matches!(
+            msg,
+            ToNode::ListSubscribe { .. } | ToNode::ListUnsubscribe { .. }
+        ) {
+            rooms.subscription(p, &out, &mut listings, msg).await;
+            continue;
+        }
         let says_agent = match &msg {
             ToNode::Agent { space, device } => Some((space.clone(), device.clone())),
             _ => None,
@@ -828,3 +918,6 @@ mod session_tests;
 
 #[cfg(test)]
 mod evict_tests;
+
+#[cfg(test)]
+mod listing_tests;

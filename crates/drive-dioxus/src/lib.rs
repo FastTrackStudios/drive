@@ -663,7 +663,8 @@ fn open_doc(ctx: &DriveCtx, id: &str) -> Doc {
     d
 }
 
-/// The documents the node holds under a prefix, refreshed every few seconds.
+/// The documents the node holds under a prefix, kept up to date as they
+/// are made, change and go: the node pushes each change (drive#159).
 pub fn use_docs(prefix: impl Into<String>) -> Signal<Vec<DocInfo>> {
     let ctx = use_drive();
     let prefix: String = ctx.qualify(&prefix.into());
@@ -679,35 +680,40 @@ pub fn use_docs_everywhere(prefix: impl Into<String>) -> Signal<Vec<DocInfo>> {
 }
 
 fn list_docs(ctx: DriveCtx, prefix: String) -> Signal<Vec<DocInfo>> {
-    // The prefix may change between renders: the list follows it.
+    // The prefix may change between renders: the list follows it, and the
+    // last one's listing is let go (when the component goes, too).
     let slot = use_hook(|| Rc::new(keyed::Keyed::default()));
-    let current = use_hook(|| Rc::new(RefCell::new(String::new())));
-    current.borrow_mut().clone_from(&prefix);
-    let sig = slot.get(&prefix, || {
-        if *ctx.status.peek() == Status::Online {
-            ctx.drive.list(&prefix);
-        }
-        *ctx.lists
+    let (sig, _followed) = slot.get(&prefix, || {
+        let sig = *ctx
+            .lists
             .borrow_mut()
             .entry(prefix.clone())
-            .or_insert_with(|| Signal::new_in_scope(Vec::new(), ScopeId::ROOT))
-    });
-    let drive = ctx.drive.clone();
-    let status = ctx.status;
-    use_future(move || {
-        let drive = drive.clone();
-        let current = current.clone();
-        async move {
-            loop {
-                if status() == Status::Online {
-                    let prefix = current.borrow().clone();
-                    drive.list(&prefix);
-                }
-                gloo_sleep(3000).await;
-            }
-        }
+            .or_insert_with(|| Signal::new_in_scope(Vec::new(), ScopeId::ROOT));
+        (sig, Rc::new(Followed::new(&ctx.drive, &prefix)))
     });
     sig
+}
+
+/// A live listing a component follows, let go when it is dropped.
+struct Followed {
+    drive: Drive,
+    prefix: String,
+}
+
+impl Followed {
+    fn new(drive: &Drive, prefix: &str) -> Followed {
+        drive.subscribe_list(prefix);
+        Followed {
+            drive: drive.clone(),
+            prefix: prefix.to_string(),
+        }
+    }
+}
+
+impl Drop for Followed {
+    fn drop(&mut self) {
+        self.drive.unsubscribe_list(&self.prefix);
+    }
 }
 
 /// Who is in an org (empty: the org this browser is in), as the issuer
@@ -742,6 +748,5 @@ pub async fn members(org: &str) -> Result<Vec<OrgMember>, String> {
     }
 }
 
-async fn gloo_sleep(ms: u32) {
-    drive_client::sleep(ms).await;
-}
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod listing_tests;
