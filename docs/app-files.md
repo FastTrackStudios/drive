@@ -105,6 +105,11 @@ token on a port). Anything else first closes the connection.
 {"event":"done","job":3,…}
 ```
 
+The `drive` command line uses the same socket for the location indexes
+(`"op":"index"`, `drive_local::proto::IndexOp`): beside a running agent a
+command asks it, and only the agent opens `indexes.db`. A command opens
+the database itself only when no agent answers (drive#157).
+
 ## For an audio engine
 
 ```rust

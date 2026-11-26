@@ -62,7 +62,7 @@ pub struct LocationIndex {
 }
 
 /// What a walk found and how much work it was.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WalkStats {
     pub files: usize,
     pub dirs: usize,

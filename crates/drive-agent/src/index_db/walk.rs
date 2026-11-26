@@ -88,10 +88,12 @@ impl IndexDb {
     pub async fn begin_walk(&self, location: &str) -> turso::Result<Walk> {
         let conn = self.write.lock().await;
         self.abandon(&conn).await;
-        conn.execute(
-            "INSERT INTO walks (pid, location) VALUES (?1, ?2)",
-            vec![Value::Integer(i64::from(std::process::id())), t(location)],
-        )
+        let row = vec![Value::Integer(i64::from(std::process::id())), t(location)];
+        self.in_tx(&conn, async {
+            conn.execute("INSERT INTO walks (pid, location) VALUES (?1, ?2)", row)
+                .await
+                .map(|_| ())
+        })
         .await?;
         Ok(Walk {
             id: conn.last_insert_rowid(),
@@ -199,22 +201,17 @@ impl IndexDb {
     async fn drop_walk(&self, id: i64) -> turso::Result<()> {
         let conn = self.write.lock().await;
         self.abandon(&conn).await;
-        loop {
-            let gone = conn
-                .execute(
-                    &format!(
-                        "DELETE FROM walk_entries WHERE rowid IN \
-                         (SELECT rowid FROM walk_entries WHERE walk = ?1 LIMIT {BATCH})"
-                    ),
-                    vec![Value::Integer(id)],
-                )
-                .await?;
-            checkpoint(&conn).await;
-            if gone == 0 {
-                break;
-            }
-        }
-        conn.execute(
+        let batch = format!(
+            "DELETE FROM walk_entries WHERE rowid IN \
+             (SELECT rowid FROM walk_entries WHERE walk = ?1 LIMIT {BATCH})"
+        );
+        while self
+            .delete_batch(&conn, &batch, vec![Value::Integer(id)])
+            .await?
+            > 0
+        {}
+        self.delete_batch(
+            &conn,
             "DELETE FROM walks WHERE walk = ?1",
             vec![Value::Integer(id)],
         )

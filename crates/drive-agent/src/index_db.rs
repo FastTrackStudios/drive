@@ -24,7 +24,7 @@ const READERS: usize = 4;
 const BATCH: usize = 10_000;
 
 /// What the database knows of a location's index as a whole.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Meta {
     pub root: String,
     /// When the index was built (ms since the epoch).
@@ -146,6 +146,7 @@ impl IndexDb {
         if !path.exists() {
             return Ok(None);
         }
+        // As in `open_once`: an agent may be running beside it.
         let db = turso::Builder::new_local(&path.to_string_lossy())
             .experimental_multiprocess_wal(true)
             .build()
@@ -167,6 +168,12 @@ impl IndexDb {
     }
 
     async fn open_once(path: &Path) -> turso::Result<IndexDb> {
+        // Still needed (turso pinned in Cargo.toml, drive#157): beside a
+        // running agent a `drive` command asks it over app.sock and never
+        // opens this, but with no agent running commands open it
+        // themselves, and two may at once; and an agent may start while
+        // one does. Without the flag the second gets "File is locked by
+        // another process".
         let db = turso::Builder::new_local(&path.to_string_lossy())
             .experimental_multiprocess_wal(true)
             .build()
@@ -240,27 +247,39 @@ impl IndexDb {
     pub async fn remove(&self, location: &str) -> turso::Result<()> {
         let conn = self.write.lock().await;
         self.abandon(&conn).await;
-        conn.execute(
-            "DELETE FROM locations WHERE location = ?1",
-            vec![t(location)],
-        )
+        self.in_tx(&conn, async {
+            conn.execute(
+                "DELETE FROM locations WHERE location = ?1",
+                vec![t(location)],
+            )
+            .await
+            .map(|_| ())
+        })
         .await?;
-        loop {
-            let gone = conn
-                .execute(
-                    &format!(
-                        "DELETE FROM entries WHERE rowid IN \
-                         (SELECT rowid FROM entries WHERE location = ?1 LIMIT {BATCH})"
-                    ),
-                    vec![t(location)],
-                )
-                .await?;
-            checkpoint(&conn).await;
-            if gone == 0 {
-                break;
-            }
-        }
+        let batch = format!(
+            "DELETE FROM entries WHERE rowid IN \
+             (SELECT rowid FROM entries WHERE location = ?1 LIMIT {BATCH})"
+        );
+        while self.delete_batch(&conn, &batch, vec![t(location)]).await? > 0 {}
         Ok(())
+    }
+
+    /// One batch of a delete in pages (`sql`, with `args`), the log
+    /// folded in after: how many rows it deleted.
+    pub(super) async fn delete_batch(
+        &self,
+        conn: &turso::Connection,
+        sql: &str,
+        args: Vec<Value>,
+    ) -> turso::Result<u64> {
+        let mut gone = 0;
+        self.in_tx(conn, async {
+            gone = conn.execute(sql, args).await?;
+            Ok(())
+        })
+        .await?;
+        checkpoint(conn).await;
+        Ok(gone)
     }
 
     /// Roll back a write transaction a cancelled writer left open.
@@ -271,13 +290,14 @@ impl IndexDb {
     }
 
     /// Run `writes` in one transaction: committed if they all succeed,
-    /// rolled back otherwise.
+    /// rolled back otherwise. The write lock is taken first, waited for
+    /// while another process holds it ([`begin`]).
     async fn in_tx(
         &self,
         conn: &turso::Connection,
         writes: impl std::future::Future<Output = turso::Result<()>>,
     ) -> turso::Result<()> {
-        conn.execute("BEGIN", ()).await?;
+        begin(conn).await?;
         self.tx_open.store(true, Ordering::Release);
         let done = match writes.await {
             Ok(()) => conn.execute("COMMIT", ()).await.map(|_| ()),
@@ -607,7 +627,7 @@ impl drive_files::index::AsyncPrevious for Previous {
 /// A location's entries a page at a time (in path order, under a folder
 /// or all of it): `while let Some(page) = pages.next().await { .. }`.
 pub struct Pages {
-    db: std::sync::Arc<IndexDb>,
+    db: crate::indexes::Indexes,
     location: String,
     under: String,
     after: String,
@@ -618,7 +638,7 @@ pub struct Pages {
 const PAGE: usize = 2000;
 
 impl Pages {
-    pub fn new(db: std::sync::Arc<IndexDb>, location: &str, under: &str) -> Pages {
+    pub fn new(db: crate::indexes::Indexes, location: &str, under: &str) -> Pages {
         Pages {
             db,
             location: location.to_string(),
@@ -656,6 +676,30 @@ impl Pages {
             self.done = true;
         }
         Some(page)
+    }
+}
+
+/// How long a write waits for another process's write to finish: a
+/// transaction is at most [`BATCH`] rows, so this is many of them.
+const WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Start a write transaction, holding the write lock from the start
+/// (`BEGIN IMMEDIATE`): another process's write is waited for here, where
+/// trying again is safe, rather than failing a write halfway ("database
+/// is locked" past the busy timeout: a `drive` command beside a long
+/// walk, drive#157).
+async fn begin(conn: &turso::Connection) -> turso::Result<()> {
+    let until = tokio::time::Instant::now() + WRITE_WAIT;
+    let mut pause = std::time::Duration::from_millis(5);
+    loop {
+        match conn.execute("BEGIN IMMEDIATE", ()).await {
+            Ok(_) => return Ok(()),
+            Err(turso::Error::Busy(_)) if tokio::time::Instant::now() < until => {
+                tokio::time::sleep(pause).await;
+                pause = (pause * 2).min(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -822,5 +866,21 @@ async fn put_meta(conn: &turso::Connection, index: &LocationIndex) -> turso::Res
     Ok(())
 }
 
+#[cfg(test)]
+impl IndexDb {
+    /// `PRAGMA integrity_check`'s answer (`["ok"]` when whole).
+    pub async fn integrity_check(&self) -> turso::Result<Vec<String>> {
+        let r = self.reader().await;
+        let mut rows = r.query("PRAGMA integrity_check", ()).await?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(text(row.get_value(0)?));
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod stress;
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,7 @@
 //! {"id":8,"op":"release","target":"drive:Songs/Take 3.wav"}
 //! {"id":9,"op":"pins"}
 //! {"id":10,"op":"status"}
+//! {"id":11,"op":"index","index":"list","location":"loc-1","dir":"Kits"}
 //! ```
 //!
 //! The agent answers each request once, `{"id":N,"ok":…}` or
@@ -119,6 +120,52 @@ pub enum Op {
     },
     /// Into the Drive's Trash (nothing is ever deleted).
     FpDelete { item: String },
+    /// The agent's location indexes (drive#157): a `drive` command run
+    /// beside the agent asks it, so that only the running agent opens its
+    /// index database.
+    Index(IndexOp),
+}
+
+/// A question to (or a change of) the running agent's location indexes.
+/// Answers are the agent's own types as JSON (entries as
+/// `{path, dir, size, mtime, sampled}`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "index", rename_all = "snake_case")]
+pub enum IndexOp {
+    /// A location's totals (`null`: no index).
+    Meta { location: String },
+    /// One entry (`null`: none).
+    Get { location: String, path: String },
+    /// Entries whose name holds `words`, in every location.
+    Find { words: String, limit: usize },
+    /// A folder's entries (`""`: the root), folders first.
+    List { location: String, dir: String },
+    /// Up to `limit` entries under `dir` (`""`: all) in path order, after
+    /// `after`.
+    Page {
+        location: String,
+        dir: String,
+        after: String,
+        limit: usize,
+    },
+    /// Which locations hold each content.
+    LocationsOf { sampled: Vec<String> },
+    /// Contents held more than once, everywhere.
+    Duplicates { min_size: u64 },
+    /// Contents held more than once under a folder of a location.
+    DuplicatesUnder { location: String, dir: String },
+    /// Where a content is.
+    Copies {
+        sampled: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
+    },
+    /// Forget a location's index.
+    Remove { location: String },
+    /// Walk one of the agent's locations and publish its index.
+    Reindex { location: String },
+    /// Download the indexes newer on the node than the agent's copies.
+    Sync,
 }
 
 /// One item of the Drive tree, as a file provider shows it.
@@ -473,6 +520,48 @@ mod tests {
             Op::FpDelete { item: "1@2".into() },
         ] {
             let req = Request { id: 77, op };
+            let line = serde_json::to_string(&req).unwrap();
+            assert_eq!(line.matches("\"id\"").count(), 1, "{line}");
+            assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), req);
+        }
+        // Index questions too, nested under their own tag.
+        let r: Request = serde_json::from_str(
+            r#"{"id":11,"op":"index","index":"list","location":"loc-1","dir":"Kits"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.op,
+            Op::Index(IndexOp::List {
+                location: "loc-1".into(),
+                dir: "Kits".into()
+            })
+        );
+        for op in [
+            IndexOp::Meta {
+                location: "l".into(),
+            },
+            IndexOp::Page {
+                location: "l".into(),
+                dir: "".into(),
+                after: "a".into(),
+                limit: 5,
+            },
+            IndexOp::Copies {
+                sampled: "h".into(),
+                size: None,
+            },
+            IndexOp::LocationsOf {
+                sampled: vec!["h".into()],
+            },
+            IndexOp::Reindex {
+                location: "l".into(),
+            },
+            IndexOp::Sync,
+        ] {
+            let req = Request {
+                id: 78,
+                op: Op::Index(op),
+            };
             let line = serde_json::to_string(&req).unwrap();
             assert_eq!(line.matches("\"id\"").count(), 1, "{line}");
             assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), req);

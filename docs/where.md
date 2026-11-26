@@ -28,7 +28,8 @@ Only this computer's own copies, and it never writes:
   whole and then renames it into place, so reading them beside a running
   agent is safe. The registry has the devices, locations, storages,
   adoptions and holdings (who keeps which blob).
-- **The location indexes**, for `--find`: `<agent dir>/indexes.db`. It is
+- **The location indexes**, for `--find`: asked of the running agent over
+  its app socket, or, with no agent running, `<agent dir>/indexes.db`,
   opened only if it is there, and nothing in it is made or changed
   (`IndexDb::open_existing`). Every computer's index is in it, so a file on
   a computer that is off is found too.

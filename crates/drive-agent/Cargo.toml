@@ -48,7 +48,12 @@ drive-local = { path = "../drive-local" }
 iroh = { version = "1.5", default-features = false, features = ["portmapper", "fast-apple-datapath", "tls-aws-lc-rs"] }
 futures = "0.3"
 # Location indexes on disk (index_db.rs), the same engine as the node.
-turso = "0.8"
+# Pinned to the version tested under several processes (drive#157):
+# indexes.db is opened with experimental_multiprocess_wal, which a
+# turso release may change. The flag is still needed when no agent runs
+# (`drive` commands then open the database themselves, two at once
+# possibly); beside a running agent they ask it over app.sock instead.
+turso = "=0.8.4"
 
 [dev-dependencies]
 tempfile = "3"

@@ -131,6 +131,7 @@ mod pages;
 // Written by every index; read as the agent moves onto it (drive#47).
 #[allow(dead_code)]
 mod index_db;
+mod indexes;
 mod locate;
 mod kache;
 mod location_rm;
@@ -1080,9 +1081,9 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                     print_found(&locate::locate(&copies, &path));
                     n += 1;
                 }
-                match index_db::IndexDb::open_existing(&dir.join("indexes.db")).await {
-                    Ok(Some(db)) => {
-                        for (loc, e) in db.find(&words, 200).await.map_err(|e| e.to_string())? {
+                match indexes::find_existing(dir, &words, 200).await {
+                    Ok(Some(found)) => {
+                        for (loc, e) in found {
                             let d = locate::on_disk(&copies, &loc, &e.path);
                             let mark = if e.dir { "/" } else { "" };
                             match &d.drive {
