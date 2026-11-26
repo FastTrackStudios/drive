@@ -234,24 +234,24 @@ pub fn registered(doc: &LoroDoc) -> Vec<Kind> {
     let map = kinds_map(doc);
     let mut out = Vec::new();
     map.for_each(|_, v| {
-        if let ValueOrContainer::Container(c) = v {
-            if let Ok(m) = c.into_map() {
-                out.push(Kind {
-                    id: s(&m, "id"),
-                    name: s(&m, "name"),
-                    parent: s(&m, "parent"),
-                    icon: s(&m, "icon"),
-                    app: s(&m, "app"),
-                    extensions: s(&m, "extensions")
-                        .split_whitespace()
-                        .map(str::to_string)
-                        .collect(),
-                    doc_prefix: s(&m, "doc_prefix"),
-                    open: s(&m, "open"),
-                    available: s(&m, "available") == "yes",
-                    max_available: s(&m, "max_available").parse().unwrap_or(0),
-                });
-            }
+        if let ValueOrContainer::Container(c) = v
+            && let Ok(m) = c.into_map()
+        {
+            out.push(Kind {
+                id: s(&m, "id"),
+                name: s(&m, "name"),
+                parent: s(&m, "parent"),
+                icon: s(&m, "icon"),
+                app: s(&m, "app"),
+                extensions: s(&m, "extensions")
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect(),
+                doc_prefix: s(&m, "doc_prefix"),
+                open: s(&m, "open"),
+                available: s(&m, "available") == "yes",
+                max_available: s(&m, "max_available").parse().unwrap_or(0),
+            });
         }
     });
     out.retain(|k| !k.id.is_empty());
@@ -315,9 +315,7 @@ impl Kinds {
     fn by_extension(&self, name: &str) -> Option<&Kind> {
         let (_, ext) = name.rsplit_once('.')?;
         let ext = ext.to_ascii_lowercase();
-        self.all
-            .iter()
-            .find(|k| k.extensions.iter().any(|e| *e == ext))
+        self.all.iter().find(|k| k.extensions.contains(&ext))
     }
 
     /// An app document's kind, by its id's prefix (the longest that fits).
