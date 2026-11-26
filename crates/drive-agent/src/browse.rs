@@ -612,7 +612,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             done.send(read(&read_path, 0, 1)).unwrap();
         });
-        let outcome = result.recv_timeout(Duration::from_secs(1));
+        // A read that waits for a writer waits forever; 10 s only allows for a
+        // loaded machine.
+        let outcome = result.recv_timeout(Duration::from_secs(10));
         if outcome.is_err() {
             // Unblock the old implementation so a failure leaves no stuck worker.
             let _pipe = std::fs::OpenOptions::new()
