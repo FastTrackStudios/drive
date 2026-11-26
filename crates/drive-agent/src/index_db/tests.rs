@@ -267,3 +267,40 @@ async fn open_existing_makes_nothing_and_reads_what_is_there() {
     let db = IndexDb::open_existing(&path).await.unwrap().expect("there");
     assert_eq!(db.find("notes", 10).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn duplicates_under_a_folder_are_grouped_by_the_database() {
+    let (db, _dir) = db().await;
+    db.put(&index(
+        "loc",
+        vec![
+            e("A", true, 0, ""),
+            e("A/x1.wav", false, 10, "hx"),
+            e("A/x2.wav", false, 10, "hx"),
+            e("A/empty1", false, 0, "h0"),
+            e("A/empty2", false, 0, "h0"),
+            e("A0/x3.wav", false, 10, "hx"),
+            e("B/x4.wav", false, 10, "hx"),
+            e("B/y.wav", false, 3, "hy"),
+        ],
+    ))
+    .await
+    .unwrap();
+    let groups = |dir: &'static str| {
+        let db = &db;
+        async move {
+            let mut out = Vec::new();
+            db.duplicates_under("loc", dir, |s, size, n| out.push((s, size, n)))
+                .await
+                .unwrap();
+            out
+        }
+    };
+    assert_eq!(
+        groups("A").await,
+        [("hx".to_string(), 10, 2)],
+        "A0 is not under A; empty files are not copies"
+    );
+    assert_eq!(groups("").await, [("hx".to_string(), 10, 4)]);
+    assert!(groups("B").await.is_empty());
+}

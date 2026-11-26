@@ -82,15 +82,6 @@ pub fn walk(
     walk_with(location, root, tree.as_ref().map(|t| t as &dyn Previous), walk_threads())
 }
 
-/// [`walk_with`] on the default number of threads.
-pub fn walk_from(
-    location: &str,
-    root: &Path,
-    previous: Option<&dyn Previous>,
-) -> (LocationIndex, WalkStats) {
-    walk_with(location, root, previous, walk_threads())
-}
-
 /// What a location held at its last walk, asked a folder at a time (so
 /// it can live on disk: the agent answers from its index database,
 /// drive#47). A file unchanged since (same size and time) keeps its hash.
@@ -102,6 +93,19 @@ pub trait Previous: Sync {
 impl Previous for Tree {
     fn folder(&self, dir: &str) -> Vec<IndexEntry> {
         self.list(dir).into_iter().cloned().collect()
+    }
+}
+
+/// [`Previous`], asked from async code (a storage's walk, which runs on
+/// the agent's runtime and so cannot block on it).
+pub trait AsyncPrevious: Sync {
+    /// The entries directly in `dir` (`""`: the root).
+    fn folder(&self, dir: &str) -> impl std::future::Future<Output = Vec<IndexEntry>> + Send;
+}
+
+impl AsyncPrevious for Tree {
+    async fn folder(&self, dir: &str) -> Vec<IndexEntry> {
+        Previous::folder(self, dir)
     }
 }
 
@@ -122,18 +126,82 @@ struct Seen {
     kept: Option<String>,
 }
 
-/// [`walk`] on `threads` threads, with the last walk as `previous`.
+/// Entries a walking thread hands over at once.
+pub const EMIT: usize = 1024;
+
+/// [`walk`] on `threads` threads, with the last walk as `previous`: the
+/// whole index, in path order.
 pub fn walk_with(
     location: &str,
     root: &Path,
     previous: Option<&dyn Previous>,
     threads: usize,
 ) -> (LocationIndex, WalkStats) {
+    let found = std::sync::Mutex::new(Vec::new());
+    let stats = walk_into(root, previous, threads, &|mut batch| {
+        found.lock().expect("walk").append(&mut batch);
+    });
+    let mut entries = found.into_inner().expect("walk");
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let index = LocationIndex {
+        location: location.to_string(),
+        root: root.to_string_lossy().into_owned(),
+        built: crate::now_ms(),
+        entries,
+    };
+    (index, stats)
+}
+
+/// Walk a location on the default number of threads, handing what it
+/// finds to `emit` [`EMIT`] entries at a time (in no order), so the walk
+/// never holds the whole index: the agent writes them to its index
+/// database as they come (drive#156). New and changed files are hashed
+/// as they are found.
+pub fn walk_streamed(
+    root: &Path,
+    previous: Option<&dyn Previous>,
+    emit: &(dyn Fn(Vec<IndexEntry>) + Sync),
+) -> WalkStats {
+    walk_into(root, previous, walk_threads(), emit)
+}
+
+/// [`walk_streamed`] on `threads` threads.
+pub fn walk_into(
+    root: &Path,
+    previous: Option<&dyn Previous>,
+    threads: usize,
+    emit: &(dyn Fn(Vec<IndexEntry>) + Sync),
+) -> WalkStats {
+    let total = std::sync::Mutex::new(WalkStats::default());
+    walker(root, threads).run(|| {
+        let mut out = Emitter {
+            batch: Vec::with_capacity(EMIT),
+            stats: WalkStats::default(),
+            total: &total,
+            emit,
+        };
+        let mut old = FolderCache::default();
+        Box::new(move |dent| {
+            let Ok(dent) = dent else {
+                return ignore::WalkState::Continue;
+            };
+            let mut lookup = |path: &str| previous.and_then(|p| old.get(p, path));
+            if let Some(seen) = seen(root, &dent, &mut lookup) {
+                out.push(hashed(root, seen));
+            }
+            ignore::WalkState::Continue
+        })
+    });
+    total.into_inner().expect("walk")
+}
+
+/// The parallel walker over `root`, with Drive's ignore rules.
+fn walker(root: &Path, threads: usize) -> ignore::WalkParallel {
     let mut overrides = ignore::overrides::OverrideBuilder::new(root);
     for pat in DEFAULT_IGNORES {
         let _ = overrides.add(&format!("!{pat}"));
     }
-    let walker = ignore::WalkBuilder::new(root)
+    ignore::WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
         .git_global(false)
@@ -147,105 +215,101 @@ pub fn walk_with(
         )
         .follow_links(false)
         .threads(threads)
-        .build_parallel();
-    let found: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
-    walker.run(|| {
-        // Each thread gathers its own and hands them over once, at its end.
-        struct Batch<'a>(Vec<Seen>, &'a std::sync::Mutex<Vec<Seen>>);
-        impl Drop for Batch<'_> {
-            fn drop(&mut self) {
-                self.1.lock().expect("walk").append(&mut self.0);
-            }
+        .build_parallel()
+}
+
+/// One walking thread's output: handed over [`EMIT`] entries at a time,
+/// the rest (and its counts) when the thread ends.
+struct Emitter<'a> {
+    batch: Vec<IndexEntry>,
+    stats: WalkStats,
+    total: &'a std::sync::Mutex<WalkStats>,
+    emit: &'a (dyn Fn(Vec<IndexEntry>) + Sync),
+}
+
+impl Emitter<'_> {
+    fn push(&mut self, (entry, was_hashed): (IndexEntry, bool)) {
+        if entry.dir {
+            self.stats.dirs += 1;
+        } else {
+            self.stats.files += 1;
+            self.stats.bytes += entry.size;
+            self.stats.hashed += usize::from(was_hashed);
         }
-        let mut batch = Batch(Vec::new(), &found);
-        // A folder's entries are visited together by the thread that read
-        // it: its last walk is asked for once, and kept while they are.
-        let mut last: (Option<String>, HashMap<String, IndexEntry>) = (None, HashMap::new());
-        Box::new(move |dent| {
-            let Ok(dent) = dent else {
-                return ignore::WalkState::Continue;
-            };
-            let mut old = |path: &str| -> Option<IndexEntry> {
-                let p = previous?;
-                let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
-                if last.0.as_deref() != Some(dir) {
-                    last.1 = p.folder(dir).into_iter().map(|e| (e.path.clone(), e)).collect();
-                    last.0 = Some(dir.to_string());
-                }
-                last.1.get(path).cloned()
-            };
-            if let Some(seen) = seen(root, &dent, &mut old) {
-                batch.0.push(seen);
-            }
-            ignore::WalkState::Continue
-        })
-    });
-    let found = found.into_inner().expect("walk");
-
-    // New and changed files: hashed on the same number of threads.
-    let to_hash: Vec<usize> = found
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| !s.dir && s.kept.is_none())
-        .map(|(i, _)| i)
-        .collect();
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let hashes: Vec<(usize, String)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads.min(to_hash.len()).max(1))
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut out = Vec::new();
-                    loop {
-                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(&i) = to_hash.get(k) else { break };
-                        let hash = crate::hash::sampled(&root.join(&found[i].path)).unwrap_or_default();
-                        out.push((i, hash));
-                    }
-                    out
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .flat_map(|w| w.join().expect("a hashing thread"))
-            .collect()
-    });
-    let mut hashed: Vec<Option<String>> = (0..found.len()).map(|_| None).collect();
-    for (i, h) in hashes {
-        hashed[i] = Some(h);
+        self.batch.push(entry);
+        if self.batch.len() >= EMIT {
+            (self.emit)(std::mem::replace(&mut self.batch, Vec::with_capacity(EMIT)));
+        }
     }
+}
 
-    let mut stats = WalkStats::default();
-    let mut entries: Vec<IndexEntry> = found
-        .into_iter()
-        .zip(hashed)
-        .map(|(s, h)| {
-            if s.dir {
-                stats.dirs += 1;
-            } else {
-                stats.files += 1;
-                stats.bytes += s.size;
-                if h.is_some() {
-                    stats.hashed += 1;
-                }
-            }
-            IndexEntry {
-                path: s.path,
-                dir: s.dir,
-                size: s.size,
-                mtime: s.mtime,
-                sampled: if s.dir { String::new() } else { s.kept.or(h).unwrap_or_default() },
-            }
-        })
-        .collect();
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let index = LocationIndex {
-        location: location.to_string(),
-        root: root.to_string_lossy().into_owned(),
-        built: crate::now_ms(),
-        entries,
+impl Drop for Emitter<'_> {
+    fn drop(&mut self) {
+        if !self.batch.is_empty() {
+            (self.emit)(std::mem::take(&mut self.batch));
+        }
+        let mut t = self.total.lock().expect("walk");
+        t.files += self.stats.files;
+        t.dirs += self.stats.dirs;
+        t.bytes += self.stats.bytes;
+        t.hashed += self.stats.hashed;
+    }
+}
+
+/// The last walk's entries of the folder being walked. A folder's entries
+/// are visited together by the thread that read it, so its last walk is
+/// asked for once and kept while they are.
+#[derive(Default)]
+struct FolderCache {
+    dir: Option<String>,
+    entries: HashMap<String, IndexEntry>,
+}
+
+impl FolderCache {
+    fn get(&mut self, previous: &dyn Previous, path: &str) -> Option<IndexEntry> {
+        let dir = parent_of(path);
+        if self.dir.as_deref() != Some(dir) {
+            self.entries = by_path(previous.folder(dir));
+            self.dir = Some(dir.to_string());
+        }
+        self.entries.get(path).cloned()
+    }
+}
+
+fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(d, _)| d)
+}
+
+fn by_path(entries: Vec<IndexEntry>) -> HashMap<String, IndexEntry> {
+    entries.into_iter().map(|e| (e.path.clone(), e)).collect()
+}
+
+/// The entry a walk keeps for what it saw, its file hashed unless it kept
+/// its last hash; and whether it was hashed.
+fn hashed(root: &Path, s: Seen) -> (IndexEntry, bool) {
+    let (sampled, was_hashed) = match (s.dir, s.kept) {
+        (true, _) => (String::new(), false),
+        (false, Some(kept)) => (kept, false),
+        (false, None) => (
+            crate::hash::sampled(&root.join(&s.path)).unwrap_or_default(),
+            true,
+        ),
     };
-    (index, stats)
+    let entry = IndexEntry {
+        path: s.path,
+        dir: s.dir,
+        size: s.size,
+        mtime: s.mtime,
+        sampled,
+    };
+    (entry, was_hashed)
+}
+
+/// The hash a file keeps from its last walk: the same size and time, and
+/// a hash it had.
+fn kept_hash(old: Option<IndexEntry>, size: u64, mtime: i64) -> Option<String> {
+    old.filter(|o| !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty())
+        .map(|o| o.sampled)
 }
 
 /// One walked entry as the index keeps it (`None`: the root, a path that
@@ -273,27 +337,47 @@ fn seen(
         return None;
     }
     let size = meta.len();
-    let kept = match old(&rel) {
-        Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
-            Some(o.sampled)
-        }
-        _ => None,
-    };
+    let kept = kept_hash(old(&rel), size, mtime);
     Some(Seen { path: rel, dir: false, size, mtime, kept })
+}
+
+/// The last walk's entries of the folders a storage's listing is in. A
+/// listing goes depth first, so only the current folder's ancestors can
+/// come up again: the rest are let go.
+#[derive(Default)]
+struct AncestorCache {
+    folders: HashMap<String, HashMap<String, IndexEntry>>,
+}
+
+impl AncestorCache {
+    async fn get(&mut self, previous: &impl AsyncPrevious, path: &str) -> Option<IndexEntry> {
+        let dir = parent_of(path);
+        self.folders.retain(|d, _| {
+            d.is_empty()
+                || dir == d
+                || dir
+                    .strip_prefix(d.as_str())
+                    .is_some_and(|r| r.starts_with('/'))
+        });
+        if !self.folders.contains_key(dir) {
+            let entries = by_path(previous.folder(dir).await);
+            self.folders.insert(dir.to_string(), entries);
+        }
+        self.folders[dir].get(path).cloned()
+    }
 }
 
 /// Walk a location that is in a storage (an S3 bucket, a WebDAV share),
 /// through OpenDAL: listed recursively, sampled hashes read as ranges.
-/// The default ignores apply; ignore files are not read.
+/// The default ignores apply; ignore files are not read. Its last walk is
+/// asked a folder at a time, as [`walk_streamed`]'s is.
 pub async fn walk_storage(
     location: &str,
     op: &opendal::Operator,
     root: &str,
-    previous: Option<&LocationIndex>,
+    previous: Option<&impl AsyncPrevious>,
 ) -> opendal::Result<(LocationIndex, WalkStats)> {
-    let old: HashMap<&str, &IndexEntry> = previous
-        .map(|p| p.entries.iter().map(|e| (e.path.as_str(), e)).collect())
-        .unwrap_or_default();
+    let mut old = AncestorCache::default();
     let base = format!("{}/", root.trim_matches('/'))
         .trim_start_matches('/')
         .to_string();
@@ -337,11 +421,13 @@ pub async fn walk_storage(
             .map_or(0, |t| t.into_inner().as_millisecond());
         stats.files += 1;
         stats.bytes += size;
-        let sampled = match old.get(rel) {
-            Some(o) if !o.dir && o.size == size && o.mtime == mtime && !o.sampled.is_empty() => {
-                o.sampled.clone()
-            }
-            _ => {
+        let last = match previous {
+            Some(p) => old.get(p, rel).await,
+            None => None,
+        };
+        let sampled = match kept_hash(last, size, mtime) {
+            Some(kept) => kept,
+            None => {
                 stats.hashed += 1;
                 let mut parts = Vec::new();
                 for r in crate::hash::sample_ranges(size) {
@@ -390,6 +476,115 @@ pub fn encode(index: &LocationIndex) -> Vec<u8> {
         .expect("flushed")
         .finish()
         .expect("zstd compresses in memory")
+}
+
+/// Postcard's unsigned varint (LEB128), as it writes lengths and `u64`s.
+fn varint(mut n: u64, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    let mut buf = [0u8; 10];
+    let mut at = 0;
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            buf[at] = byte;
+            at += 1;
+            break;
+        }
+        buf[at] = byte | 0x80;
+        at += 1;
+    }
+    out.write_all(&buf[..at])
+}
+
+/// Why a streamed encoding was not finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    /// More entries were pushed than the index said it has.
+    TooMany,
+    /// Fewer were (by how many): the index changed while it was read.
+    TooFew(u64),
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodeError::TooMany => write!(f, "more entries than the index has"),
+            EncodeError::TooFew(n) => write!(f, "{n} entries fewer than the index has"),
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+/// [`encode`], an entry at a time: the same bytes as encoding the whole
+/// [`LocationIndex`], without holding it (drive#156). Postcard is written
+/// by hand where it differs from a value at a time: the fields, the
+/// entry count, then each entry (pushed in path order, as
+/// [`LocationIndex::entries`] is).
+pub struct Encoder {
+    out: std::io::BufWriter<zstd::stream::Encoder<'static, Vec<u8>>>,
+    left: u64,
+    /// One value's postcard, reused (`postcard::to_io` flushes after each
+    /// value, and every flush would end a zstd block: other bytes).
+    scratch: Vec<u8>,
+}
+
+impl Encoder {
+    /// Start an index of `count` entries.
+    pub fn new(location: &str, root: &str, built: i64, count: u64) -> Encoder {
+        let z = zstd::stream::Encoder::new(Vec::new(), 9).expect("zstd starts in memory");
+        let out = std::io::BufWriter::with_capacity(1 << 16, z);
+        let mut enc = Encoder {
+            out,
+            left: count,
+            scratch: Vec::new(),
+        };
+        enc.write(&location);
+        enc.write(&root);
+        enc.write(&built);
+        varint(count, &mut enc.out).expect("zstd compresses in memory");
+        enc
+    }
+
+    fn write(&mut self, value: &impl Serialize) {
+        use std::io::Write;
+        self.scratch.clear();
+        let bytes = postcard::to_extend(value, std::mem::take(&mut self.scratch))
+            .expect("an index serializes");
+        self.out
+            .write_all(&bytes)
+            .expect("zstd compresses in memory");
+        self.scratch = bytes;
+    }
+
+    /// The next entry, in path order.
+    ///
+    /// # Errors
+    /// [`EncodeError::TooMany`] past the count it was started with.
+    pub fn push(&mut self, entry: &IndexEntry) -> Result<(), EncodeError> {
+        self.left = self.left.checked_sub(1).ok_or(EncodeError::TooMany)?;
+        self.write(entry);
+        Ok(())
+    }
+
+    /// The published bytes.
+    ///
+    /// # Errors
+    /// [`EncodeError::TooFew`] when fewer entries were pushed than counted.
+    pub fn finish(self) -> Result<Vec<u8>, EncodeError> {
+        use std::io::Write;
+        if self.left > 0 {
+            return Err(EncodeError::TooFew(self.left));
+        }
+        let mut out = self.out;
+        out.flush().expect("zstd compresses in memory");
+        Ok(out
+            .into_inner()
+            .ok()
+            .expect("flushed")
+            .finish()
+            .expect("zstd compresses in memory"))
+    }
 }
 
 /// The most an index may unpack to. A few hundred bytes an entry, so this
@@ -517,24 +712,50 @@ impl Tree {
 /// rename of the folder; none for a folder with no readable file.
 #[must_use]
 pub fn folder_signature(entries: &[IndexEntry], folder: &str) -> Option<String> {
-    let prefix = format!("{}/", folder.trim_matches('/'));
-    let mut files: Vec<(&str, &str)> = entries
-        .iter()
-        .filter(|e| !e.dir && !e.sampled.is_empty())
-        .filter_map(|e| Some((e.path.strip_prefix(&prefix)?, e.sampled.as_str())))
-        .collect();
-    if files.is_empty() {
-        return None;
+    let mut under: Vec<&IndexEntry> = entries.iter().collect();
+    under.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    let mut sig = Signature::new(folder);
+    under.into_iter().for_each(|e| sig.add(e));
+    sig.finish()
+}
+
+/// [`folder_signature`], built an entry at a time from entries given in
+/// path order (a page at a time from a database, drive#156). Entries not
+/// under the folder are passed over.
+pub struct Signature {
+    prefix: String,
+    hasher: blake3::Hasher,
+    files: usize,
+}
+
+impl Signature {
+    pub fn new(folder: &str) -> Signature {
+        Signature {
+            prefix: format!("{}/", folder.trim_matches('/')),
+            hasher: blake3::Hasher::new(),
+            files: 0,
+        }
     }
-    files.sort_unstable();
-    let mut h = blake3::Hasher::new();
-    for (path, sampled) in files {
-        h.update(path.as_bytes());
-        h.update(b"\0");
-        h.update(sampled.as_bytes());
-        h.update(b"\n");
+
+    /// The next entry, in path order.
+    pub fn add(&mut self, e: &IndexEntry) {
+        if e.dir || e.sampled.is_empty() {
+            return;
+        }
+        let Some(path) = e.path.strip_prefix(&self.prefix) else {
+            return;
+        };
+        self.hasher.update(path.as_bytes());
+        self.hasher.update(b"\0");
+        self.hasher.update(e.sampled.as_bytes());
+        self.hasher.update(b"\n");
+        self.files += 1;
     }
-    Some(h.finalize().to_hex().to_string())
+
+    #[must_use]
+    pub fn finish(self) -> Option<String> {
+        (self.files > 0).then(|| self.hasher.finalize().to_hex().to_string())
+    }
 }
 
 /// Where each of `wanted` (folders of the `old` walk) went in the `new`
@@ -642,7 +863,7 @@ mod tests {
         }
         .operator()
         .unwrap();
-        let (idx, st) = walk_storage("s", &op, "lib", None).await.unwrap();
+        let (idx, st) = walk_storage("s", &op, "lib", None::<&Tree>).await.unwrap();
         let paths: Vec<&str> = idx.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, ["Strings", "Strings/legato.wav", "empty.txt"]);
         assert_eq!(st.hashed, 2);
@@ -651,6 +872,106 @@ mod tests {
         assert_eq!(idx.entries[1].sampled, disk.entries[1].sampled);
         assert_eq!(idx.entries[2].size, 0);
         assert_eq!(idx.entries[2].sampled, disk.entries[2].sampled);
+
+        // Walked again with that walk as its last, a folder at a time:
+        // nothing is read again.
+        let last = Tree::new(idx.clone());
+        let (again, st) = walk_storage("s", &op, "lib", Some(&last)).await.unwrap();
+        assert_eq!(st.hashed, 0);
+        assert_eq!(again.entries, idx.entries);
+    }
+
+    #[test]
+    fn a_streamed_walk_finds_what_a_whole_one_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for d in 0..7 {
+            std::fs::create_dir_all(r.join(format!("d{d}/sub"))).unwrap();
+            for f in 0..(EMIT / 3) {
+                std::fs::write(r.join(format!("d{d}/sub/f{f}.wav")), format!("{d}-{f}")).unwrap();
+            }
+        }
+        let (whole, stats) = walk_with("loc", r, None, 4);
+        let batches = std::sync::Mutex::new(Vec::new());
+        let streamed = walk_into(r, None, 4, &|b| batches.lock().unwrap().push(b));
+        let batches = batches.into_inner().unwrap();
+        assert!(batches.len() > 1 && batches.iter().all(|b| b.len() <= EMIT));
+        let mut got: Vec<IndexEntry> = batches.into_iter().flatten().collect();
+        got.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(got, whole.entries);
+        assert_eq!(streamed, stats);
+        assert_eq!((stats.dirs, stats.hashed), (14, 7 * (EMIT / 3)));
+
+        // Again with the first walk as its last: nothing hashed.
+        let tree = Tree::new(whole.clone());
+        let again = walk_into(r, Some(&tree), 4, &|_| {});
+        assert_eq!((again.files, again.hashed), (stats.files, 0));
+    }
+
+    #[test]
+    fn an_index_encoded_an_entry_at_a_time_is_the_same_bytes() {
+        let entries: Vec<IndexEntry> = (0..3000u64)
+            .map(|i| IndexEntry {
+                path: format!("Pack {:03}/Sample é {i:05}.wav", i / 40),
+                dir: i % 41 == 0,
+                size: i * 300_007,
+                mtime: if i % 2 == 0 {
+                    -(i as i64)
+                } else {
+                    1_700_000_000_000 + i as i64
+                },
+                sampled: if i % 41 == 0 {
+                    String::new()
+                } else {
+                    format!("{:064x}", i * 77)
+                },
+            })
+            .collect();
+        for entries in [Vec::new(), entries] {
+            let index = LocationIndex {
+                location: "loc-1".into(),
+                root: "/Volumes/Samples Ünïcode".into(),
+                built: 1_764_000_000_123,
+                entries,
+            };
+            let mut enc = Encoder::new(
+                &index.location,
+                &index.root,
+                index.built,
+                index.entries.len() as u64,
+            );
+            for e in &index.entries {
+                enc.push(e).unwrap();
+            }
+            assert_eq!(enc.finish().unwrap(), encode(&index));
+        }
+        let mut short = Encoder::new("l", "/", 0, 2);
+        short.push(&entry("a", false, "h")).unwrap();
+        let mut over = Encoder::new("l", "/", 0, 0);
+        assert_eq!(
+            over.push(&entry("a", false, "h")),
+            Err(EncodeError::TooMany)
+        );
+        assert_eq!(short.finish(), Err(EncodeError::TooFew(1)));
+    }
+
+    #[test]
+    fn varints_are_postcards() {
+        for n in [
+            0u64,
+            1,
+            127,
+            128,
+            300,
+            16_383,
+            16_384,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
+            let mut ours = Vec::new();
+            varint(n, &mut ours).unwrap();
+            assert_eq!(ours, postcard::to_stdvec(&n).unwrap(), "{n}");
+        }
     }
 
     #[test]
@@ -738,5 +1059,12 @@ mod tests {
             folder_signature(&new, "Bass/Warm Bass")
         );
         assert_eq!(folder_signature(&old, "Empty"), None);
+
+        // Built a page at a time, in path order: the same value.
+        let mut sig = Signature::new("Presets/Warm");
+        let mut sorted = old.clone();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        sorted.iter().for_each(|e| sig.add(e));
+        assert_eq!(sig.finish(), folder_signature(&old, "Presets/Warm"));
     }
 }

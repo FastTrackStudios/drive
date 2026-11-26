@@ -43,6 +43,9 @@ pub struct IndexDb {
     permits: Semaphore,
 }
 
+mod walk;
+pub use walk::Walk;
+
 /// A read connection, back in the pool when dropped.
 struct Reader<'a> {
     db: &'a IndexDb,
@@ -107,7 +110,13 @@ impl IndexDb {
         let mut last = None;
         for attempt in 0..5u64 {
             match Self::open_once(path).await {
-                Ok(db) => return Ok(db),
+                Ok(db) => {
+                    // A walk's table outlives a process killed mid-walk.
+                    if let Err(e) = db.drop_dead_walks(walk::alive).await {
+                        tracing::debug!(error = %e, "walks left by a stopped process were not dropped");
+                    }
+                    return Ok(db);
+                }
                 // Two processes creating it at the same moment race on its
                 // coordination file: the loser opens it a moment later.
                 Err(e) => {
@@ -173,7 +182,10 @@ impl IndexDb {
             "CREATE UNIQUE INDEX IF NOT EXISTS entries_path ON entries (location, path)",
             "CREATE INDEX IF NOT EXISTS entries_parent ON entries (location, parent)",
             "CREATE INDEX IF NOT EXISTS entries_content ON entries (sampled, size)",
-        ] {
+        ]
+        .into_iter()
+        .chain(walk::SCHEMA)
+        {
             conn.execute(sql, ()).await?;
         }
         let mut readers = Vec::with_capacity(READERS);
@@ -470,6 +482,36 @@ impl IndexDb {
         Ok(out)
     }
 
+    /// Contents found more than once under `dir` of a location (`""`: all
+    /// of it), files of at least a byte, a group at a time: `each(sampled,
+    /// size, how many)`. Grouped by the database, so the folder's rows are
+    /// never all read out.
+    pub async fn duplicates_under(
+        &self,
+        location: &str,
+        dir: &str,
+        mut each: impl FnMut(String, u64, u64),
+    ) -> turso::Result<()> {
+        let (low, high) = under_bounds(dir);
+        let r = self.reader().await;
+        let mut rows = r
+            .query(
+                "SELECT sampled, size, count(*) FROM entries WHERE location = ?1 AND path >= ?2 \
+                 AND (?3 = '' OR path < ?3) AND dir = 0 AND sampled != '' AND size > 0 \
+                 GROUP BY sampled, size HAVING count(*) > 1",
+                vec![t(location), t(&low), t(high.as_deref().unwrap_or(""))],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            each(
+                text(row.get_value(0)?),
+                int(row.get_value(1)?).max(0) as u64,
+                int(row.get_value(2)?).max(0) as u64,
+            );
+        }
+        Ok(())
+    }
+
     /// Where a content is (a file's sampled hash, and its size if known):
     /// (location, entry), in every location.
     pub async fn copies(
@@ -529,6 +571,15 @@ impl IndexDb {
     }
 }
 
+/// Bounds of everything under `dir` in path order: from `dir/` and
+/// before `dir0` ('0' is the byte after '/'); unbounded for the root.
+fn under_bounds(dir: &str) -> (String, Option<String>) {
+    if dir.is_empty() {
+        return (String::new(), None);
+    }
+    (format!("{dir}/"), Some(format!("{dir}0")))
+}
+
 /// A location's last walk, from the database a folder at a time: what
 /// [`drive_files::index::walk_from`] asks on its threads (blocking on the
 /// agent's runtime, which those threads are not part of).
@@ -543,6 +594,13 @@ impl drive_files::index::Previous for Previous {
         self.rt
             .block_on(self.db.list(&self.location, dir))
             .unwrap_or_default()
+    }
+}
+
+/// The same, for a storage's walk (which runs on the runtime itself).
+impl drive_files::index::AsyncPrevious for Previous {
+    async fn folder(&self, dir: &str) -> Vec<IndexEntry> {
+        self.db.list(&self.location, dir).await.unwrap_or_default()
     }
 }
 
