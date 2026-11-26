@@ -596,7 +596,8 @@ impl Engine {
                 Ok(None)
             }
             Effect::Sidecars { kinds } => {
-                a.answer_sidecars(location, path, kinds).await?;
+                a.answer_sidecars(location, path, kinds, crate::sidecars::Remake::All)
+                    .await?;
                 Ok(None)
             }
             Effect::Available => {

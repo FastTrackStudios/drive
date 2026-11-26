@@ -204,10 +204,11 @@ pub async fn serve(a: Arc<Agent>, view: Arc<RwLock<View>>) {
                         a.drive.fetched(req, r);
                     });
                 }
-                Ok(Event::Sidecars { req, location, path, kinds, force: _ }) => {
+                Ok(Event::Sidecars { req, location, path, kinds, force }) => {
                     let a = a.clone();
                     tokio::spawn(async move {
-                        let r = a.answer_sidecars(&location, &path, &kinds).await;
+                        let remake = crate::sidecars::Remake::forced(force);
+                        let r = a.answer_sidecars(&location, &path, &kinds, remake).await;
                         if let Err(e) = &r
                             && !e.starts_with("no generator")
                         {

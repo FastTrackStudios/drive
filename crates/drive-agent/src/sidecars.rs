@@ -41,6 +41,42 @@ struct Job {
     temp: bool,
 }
 
+impl Job {
+    /// Give the job up without making anything: its temporary copy goes.
+    fn discard(self) {
+        if self.temp {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Which of the kinds asked for to make, when the node may have some.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Remake {
+    /// Every kind asked for, even those the node has (the node's `force`).
+    All,
+    /// Only the kinds the node lacks.
+    Missing,
+}
+
+impl Remake {
+    /// The node's `force` flag, as a choice.
+    #[must_use]
+    pub fn forced(force: bool) -> Remake {
+        if force { Remake::All } else { Remake::Missing }
+    }
+}
+
+/// The kinds of `kinds` that `missing` (the node's `(key, kind)` answer)
+/// lists for `key`, in the order asked.
+fn missing_kinds(key: &str, kinds: &[Kind], missing: &[(String, String)]) -> Vec<Kind> {
+    kinds
+        .iter()
+        .copied()
+        .filter(|kind| missing.iter().any(|(k, n)| k == key && n == kind.as_str()))
+        .collect()
+}
+
 /// Run `f` on a thread of its own at a low priority (nice 10 on Linux),
 /// so making sidecars never slows indexing, sync or the person's work.
 async fn low_priority<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -201,12 +237,14 @@ impl Agent {
     }
 
     /// The node asks for sidecars of a file in one of this device's
-    /// locations: make them, put them there, answer with its content key.
+    /// locations: make them (with [`Remake::Missing`], only those the node
+    /// lacks), put them there, answer with its content key.
     pub async fn answer_sidecars(
         &self,
         location: &str,
         path: &str,
         kinds: &[String],
+        remake: Remake,
     ) -> Result<String, String> {
         let loc = self
             .my_locations()
@@ -214,9 +252,17 @@ impl Agent {
             .find(|l| l.id == location)
             .ok_or("not one of this device's locations")?;
         let kinds: Vec<Kind> = kinds.iter().filter_map(|k| Kind::parse(k)).collect();
-        let job = self.job_for(&loc, path, kinds).await?;
+        let mut job = self.job_for(&loc, path, kinds).await?;
         let key = job.key.clone();
-        self.run_job(job).await?;
+        if remake == Remake::Missing {
+            let missing = self.missing(std::slice::from_ref(&key), &job.kinds).await?;
+            job.kinds = missing_kinds(&key, &job.kinds, &missing);
+        }
+        if job.kinds.is_empty() {
+            job.discard();
+        } else {
+            self.run_job(job).await?;
+        }
         Ok(key)
     }
 
@@ -335,15 +381,7 @@ impl Agent {
                             .iter()
                             .filter_map(|(e, k)| {
                                 let key = sampled_key(&e.sampled);
-                                let need: Vec<Kind> = k
-                                    .iter()
-                                    .copied()
-                                    .filter(|kind| {
-                                        missing
-                                            .iter()
-                                            .any(|(mk, mn)| *mk == key && mn == kind.as_str())
-                                    })
-                                    .collect();
+                                let need = missing_kinds(&key, k, &missing);
                                 (!need.is_empty()).then_some((key, need))
                             })
                             .collect()
@@ -352,7 +390,8 @@ impl Agent {
                         if pass.files >= max_files {
                             return pass;
                         }
-                        let Some((e, _)) = chunk.iter().find(|(e, _)| sampled_key(&e.sampled) == key)
+                        let Some((e, _)) =
+                            chunk.iter().find(|(e, _)| sampled_key(&e.sampled) == key)
                         else {
                             continue;
                         };
@@ -399,5 +438,83 @@ impl Agent {
             )
             .send()
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adopt::tests::{device, node};
+
+    /// A sidecar's bytes on the node, if it has it.
+    async fn fetch(http: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
+        let r = http.get(url).send().await.unwrap();
+        if !r.status().is_success() {
+            return None;
+        }
+        Some(r.bytes().await.unwrap().to_vec())
+    }
+
+    #[test]
+    fn missing_kinds_keeps_only_the_key_s_missing_kinds_in_order() {
+        let missing = vec![
+            ("k1".to_string(), "thumb-1024".to_string()),
+            ("k2".to_string(), "thumb-256".to_string()),
+            ("k1".to_string(), "peaks".to_string()),
+        ];
+        let kinds = [Kind::Thumb256, Kind::Thumb1024, Kind::Peaks];
+        assert_eq!(
+            missing_kinds("k1", &kinds, &missing),
+            vec![Kind::Thumb1024, Kind::Peaks]
+        );
+        assert!(missing_kinds("k3", &kinds, &missing).is_empty());
+    }
+
+    /// The node holds one kind of two: unforced, only the other is made
+    /// (the one it holds keeps its bytes); forced, both are.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unforced_answer_makes_only_the_kinds_the_node_lacks() {
+        let (url, _node_dir) = node().await;
+        let (dir, disk) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&url, dir.path(), "studio", "Studio PC").await;
+        std::fs::write(disk.path().join("notes.txt"), "bridge twice\n".repeat(40)).unwrap();
+        let loc = a.add_location("Notes", disk.path()).unwrap();
+        let key = sampled_key(&drive_files::hash::sampled(&disk.path().join("notes.txt")).unwrap());
+        let http = reqwest::Client::new();
+        let sidecar = |kind: &str| format!("{url}/sidecar/{key}/{kind}");
+        let held = b"the node's own thumb-256".to_vec();
+        let put = http
+            .put(sidecar("thumb-256"))
+            .query(&[("version", "1"), ("mime", "image/png")])
+            .body(held.clone())
+            .send()
+            .await
+            .unwrap();
+        assert!(put.status().is_success(), "{}", put.status());
+        let kinds = ["thumb-256".to_string(), "thumb-1024".to_string()];
+
+        let got = a
+            .answer_sidecars(&loc.id, "notes.txt", &kinds, Remake::Missing)
+            .await
+            .unwrap();
+        assert_eq!(got, key);
+        assert!(
+            fetch(&http, &sidecar("thumb-1024")).await.is_some(),
+            "the missing kind is made"
+        );
+        assert_eq!(
+            fetch(&http, &sidecar("thumb-256")).await,
+            Some(held.clone()),
+            "the held kind is left"
+        );
+
+        a.answer_sidecars(&loc.id, "notes.txt", &kinds, Remake::All)
+            .await
+            .unwrap();
+        assert_ne!(
+            fetch(&http, &sidecar("thumb-256")).await,
+            Some(held),
+            "forced, it is made again"
+        );
     }
 }
