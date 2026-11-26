@@ -19,8 +19,8 @@
 //! [`Client`] lives (its lease): the agent never evicts it. Dropping the
 //! client (or the process ending) ends every lease it held.
 
-pub mod proto;
 mod private;
+pub mod proto;
 
 pub use private::write_private;
 
@@ -613,8 +613,14 @@ mod tests {
             let (s, _) = l.accept().unwrap();
             let mut w = s.try_clone().unwrap();
             let mut lines = BufReader::new(s).lines();
-            let hello: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-            writeln!(w, "{}", serde_json::json!({ "id": hello["id"], "ok": null })).unwrap();
+            let hello: serde_json::Value =
+                serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            writeln!(
+                w,
+                "{}",
+                serde_json::json!({ "id": hello["id"], "ok": null })
+            )
+            .unwrap();
             // Then the agent goes away.
         });
         let c = Client::connect_socket(&path, "test").unwrap();

@@ -122,9 +122,9 @@ mod browse;
 mod daemon;
 #[cfg(feature = "mount")]
 mod devices;
+mod fileprovider;
 #[cfg(feature = "mount")]
 mod fs;
-mod fileprovider;
 mod graph;
 mod graph_share;
 mod pages;
@@ -132,8 +132,8 @@ mod pages;
 #[allow(dead_code)]
 mod index_db;
 mod indexes;
-mod locate;
 mod kache;
+mod locate;
 mod location_rm;
 mod mcp;
 #[cfg(feature = "mount")]
@@ -2043,10 +2043,21 @@ fn app_command(dir: &Path, args: &[String]) -> Result<(), String> {
 /// One `drive where` answer, indented under its path.
 fn print_found(f: &locate::Found) {
     match f {
-        locate::Found::Adopted { device, location, real, .. } => {
+        locate::Found::Adopted {
+            device,
+            location,
+            real,
+            ..
+        } => {
             out(format!("  on {device}: {real}  (adopted from {location})"));
         }
-        locate::Found::Working { device, location, real, file, .. } => {
+        locate::Found::Working {
+            device,
+            location,
+            real,
+            file,
+            ..
+        } => {
             out(format!("  on {device}: {real}  (working copy, {location})"));
             if let Some((size, hash, holders)) = file {
                 out(format!("  {}  blake3 {hash}", human(*size)));
@@ -2059,7 +2070,12 @@ fn print_found(f: &locate::Found) {
             }
         }
         locate::Found::TreeFolder { .. } => out("  a folder of the Drive tree"),
-        locate::Found::TreeFile { size, hash, holders, .. } => {
+        locate::Found::TreeFile {
+            size,
+            hash,
+            holders,
+            ..
+        } => {
             out(format!("  {}  blake3 {hash}", human(*size)));
             if holders.is_empty() {
                 out("  no device or storage says it holds the bytes");

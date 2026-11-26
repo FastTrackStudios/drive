@@ -16,10 +16,10 @@
 //! Finder whenever the tree changes (the extension itself is relaunched by
 //! the system too often to watch).
 
-use dioxus::logger::tracing;
 use app_shell_native::tray::{
     self, MenuItem, TrayApp, TrayEvent, TrayIcon, TrayMenu, WindowSpec, autostart,
 };
+use dioxus::logger::tracing;
 
 /// The app's id: the tray's, the start-at-login entry's, the bundle's.
 const ID: &str = "app.fasttrackstudio.drive";
@@ -54,7 +54,9 @@ fn menu() -> TrayMenu {
 
 /// Where the Drive tree is in the system's file manager.
 fn drive_folder() -> std::path::PathBuf {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
     if cfg!(target_os = "macos") {
         home.join("Library/CloudStorage/Drive-Drive")
     } else {
@@ -63,7 +65,11 @@ fn drive_folder() -> std::path::PathBuf {
 }
 
 fn reveal(path: &std::path::Path) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     if let Err(e) = std::process::Command::new(opener).arg(path).spawn() {
         tracing::warn!(error = %e, path = %path.display(), "the Drive folder could not be shown");
     }
@@ -134,7 +140,9 @@ mod file_provider {
         let Some(tool) = registrar() else { return };
         match std::process::Command::new(&tool).arg("sync").status() {
             Ok(s) if s.success() => {}
-            Ok(s) => tracing::warn!(status = %s, "the Drive File Provider domain was not registered"),
+            Ok(s) => {
+                tracing::warn!(status = %s, "the Drive File Provider domain was not registered")
+            }
             Err(e) => tracing::warn!(error = %e, "the File Provider registrar did not run"),
         }
         match std::process::Command::new(&tool).arg("watch").spawn() {

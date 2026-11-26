@@ -341,7 +341,10 @@ async fn duplicate_or_mismatched_org_query_params_are_rejected() {
         ("tb", "/list?org=band&space=cody&location=private"),
         ("tb", "/search?org=band&q=a"),
         ("tb", "/list?location=private"),
-        ("tb", "/sidecar/abc/waveform?org=band&location=private&path=diary.txt"),
+        (
+            "tb",
+            "/sidecar/abc/waveform?org=band&location=private&path=diary.txt",
+        ),
     ];
     for (t, url) in bad {
         assert_eq!(
@@ -439,7 +442,10 @@ async fn share_link_permissions_and_guest_name_dedup() {
             .unwrap(),
     )
     .into_owned();
-    assert!(!html.contains("/zip"), "no zip download on comment-only share");
+    assert!(
+        !html.contains("/zip"),
+        "no zip download on comment-only share"
+    );
     assert!(html.contains("<form>"), "comment form rendered");
 
     // Zip and non-inline file download are forbidden.

@@ -606,5 +606,4 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(cache.store.get("big").unwrap().1.size, 512);
     }
-
 }

@@ -147,7 +147,10 @@ impl Agent {
     /// Forget this device's copy of a location's index: the decoded one in
     /// memory and its file in Drive's own folder (`indexes/<id>.idx`).
     pub(crate) fn forget_index(&self, location: &str) {
-        self.unpublished.lock().expect("unpublished").remove(location);
+        self.unpublished
+            .lock()
+            .expect("unpublished")
+            .remove(location);
         let (db, id) = (self.index_db.clone(), location.to_string());
         tokio::spawn(async move {
             if let Err(e) = db.remove(&id).await {

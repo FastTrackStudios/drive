@@ -489,7 +489,10 @@ mod tests {
         let mut got = Vec::new();
         f.read_to_end(&mut got).unwrap();
         assert_eq!(got, b"old");
-        assert_eq!((o.size, o.hash), (3, blake3::hash(b"old").to_hex().to_string()));
+        assert_eq!(
+            (o.size, o.hash),
+            (3, blake3::hash(b"old").to_hex().to_string())
+        );
         store.remove("key");
         assert!(store.open_file("key").unwrap().is_none());
     }

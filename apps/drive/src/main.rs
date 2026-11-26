@@ -31,7 +31,8 @@ fn main() {
     // Natively: logs to stderr and traces to an OTLP collector when one is
     // named (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT); in a browser, the console.
     #[cfg(feature = "native")]
-    let _telemetry = app_shell_native::telemetry::init("drive-app", "warn,drive=info,drive_dioxus=info");
+    let _telemetry =
+        app_shell_native::telemetry::init("drive-app", "warn,drive=info,drive_dioxus=info");
     #[cfg(not(feature = "native"))]
     dioxus::logger::init(dioxus::logger::tracing::Level::WARN).expect("the logger starts once");
     // Drawn by Blitz on a desktop or a phone: the window has no system

@@ -71,7 +71,9 @@ impl Agent {
     pub fn in_place(&self) -> Vec<Adoption> {
         let mut all = self.adoptions();
         for w in self.my_working_copies() {
-            let Some(id) = tree::parse_id(&w.root) else { continue };
+            let Some(id) = tree::parse_id(&w.root) else {
+                continue;
+            };
             if tree::entry(&self.files, id).is_none() || tree::in_trash(&self.files, id) {
                 continue;
             }
@@ -307,7 +309,14 @@ impl Agent {
         match self.spot(dir) {
             Some(Spot::Here { path, .. }) => list_disk(&path),
             Some(Spot::Elsewhere { location, path, .. }) => {
-                if self.index_db.meta(&location.id).await.ok().flatten().is_none() {
+                if self
+                    .index_db
+                    .meta(&location.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
                     return Err("that folder's index is not here yet".into());
                 }
                 Ok(self
@@ -405,7 +414,6 @@ pub fn list_disk(path: &Path) -> Result<Vec<Row>, String> {
     rows.sort_by_key(|a| (!a.1, a.0.to_lowercase()));
     Ok(rows)
 }
-
 
 /// Whether a path is inside one of Drive's own mounts (adopting from
 /// there would map Drive into itself).

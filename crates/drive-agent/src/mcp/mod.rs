@@ -41,8 +41,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tracing::Instrument;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::Instrument;
 
 pub use ctx::Ctx;
 
@@ -231,7 +231,12 @@ impl Server {
         let answer = match self.ctx().instrument(span.clone()).await {
             Err(e) => Err(format!("Drive is not set up on this computer: {e}")),
             Ok(ctx) => {
-                match tokio::time::timeout(self.opts.timeout, tools::run(&ctx, tool, &args).instrument(span.clone())).await {
+                match tokio::time::timeout(
+                    self.opts.timeout,
+                    tools::run(&ctx, tool, &args).instrument(span.clone()),
+                )
+                .await
+                {
                     Ok(r) => {
                         span.record("mcp.writes", ctx.writes_used());
                         r

@@ -670,10 +670,7 @@ mod tests {
 
         // Existing share records without download/comments keys default to both enabled.
         let legacy = "44444444-4444-4444-8444-444444444444";
-        let m = d
-            .get_map("shares")
-            .ensure_mergeable_map(legacy)
-            .unwrap();
+        let m = d.get_map("shares").ensure_mergeable_map(legacy).unwrap();
         m.insert("token", legacy).unwrap();
         m.insert("project", p.as_str()).unwrap();
         let s_legacy = share(&d, legacy).unwrap();

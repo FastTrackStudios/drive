@@ -269,7 +269,11 @@ impl DevicesFs {
             Node::Location(l) => tree_list(l, ""),
             Node::Entry(l, e) if e.dir => tree_list(l, &e.path),
             Node::Entry(..) => Vec::new(),
-            Node::Disks(d) => self.disks(d)?.iter().map(|(n, _)| (n.clone(), true)).collect(),
+            Node::Disks(d) => self
+                .disks(d)?
+                .iter()
+                .map(|(n, _)| (n.clone(), true))
+                .collect(),
             Node::Disk(d, r) => names(&self.listing(d, r, "")?),
             Node::DiskEntry {
                 device,
@@ -324,7 +328,11 @@ impl DevicesFs {
         let roots = if device == self.me() {
             self.agent.browse_roots()
         } else {
-            let wait = if self.online(device) { QUICK } else { OFF_QUICK };
+            let wait = if self.online(device) {
+                QUICK
+            } else {
+                OFF_QUICK
+            };
             #[derive(serde::Deserialize)]
             struct Answer {
                 roots: Vec<Root>,
@@ -398,14 +406,19 @@ impl DevicesFs {
             loop {
                 let page = crate::browse::list(&rules, &dir, all.len() as u32, LIST_MAX, true)
                     .map_err(|why| errno_of_refusal(&why))?;
-                let done = page.entries.is_empty() || all.len() + page.entries.len() >= page.total as usize;
+                let done = page.entries.is_empty()
+                    || all.len() + page.entries.len() >= page.total as usize;
                 all.extend(page.entries);
                 if done {
                     break;
                 }
             }
         } else {
-            let wait = if self.online(device) { QUICK } else { OFF_QUICK };
+            let wait = if self.online(device) {
+                QUICK
+            } else {
+                OFF_QUICK
+            };
             #[derive(serde::Deserialize)]
             struct Page {
                 entries: Vec<DirEntry>,
@@ -424,7 +437,8 @@ impl DevicesFs {
                     (200, body) => serde_json::from_slice(&body).map_err(|_| Errno::EIO)?,
                     (code, _) => return Err(errno_of_status(code)),
                 };
-                let done = page.entries.is_empty() || all.len() + page.entries.len() >= page.total as usize;
+                let done = page.entries.is_empty()
+                    || all.len() + page.entries.len() >= page.total as usize;
                 all.extend(page.entries);
                 if done {
                     break;
@@ -468,7 +482,10 @@ impl DevicesFs {
         if offset >= entry.size {
             return Ok(Vec::new());
         }
-        let key = format!("{device}\n{}\n{rel}\n{}\n{}", root.mount, entry.size, entry.mtime);
+        let key = format!(
+            "{device}\n{}\n{rel}\n{}\n{}",
+            root.mount, entry.size, entry.mtime
+        );
         let end = (offset + u64::from(size)).min(entry.size);
         let hit = |p: &Piece| p.0 == key && p.1 <= offset && p.1 + p.2.len() as u64 >= end;
         let piece = match self.pieces.lock().expect("pieces").iter().find(|p| hit(p)) {
@@ -546,21 +563,33 @@ impl DevicesFs {
         match r {
             Ok((status, body)) => {
                 if status == 504 {
-                    self.slow.lock().expect("slow").insert(device.to_string(), Instant::now());
+                    self.slow
+                        .lock()
+                        .expect("slow")
+                        .insert(device.to_string(), Instant::now());
                 } else {
                     self.slow.lock().expect("slow").remove(device);
                 }
                 span.record("browse.status", status);
                 span.record("browse.bytes", body.len() as u64);
-                span.record("browse.outcome", if status < 400 { "ok" } else { "refused" });
+                span.record(
+                    "browse.outcome",
+                    if status < 400 { "ok" } else { "refused" },
+                );
                 Ok((status, body))
             }
             Err(e) => {
                 let timed_out = e.is_timeout();
                 if timed_out {
-                    self.slow.lock().expect("slow").insert(device.to_string(), Instant::now());
+                    self.slow
+                        .lock()
+                        .expect("slow")
+                        .insert(device.to_string(), Instant::now());
                 }
-                span.record("browse.outcome", if timed_out { "timeout" } else { "failed" });
+                span.record(
+                    "browse.outcome",
+                    if timed_out { "timeout" } else { "failed" },
+                );
                 Err(if !self.online(device) {
                     Errno::EHOSTDOWN
                 } else if timed_out {
@@ -646,7 +675,12 @@ impl DevicesFs {
                     .iter()
                     .filter_map(|(lid, c)| {
                         let l = v.locations.iter().find(|l| &l.id == lid)?;
-                        Some(format!("{}/{}/{}", v.device_name(&l.device), l.name, c.path))
+                        Some(format!(
+                            "{}/{}/{}",
+                            v.device_name(&l.device),
+                            l.name,
+                            c.path
+                        ))
                     })
                     .collect();
                 Ok(list.join("\n").into_bytes())

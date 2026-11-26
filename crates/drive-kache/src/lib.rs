@@ -348,9 +348,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path(), 1 << 20).unwrap();
         let k = Kache::new(store, Arc::new(Vec::new), Timeouts::default());
-        let r = k.flight("key", async { panic!("a peer fetch panicked") }).await;
+        let r = k
+            .flight("key", async { panic!("a peer fetch panicked") })
+            .await;
         assert!(r.is_err());
-        assert!(k.inflight.lock().unwrap().is_empty(), "the key is free again");
+        assert!(
+            k.inflight.lock().unwrap().is_empty(),
+            "the key is free again"
+        );
         assert_eq!(k.flight("key", async { Ok(()) }).await, Ok(()));
     }
 }

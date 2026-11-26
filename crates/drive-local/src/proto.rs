@@ -82,7 +82,9 @@ pub enum Op {
     //    docs/fileprovider.md). Ids are tree ids; the top is `root`. ──
     /// One item. (The item's id is `item`: a request's own `id` is its
     /// number on the connection, and both are keys of one object.)
-    FpItem { item: String },
+    FpItem {
+        item: String,
+    },
     /// A folder's items, a page at a time: `after` is the last page's
     /// `next` (none: from the start).
     FpList {
@@ -95,10 +97,15 @@ pub enum Op {
     /// The tree's version now ([`FpChanges`] since it later).
     FpAnchor,
     /// What changed since `anchor`.
-    FpChanges { anchor: String },
+    FpChanges {
+        anchor: String,
+    },
     /// A file's bytes, copied into `into` (a folder the asking process
     /// can read); the answer is the copy's path and the item.
-    FpFetch { item: String, into: std::path::PathBuf },
+    FpFetch {
+        item: String,
+        into: std::path::PathBuf,
+    },
     /// A new file or folder; a file's bytes are read from `from`.
     FpCreate {
         parent: String,
@@ -119,7 +126,9 @@ pub enum Op {
         from: Option<std::path::PathBuf>,
     },
     /// Into the Drive's Trash (nothing is ever deleted).
-    FpDelete { item: String },
+    FpDelete {
+        item: String,
+    },
     /// The agent's location indexes (drive#157): a `drive` command run
     /// beside the agent asks it, so that only the running agent opens its
     /// index database.
@@ -511,12 +520,31 @@ mod tests {
         // no field of an op may be called `id` (it is the request's).
         for op in [
             Op::FpItem { item: "1@2".into() },
-            Op::FpList { parent: "root".into(), after: Some("5".into()), limit: Some(9) },
+            Op::FpList {
+                parent: "root".into(),
+                after: Some("5".into()),
+                limit: Some(9),
+            },
             Op::FpAnchor,
-            Op::FpChanges { anchor: "00".into() },
-            Op::FpFetch { item: "1@2".into(), into: "/tmp/x".into() },
-            Op::FpCreate { parent: "root".into(), name: "a".into(), dir: true, from: None },
-            Op::FpModify { item: "1@2".into(), name: Some("b".into()), parent: None, from: Some("/tmp/y".into()) },
+            Op::FpChanges {
+                anchor: "00".into(),
+            },
+            Op::FpFetch {
+                item: "1@2".into(),
+                into: "/tmp/x".into(),
+            },
+            Op::FpCreate {
+                parent: "root".into(),
+                name: "a".into(),
+                dir: true,
+                from: None,
+            },
+            Op::FpModify {
+                item: "1@2".into(),
+                name: Some("b".into()),
+                parent: None,
+                from: Some("/tmp/y".into()),
+            },
             Op::FpDelete { item: "1@2".into() },
         ] {
             let req = Request { id: 77, op };

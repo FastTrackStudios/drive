@@ -44,16 +44,28 @@ async fn an_index_is_kept_and_read_back_by_folder_path_and_page() {
     assert_eq!(db.put(&songs()).await.unwrap(), 5);
     assert_eq!(
         db.meta("loc").await.unwrap(),
-        Some(Meta { root: "/music".into(), built: 42, files: 3, dirs: 2, bytes: 33 })
+        Some(Meta {
+            root: "/music".into(),
+            built: 42,
+            files: 3,
+            dirs: 2,
+            bytes: 33
+        })
     );
     let names = |v: Vec<IndexEntry>| v.into_iter().map(|e| e.path).collect::<Vec<_>>();
-    assert_eq!(names(db.list("loc", "").await.unwrap()), ["Album", "notes.txt"]);
+    assert_eq!(
+        names(db.list("loc", "").await.unwrap()),
+        ["Album", "notes.txt"]
+    );
     // Folders first, then by name whatever its case.
     assert_eq!(
         names(db.list("loc", "Album").await.unwrap()),
         ["Album/Stems", "Album/A.wav", "Album/b.wav"]
     );
-    assert_eq!(db.get("loc", "Album/b.wav").await.unwrap().unwrap().size, 20);
+    assert_eq!(
+        db.get("loc", "Album/b.wav").await.unwrap().unwrap().size,
+        20
+    );
     assert!(db.get("loc", "nope").await.unwrap().is_none());
     assert!(db.get("elsewhere", "notes.txt").await.unwrap().is_none());
 
@@ -64,7 +76,10 @@ async fn an_index_is_kept_and_read_back_by_folder_path_and_page() {
 
     let under = db.page_under("loc", "Album", "", 10).await.unwrap();
     assert_eq!(names(under), ["Album/A.wav", "Album/Stems", "Album/b.wav"]);
-    let more = db.page_under("loc", "Album", "Album/A.wav", 1).await.unwrap();
+    let more = db
+        .page_under("loc", "Album", "Album/A.wav", 1)
+        .await
+        .unwrap();
     assert_eq!(names(more), ["Album/Stems"]);
 
     let back = db.load("loc").await.unwrap().unwrap();
@@ -82,8 +97,16 @@ async fn a_new_index_writes_only_its_differences() {
     next.entries.retain(|e| e.path != "notes.txt");
     next.entries[1].size = 21;
     next.entries.push(e("Album/c.wav", false, 5, "hc"));
-    assert_eq!(db.put(&next).await.unwrap(), 3, "one gone, one changed, one new");
-    assert_eq!(db.put(&next).await.unwrap(), 0, "nothing changed: nothing written");
+    assert_eq!(
+        db.put(&next).await.unwrap(),
+        3,
+        "one gone, one changed, one new"
+    );
+    assert_eq!(
+        db.put(&next).await.unwrap(),
+        0,
+        "nothing changed: nothing written"
+    );
     let back = db.load("loc").await.unwrap().unwrap();
     let mut want = next.clone();
     want.entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -95,10 +118,20 @@ async fn a_new_index_writes_only_its_differences() {
 async fn copies_are_found_across_locations_and_a_removed_location_is_gone() {
     let (db, _dir) = db().await;
     db.put(&songs()).await.unwrap();
-    db.put(&index("backup", vec![e("old/A.wav", false, 10, "ha"), e("old/x.wav", false, 99, "ha")]))
-        .await
-        .unwrap();
-    let at = |v: Vec<(String, IndexEntry)>| v.into_iter().map(|(l, e)| format!("{l}:{}", e.path)).collect::<Vec<_>>();
+    db.put(&index(
+        "backup",
+        vec![
+            e("old/A.wav", false, 10, "ha"),
+            e("old/x.wav", false, 99, "ha"),
+        ],
+    ))
+    .await
+    .unwrap();
+    let at = |v: Vec<(String, IndexEntry)>| {
+        v.into_iter()
+            .map(|(l, e)| format!("{l}:{}", e.path))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
         at(db.copies("ha", Some(10)).await.unwrap()),
         ["backup:old/A.wav", "loc:Album/A.wav"]
@@ -106,7 +139,10 @@ async fn copies_are_found_across_locations_and_a_removed_location_is_gone() {
     assert_eq!(at(db.copies("ha", None).await.unwrap()).len(), 3);
     assert!(db.copies("", None).await.unwrap().is_empty());
 
-    let held = db.locations_of(&["ha".into(), "hb".into(), "none".into()]).await.unwrap();
+    let held = db
+        .locations_of(&["ha".into(), "hb".into(), "none".into()])
+        .await
+        .unwrap();
     let mut ha = held["ha"].clone();
     ha.sort();
     assert_eq!(ha, ["backup", "backup", "loc"], "one per file holding it");
@@ -116,7 +152,10 @@ async fn copies_are_found_across_locations_and_a_removed_location_is_gone() {
     assert!(db.duplicates(11).await.unwrap().is_empty());
 
     db.remove("backup").await.unwrap();
-    assert_eq!(at(db.copies("ha", None).await.unwrap()), ["loc:Album/A.wav"]);
+    assert_eq!(
+        at(db.copies("ha", None).await.unwrap()),
+        ["loc:Album/A.wav"]
+    );
     assert!(db.meta("backup").await.unwrap().is_none());
     assert_eq!(db.locations().await.unwrap(), ["loc"]);
 }
@@ -125,7 +164,12 @@ async fn copies_are_found_across_locations_and_a_removed_location_is_gone() {
 async fn the_index_outlives_the_process() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("indexes.db");
-    IndexDb::open(&path).await.unwrap().put(&songs()).await.unwrap();
+    IndexDb::open(&path)
+        .await
+        .unwrap()
+        .put(&songs())
+        .await
+        .unwrap();
     let again = IndexDb::open(&path).await.unwrap();
     assert_eq!(again.list("loc", "").await.unwrap().len(), 2);
 }
@@ -135,7 +179,9 @@ async fn a_write_leaves_no_log_behind() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("indexes.db");
     let db = IndexDb::open(&path).await.unwrap();
-    let entries = (0..5000).map(|i| e(&format!("f{i:05}.wav"), false, i, &format!("{i:064x}"))).collect();
+    let entries = (0..5000)
+        .map(|i| e(&format!("f{i:05}.wav"), false, i, &format!("{i:064x}")))
+        .collect();
     db.put(&index("loc", entries)).await.unwrap();
     let wal = std::fs::metadata(dir.path().join("indexes.db-wal")).map_or(0, |m| m.len());
     assert_eq!(wal, 0, "the log is folded into the database after a write");
@@ -146,8 +192,16 @@ async fn a_write_leaves_no_log_behind() {
 async fn an_index_larger_than_a_batch_is_written_changed_and_removed() {
     let (db, _dir) = db().await;
     let n = BATCH * 2 + 500;
-    let mut entries: Vec<IndexEntry> =
-        (0..n).map(|i| e(&format!("f{i:06}.wav"), false, i as u64, &format!("{i:064x}"))).collect();
+    let mut entries: Vec<IndexEntry> = (0..n)
+        .map(|i| {
+            e(
+                &format!("f{i:06}.wav"),
+                false,
+                i as u64,
+                &format!("{i:064x}"),
+            )
+        })
+        .collect();
     assert_eq!(db.put(&index("loc", entries.clone())).await.unwrap(), n);
     assert_eq!(db.meta("loc").await.unwrap().unwrap().files, n as u64);
     // One changed, one gone, one new: three rows written.
@@ -157,7 +211,12 @@ async fn an_index_larger_than_a_batch_is_written_changed_and_removed() {
     assert_eq!(db.put(&index("loc", entries)).await.unwrap(), 3);
     assert_eq!(db.list("loc", "").await.unwrap().len(), n);
     assert_eq!(db.get("loc", "f000007.wav").await.unwrap().unwrap().size, 8);
-    assert!(db.get("loc", &format!("f{:06}.wav", BATCH + 3)).await.unwrap().is_none());
+    assert!(
+        db.get("loc", &format!("f{:06}.wav", BATCH + 3))
+            .await
+            .unwrap()
+            .is_none()
+    );
     db.remove("loc").await.unwrap();
     assert!(db.meta("loc").await.unwrap().is_none());
     assert!(db.list("loc", "").await.unwrap().is_empty());
@@ -176,7 +235,11 @@ async fn a_million_files_fit_where_one_transaction_would_not() {
     let entries: Vec<IndexEntry> = (0..n)
         .map(|i| {
             e(
-                &format!("Library {:03}/Pack {:05}/Some Long Sample Name {i:08}.wav", i / 50_000, i / 40),
+                &format!(
+                    "Library {:03}/Pack {:05}/Some Long Sample Name {i:08}.wav",
+                    i / 50_000,
+                    i / 40
+                ),
                 false,
                 i as u64,
                 &format!("{i:064x}"),
@@ -213,7 +276,14 @@ async fn index_db_timing() {
     let (db, _dir) = db().await;
     let n = 500_000usize;
     let mut entries: Vec<IndexEntry> = (0..n)
-        .map(|i| e(&format!("Pack {:04}/Sample {i:07}.wav", i / 40), false, i as u64, &format!("{i:064x}")))
+        .map(|i| {
+            e(
+                &format!("Pack {:04}/Sample {i:07}.wav", i / 40),
+                false,
+                i as u64,
+                &format!("{i:064x}"),
+            )
+        })
         .collect();
     entries.extend((0..n / 40).map(|p| e(&format!("Pack {p:04}"), true, 0, "")));
     let t0 = std::time::Instant::now();
@@ -233,7 +303,12 @@ async fn index_db_timing() {
         let t0 = std::time::Instant::now();
         let c = db.copies(&format!("{:064x}", 4930), None).await.unwrap();
         let tc = t0.elapsed();
-        eprintln!("round {round}: list {} in {tl:?}, get {} in {tg:?}, copies {} in {tc:?}", l.len(), g.is_some(), c.len());
+        eprintln!(
+            "round {round}: list {} in {tl:?}, get {} in {tg:?}, copies {} in {tc:?}",
+            l.len(),
+            g.is_some(),
+            c.len()
+        );
     }
     let t0 = std::time::Instant::now();
     let all = db.load("big").await.unwrap().unwrap();
@@ -244,13 +319,32 @@ async fn index_db_timing() {
 async fn find_matches_names_in_any_case_and_takes_wildcards_literally() {
     let (db, _dir) = db().await;
     db.put(&songs()).await.unwrap();
-    db.put(&index("other", vec![e("100%_done.wav", false, 1, "hx"), e("1000 done.wav", false, 1, "hy")]))
-        .await
-        .unwrap();
-    let paths = |hits: Vec<(String, IndexEntry)>| hits.into_iter().map(|(l, x)| format!("{l}:{}", x.path)).collect::<Vec<_>>();
-    assert_eq!(paths(db.find("a.WAV", 10).await.unwrap()), vec!["loc:Album/A.wav"]);
-    assert_eq!(paths(db.find("album", 10).await.unwrap()), vec!["loc:Album"]);
-    assert_eq!(paths(db.find("%_", 10).await.unwrap()), vec!["other:100%_done.wav"]);
+    db.put(&index(
+        "other",
+        vec![
+            e("100%_done.wav", false, 1, "hx"),
+            e("1000 done.wav", false, 1, "hy"),
+        ],
+    ))
+    .await
+    .unwrap();
+    let paths = |hits: Vec<(String, IndexEntry)>| {
+        hits.into_iter()
+            .map(|(l, x)| format!("{l}:{}", x.path))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        paths(db.find("a.WAV", 10).await.unwrap()),
+        vec!["loc:Album/A.wav"]
+    );
+    assert_eq!(
+        paths(db.find("album", 10).await.unwrap()),
+        vec!["loc:Album"]
+    );
+    assert_eq!(
+        paths(db.find("%_", 10).await.unwrap()),
+        vec!["other:100%_done.wav"]
+    );
     assert_eq!(db.find("wav", 1).await.unwrap().len(), 1);
 }
 

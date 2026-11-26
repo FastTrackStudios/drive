@@ -66,7 +66,12 @@ pub enum Name<'a> {
 /// `name` in folder `parent` of the Drive side: at the top, `Devices` is
 /// the devices' folder, and [`ALIAS`] is the tree's own `Devices` when it
 /// has one (`tree_has_devices`).
-pub fn name_in<'a>(parent: INodeNo, name: &'a OsStr, folder: bool, tree_has_devices: bool) -> Name<'a> {
+pub fn name_in<'a>(
+    parent: INodeNo,
+    name: &'a OsStr,
+    folder: bool,
+    tree_has_devices: bool,
+) -> Name<'a> {
     if !folder || parent != INodeNo::ROOT {
         return Name::Tree(name);
     }
@@ -122,7 +127,12 @@ impl OneFs {
 
     /// `name` in `parent` (of the Drive side), or the error a change to
     /// the devices' folder itself gets.
-    fn tree_name<'a>(&self, parent: INodeNo, name: &'a OsStr, taken: Errno) -> Result<&'a OsStr, Errno> {
+    fn tree_name<'a>(
+        &self,
+        parent: INodeNo,
+        name: &'a OsStr,
+        taken: Errno,
+    ) -> Result<&'a OsStr, Errno> {
         let has = self.folder() && parent == INodeNo::ROOT && self.drive.has_top(DEVICES);
         match name_in(parent, name, self.folder(), has) {
             Name::Devices => Err(taken),
@@ -180,8 +190,22 @@ impl Filesystem for OneFs {
             return reply.error(Errno::EROFS);
         }
         self.drive.setattr(
-            req, ino, mode, uid, gid, size, atime, mtime, ctime, fh, crtime, chgtime, bkuptime,
-            flags, kill_suid_gid, reply,
+            req,
+            ino,
+            mode,
+            uid,
+            gid,
+            size,
+            atime,
+            mtime,
+            ctime,
+            fh,
+            crtime,
+            chgtime,
+            bkuptime,
+            flags,
+            kill_suid_gid,
+            reply,
         );
     }
 
@@ -272,7 +296,9 @@ impl Filesystem for OneFs {
         reply: ReplyData,
     ) {
         match side(ino) {
-            Side::Drive => self.drive.read(req, ino, fh, offset, size, flags, lock, reply),
+            Side::Drive => self
+                .drive
+                .read(req, ino, fh, offset, size, flags, lock, reply),
             Side::Devices => match self.devices() {
                 Ok(d) => d.read(req, ino, fh, offset, size, flags, lock, reply),
                 Err(e) => reply.error(e),
@@ -300,7 +326,14 @@ impl Filesystem for OneFs {
         }
     }
 
-    fn flush(&self, req: &Request, ino: INodeNo, fh: FileHandle, lock: LockOwner, reply: ReplyEmpty) {
+    fn flush(
+        &self,
+        req: &Request,
+        ino: INodeNo,
+        fh: FileHandle,
+        lock: LockOwner,
+        reply: ReplyEmpty,
+    ) {
         match side(ino) {
             Side::Drive => self.drive.flush(req, ino, fh, lock, reply),
             Side::Devices => reply.ok(),
@@ -419,9 +452,18 @@ mod tests {
         let n = OsStr::new;
         assert_eq!(name_in(top, n("Devices"), true, false), Name::Devices);
         assert_eq!(name_in(top, n("Devices"), true, true), Name::Devices);
-        assert_eq!(name_in(INodeNo(7), n("Devices"), true, true), Name::Tree(n("Devices")));
-        assert_eq!(name_in(top, n("Devices"), false, true), Name::Tree(n("Devices")));
-        assert_eq!(name_in(top, n("Studio"), true, true), Name::Tree(n("Studio")));
+        assert_eq!(
+            name_in(INodeNo(7), n("Devices"), true, true),
+            Name::Tree(n("Devices"))
+        );
+        assert_eq!(
+            name_in(top, n("Devices"), false, true),
+            Name::Tree(n("Devices"))
+        );
+        assert_eq!(
+            name_in(top, n("Studio"), true, true),
+            Name::Tree(n("Studio"))
+        );
     }
 
     #[test]
@@ -432,7 +474,10 @@ mod tests {
         // Without a tree entry named Devices, the alias is just a name.
         assert_eq!(name_in(top, n(ALIAS), true, false), Name::Tree(n(ALIAS)));
         // Deeper down it is just a name too.
-        assert_eq!(name_in(INodeNo(9), n(ALIAS), true, true), Name::Tree(n(ALIAS)));
+        assert_eq!(
+            name_in(INodeNo(9), n(ALIAS), true, true),
+            Name::Tree(n(ALIAS))
+        );
     }
 
     #[test]

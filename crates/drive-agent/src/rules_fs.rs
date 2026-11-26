@@ -462,5 +462,4 @@ mod tests {
         rename_noreplace(&file, &d.path().join("h")).unwrap();
         assert!(!file.exists());
     }
-
 }

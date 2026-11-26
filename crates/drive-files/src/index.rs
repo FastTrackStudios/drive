@@ -79,7 +79,12 @@ pub fn walk(
     previous: Option<&LocationIndex>,
 ) -> (LocationIndex, WalkStats) {
     let tree = previous.map(|p| Tree::new(p.clone()));
-    walk_with(location, root, tree.as_ref().map(|t| t as &dyn Previous), walk_threads())
+    walk_with(
+        location,
+        root,
+        tree.as_ref().map(|t| t as &dyn Previous),
+        walk_threads(),
+    )
 }
 
 /// What a location held at its last walk, asked a folder at a time (so
@@ -113,7 +118,9 @@ impl AsyncPrevious for Tree {
 /// on several at once (as `dua` and ripgrep do), which is most of a big
 /// first index's time on an SSD or a network disk.
 fn walk_threads() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8)
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(2, 8)
 }
 
 /// What the walk saw of one entry, before any hashing.
@@ -331,14 +338,26 @@ fn seen(
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_millis() as i64);
     if meta.is_dir() {
-        return Some(Seen { path: rel, dir: true, size: 0, mtime, kept: None });
+        return Some(Seen {
+            path: rel,
+            dir: true,
+            size: 0,
+            mtime,
+            kept: None,
+        });
     }
     if !meta.is_file() {
         return None;
     }
     let size = meta.len();
     let kept = kept_hash(old(&rel), size, mtime);
-    Some(Seen { path: rel, dir: false, size, mtime, kept })
+    Some(Seen {
+        path: rel,
+        dir: false,
+        size,
+        mtime,
+        kept,
+    })
 }
 
 /// The last walk's entries of the folders a storage's listing is in. A
@@ -659,7 +678,10 @@ impl Tree {
             } else if let Some(p) = find(parent) {
                 children.entry(p).or_default().push(i as u32);
             } else {
-                orphans.entry(parent.to_string()).or_default().push(i as u32);
+                orphans
+                    .entry(parent.to_string())
+                    .or_default()
+                    .push(i as u32);
             }
         }
         let order = |a: &u32, b: &u32| {
@@ -984,7 +1006,6 @@ mod tests {
         assert!(decode_within(&bomb, 16 << 20).is_some());
     }
 
-
     #[test]
     fn a_tree_over_an_unsorted_index_with_missing_folders() {
         let e = |path: &str, dir| IndexEntry {
@@ -999,10 +1020,22 @@ mod tests {
             location: "l".into(),
             root: "/".into(),
             built: 0,
-            entries: vec![e("b/c/z.wav", false), e("a", true), e("b", true), e("a/y.wav", false), e("b/c/x.wav", false), e("top.txt", false)],
+            entries: vec![
+                e("b/c/z.wav", false),
+                e("a", true),
+                e("b", true),
+                e("a/y.wav", false),
+                e("b/c/x.wav", false),
+                e("top.txt", false),
+            ],
         };
         let t = Tree::new(idx);
-        let names = |dir: &str| t.list(dir).iter().map(|e| e.name().to_string()).collect::<Vec<_>>();
+        let names = |dir: &str| {
+            t.list(dir)
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names(""), ["a", "b", "top.txt"]);
         assert_eq!(names("a"), ["y.wav"]);
         assert_eq!(names("b/c"), ["x.wav", "z.wav"]);

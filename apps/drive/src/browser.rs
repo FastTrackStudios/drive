@@ -1694,7 +1694,12 @@ mod tests {
 
     #[test]
     fn safe_href_keeps_web_and_local_links_only() {
-        for ok in ["https://a.example/x", "http://a.example", "/notes/1", " /x "] {
+        for ok in [
+            "https://a.example/x",
+            "http://a.example",
+            "/notes/1",
+            " /x ",
+        ] {
             assert_eq!(safe_href(ok.into()).as_deref(), Some(ok.trim()));
         }
         for bad in [

@@ -50,7 +50,8 @@ impl Agent {
                                 size: e.size as i64,
                                 mtime: e.mtime,
                             };
-                            let _ = projects::set_available(&self.space, &loc.id, &e.path, Some(&a));
+                            let _ =
+                                projects::set_available(&self.space, &loc.id, &e.path, Some(&a));
                             let _ = space::set_held(&self.space, "node", &hash, Some("stored"));
                             changed = true;
                             put += 1;

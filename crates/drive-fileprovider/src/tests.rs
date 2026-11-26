@@ -73,7 +73,10 @@ fn a_request_goes_to_the_agent_and_its_answer_or_reason_comes_back() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("app.sock");
     fake_agent(&sock, usize::MAX);
-    assert_eq!(unsafe { dfp_connect(c(sock.to_str().unwrap()).as_ptr()) }, 0);
+    assert_eq!(
+        unsafe { dfp_connect(c(sock.to_str().unwrap()).as_ptr()) },
+        0
+    );
 
     let got = take(unsafe { dfp_call(c(r#"{"op":"fp_list","parent":"root"}"#).as_ptr()) }).unwrap();
     let page: drive_local::FpPage = serde_json::from_str(&got).unwrap();
@@ -98,7 +101,10 @@ fn a_closed_connection_is_made_again_once() {
         let page = call(r#"{"op":"fp_list","parent":"root"}"#).unwrap();
         assert!(page.contains("Songs"));
     }
-    assert!(conns.load(Ordering::SeqCst) >= 3, "reconnected after each close");
+    assert!(
+        conns.load(Ordering::SeqCst) >= 3,
+        "reconnected after each close"
+    );
 }
 
 #[test]
@@ -106,6 +112,9 @@ fn no_agent_is_a_reason_not_a_crash() {
     let _one = SERIAL.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("app.sock");
-    assert_eq!(unsafe { dfp_connect(c(missing.to_str().unwrap()).as_ptr()) }, -1);
+    assert_eq!(
+        unsafe { dfp_connect(c(missing.to_str().unwrap()).as_ptr()) },
+        -1
+    );
     assert!(!last_error().is_empty());
 }

@@ -235,7 +235,11 @@ pub async fn add_to_project(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     }
     if !path.is_empty()
         && ctx.has_index(&loc).await.is_ok()
-        && ctx.a.index_entry(&loc.id, &path).await.is_none_or(|e| !e.dir)
+        && ctx
+            .a
+            .index_entry(&loc.id, &path)
+            .await
+            .is_none_or(|e| !e.dir)
     {
         return Err(format!(
             "{path} is not a folder of {} (as of its last index)",

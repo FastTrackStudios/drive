@@ -1502,7 +1502,6 @@ mod tests {
         assert_eq!(ids(&store.list().await.unwrap()), ["me/c"]);
     }
 
-
     async fn location_rows(store: &Store) -> Vec<(i64, String, i64, String)> {
         let conn = store.reader().await;
         let mut r = conn
@@ -1536,15 +1535,45 @@ mod tests {
             mtime: 1,
             sampled: format!("{size:064x}"),
         };
-        let idx = |entries| LocationIndex { location: "l".into(), root: "/".into(), built: 0, entries };
-        store.put_index("me", &idx(vec![e("a.wav", 1), e("b.wav", 2), e("c.wav", 3)])).await.unwrap();
+        let idx = |entries| LocationIndex {
+            location: "l".into(),
+            root: "/".into(),
+            built: 0,
+            entries,
+        };
+        store
+            .put_index(
+                "me",
+                &idx(vec![e("a.wav", 1), e("b.wav", 2), e("c.wav", 3)]),
+            )
+            .await
+            .unwrap();
         let before = location_rows(&store).await;
         // b changes, c goes, d comes; out of order on purpose.
-        store.put_index("me", &idx(vec![e("d.mp3", 4), e("b.wav", 20), e("a.wav", 1)])).await.unwrap();
+        store
+            .put_index(
+                "me",
+                &idx(vec![e("d.mp3", 4), e("b.wav", 20), e("a.wav", 1)]),
+            )
+            .await
+            .unwrap();
         let after = location_rows(&store).await;
-        let paths: Vec<(&str, i64, &str)> = after.iter().map(|r| (r.1.as_str(), r.2, r.3.as_str())).collect();
-        assert_eq!(paths, [("a.wav", 1, "wav"), ("b.wav", 20, "wav"), ("d.mp3", 4, "mp3")]);
-        assert_eq!(after[0].0, before[0].0, "an unchanged row is left as it was");
+        let paths: Vec<(&str, i64, &str)> = after
+            .iter()
+            .map(|r| (r.1.as_str(), r.2, r.3.as_str()))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("a.wav", 1, "wav"),
+                ("b.wav", 20, "wav"),
+                ("d.mp3", 4, "mp3")
+            ]
+        );
+        assert_eq!(
+            after[0].0, before[0].0,
+            "an unchanged row is left as it was"
+        );
         assert_eq!(after[1].0, before[1].0, "a changed row is updated in place");
         // The totals follow the new index.
         let conn = store.reader().await;
@@ -1554,11 +1583,17 @@ mod tests {
             .unwrap();
         let mut stats = Vec::new();
         while let Some(row) = r.next().await.unwrap() {
-            stats.push((text(row.get_value(0).unwrap()), int(row.get_value(1).unwrap()), int(row.get_value(2).unwrap())));
+            stats.push((
+                text(row.get_value(0).unwrap()),
+                int(row.get_value(1).unwrap()),
+                int(row.get_value(2).unwrap()),
+            ));
         }
-        assert_eq!(stats, [("mp3".to_string(), 1, 4), ("wav".to_string(), 2, 21)]);
+        assert_eq!(
+            stats,
+            [("mp3".to_string(), 1, 4), ("wav".to_string(), 2, 21)]
+        );
     }
-
 
     #[tokio::test]
     #[ignore = "timing, by hand"]
@@ -1568,17 +1603,33 @@ mod tests {
         let store = Store::open(&dir.path().join("drive.db")).await.unwrap();
         let n = 300_000;
         let mut entries: Vec<IndexEntry> = (0..n)
-            .map(|i| IndexEntry { path: format!("Pack {:04}/Sample {i:07}.wav", i / 40), dir: false, size: i as u64, mtime: 1, sampled: format!("{i:064x}") })
+            .map(|i| IndexEntry {
+                path: format!("Pack {:04}/Sample {i:07}.wav", i / 40),
+                dir: false,
+                size: i as u64,
+                mtime: 1,
+                sampled: format!("{i:064x}"),
+            })
             .collect();
-        let idx = |entries: Vec<IndexEntry>| LocationIndex { location: "l".into(), root: "/".into(), built: 0, entries };
+        let idx = |entries: Vec<IndexEntry>| LocationIndex {
+            location: "l".into(),
+            root: "/".into(),
+            built: 0,
+            entries,
+        };
         let t = std::time::Instant::now();
         store.put_index("me", &idx(entries.clone())).await.unwrap();
         eprintln!("first: {:?}", t.elapsed());
         entries[1234].size += 1;
-        entries.push(IndexEntry { path: "Pack 9999/new.wav".into(), dir: false, size: 1, mtime: 1, sampled: "a".repeat(64) });
+        entries.push(IndexEntry {
+            path: "Pack 9999/new.wav".into(),
+            dir: false,
+            size: 1,
+            mtime: 1,
+            sampled: "a".repeat(64),
+        });
         let t = std::time::Instant::now();
         store.put_index("me", &idx(entries)).await.unwrap();
         eprintln!("one change: {:?}", t.elapsed());
     }
-
 }

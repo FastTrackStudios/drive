@@ -229,7 +229,9 @@ pub async fn serve(apps: Arc<Apps>) -> Result<(), String> {
                     let a = apps.clone();
                     tokio::spawn(async move { accept_unix(a, l).await });
                 }
-                Err(e) => tracing::warn!(apps.socket_dir = %d.display(), error = %e, "no socket there"),
+                Err(e) => {
+                    tracing::warn!(apps.socket_dir = %d.display(), error = %e, "no socket there")
+                }
             }
         }
     }
@@ -552,7 +554,10 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
             parent,
             after,
             limit,
-        } => c.answer(id, apps.a.fp_list(&parent, after.as_deref(), limit).map(json)),
+        } => c.answer(
+            id,
+            apps.a.fp_list(&parent, after.as_deref(), limit).map(json),
+        ),
         Op::FpAnchor => c.answer(id, Ok(serde_json::json!({ "anchor": apps.a.fp_anchor() }))),
         Op::FpChanges { anchor } => c.answer(id, Ok(json(apps.a.fp_changes(&anchor)))),
         Op::FpFetch { item, into } => {
@@ -581,9 +586,10 @@ async fn handle(c: Arc<ConnCtx>, req: Request) {
             c.answer(id, r.map(json));
         }
         Op::Index(q) => c.answer(id, crate::indexes::answer(&apps.a, q).await),
-        Op::FpDelete { item } => {
-            c.answer(id, apps.a.fp_delete(&item).map(|()| serde_json::Value::Null))
-        }
+        Op::FpDelete { item } => c.answer(
+            id,
+            apps.a.fp_delete(&item).map(|()| serde_json::Value::Null),
+        ),
     }
 }
 

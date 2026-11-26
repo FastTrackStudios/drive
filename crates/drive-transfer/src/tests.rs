@@ -147,7 +147,10 @@ async fn a_forgotten_file_is_hashed_again() {
         .unwrap()
         .set_modified(mtime)
         .unwrap();
-    assert_eq!(p.provide(&file).await.unwrap().hash, hash_of(&noise(50_000, 3)));
+    assert_eq!(
+        p.provide(&file).await.unwrap().hash,
+        hash_of(&noise(50_000, 3))
+    );
     p.shutdown().await;
 }
 

@@ -334,7 +334,6 @@ impl Ctx {
             .ok_or_else(|| format!("{path} is not in {} (as of its last index)", loc.name))
     }
 
-
     /// A thing by how an agent names it: `drive:PATH`, `LOCATION:PATH`,
     /// `project:NAME`, `doc:ID`, `content:HASH`, `file:<tree id>`, or a
     /// file on this computer by its path.

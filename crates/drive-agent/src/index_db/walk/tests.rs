@@ -65,7 +65,10 @@ async fn a_walk_is_written_as_its_differences_page_by_page() {
     assert_eq!(written, entries.len());
     assert_eq!(
         (totals.files, totals.dirs),
-        ((PAGE + PAGE / 2) as u64, (PAGE + PAGE / 2).div_ceil(40) as u64)
+        (
+            (PAGE + PAGE / 2) as u64,
+            (PAGE + PAGE / 2).div_ceil(40) as u64
+        )
     );
     assert_eq!(
         db.load("loc").await.unwrap().unwrap(),
