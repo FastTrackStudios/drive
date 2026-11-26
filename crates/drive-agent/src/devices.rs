@@ -84,6 +84,8 @@ enum Node {
 
 type Disks = Arc<Vec<(String, Root)>>;
 type Listed = Arc<Vec<DirEntry>>;
+/// A disk folder's listing is kept by (device, disk mount, folder).
+type ListKey = (String, String, String);
 
 /// A piece of another device's file: (file key, start, bytes).
 type Piece = (String, u64, Arc<Vec<u8>>);
@@ -99,7 +101,7 @@ pub struct DevicesFs {
     /// Never entered: the mount points of Drive itself.
     guard: Vec<PathBuf>,
     disks: Mutex<HashMap<String, (Instant, Disks)>>,
-    lists: Mutex<HashMap<(String, String, String), (Instant, Listed)>>,
+    lists: Mutex<HashMap<ListKey, (Instant, Listed)>>,
     pieces: Mutex<Vec<Piece>>,
     /// Devices that last timed out, and when.
     slow: Mutex<HashMap<String, Instant>>,

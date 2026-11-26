@@ -3,6 +3,7 @@
 //! written in place; what would be deleted or replaced goes to the trash.
 
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
 use super::*;
 use crate::adopt::tests::{device, node, snapshot, songs};
