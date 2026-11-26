@@ -3397,6 +3397,7 @@ name = "drive-node"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "blake3",
  "drive-files",
  "drive-proto",

@@ -530,6 +530,26 @@ impl Rooms {
 /// connection (the client reconnects, signing in afresh).
 pub const RECHECK: Duration = Duration::from_secs(5 * 60);
 
+/// When a session signed in with `token` must end: the moment its token
+/// expires (`token_expiry`), on the clock of `at`, which is `now`. `None`
+/// when the token does not say (the periodic re-check still ends it).
+fn session_end(
+    token: Option<&str>,
+    now: std::time::SystemTime,
+    at: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    let exp = crate::auth::token_expiry(token?)?;
+    Some(at + exp.duration_since(now).unwrap_or(Duration::ZERO))
+}
+
+/// Wait until `end`, or forever when there is none.
+async fn until(end: Option<tokio::time::Instant>) {
+    match end {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// One client's connection, from its first message to its last.
 pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
     let (mut sink, stream) = socket.split();
@@ -564,7 +584,8 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
 }
 
 /// A connection's messages, whatever carries them: answered on `out`,
-/// its sign-in asked about again every `recheck`.
+/// its sign-in asked about again every `recheck`, and ended when its
+/// token expires.
 pub(crate) async fn session(
     rooms: Arc<Rooms>,
     mut incoming: impl futures::Stream<Item = ToNode> + Unpin,
@@ -576,6 +597,7 @@ pub(crate) async fn session(
     let mut name = String::from("Guest");
     let mut who: Option<crate::auth::Principal> = None;
     let mut token: Option<String> = None;
+    let mut ends: Option<tokio::time::Instant> = None;
     let mut joined = HashSet::new();
     let mut every = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -585,6 +607,14 @@ pub(crate) async fn session(
                 Some(m) => m,
                 None => break,
             },
+            _ = until(ends) => {
+                let signed = who.as_ref().map(|p| p.who.as_str()).unwrap_or_default();
+                tracing::info!(auth.outcome = "expired", auth.who = %signed, peer, "a connection's token expired; ending it");
+                let _ = out.send(ToClient::Error {
+                    message: "sign in".into(),
+                });
+                break;
+            }
             _ = every.tick() => {
                 let Some(old) = &who else { continue };
                 match rooms.auth.recheck(token.as_deref(), local).await {
@@ -638,6 +668,11 @@ pub(crate) async fn session(
                 Some(p) => {
                     who = Some(p);
                     token = t.clone();
+                    ends = session_end(
+                        t.as_deref(),
+                        std::time::SystemTime::now(),
+                        tokio::time::Instant::now(),
+                    );
                 }
                 None => {
                     let _ = out.send(ToClient::Error {
