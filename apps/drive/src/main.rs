@@ -307,7 +307,7 @@ fn Calendar() -> Element {
         .unwrap_or_else(|| now.clone());
     let events = spine::calendar(&doc.loro(), &from, &to);
     let mut title = use_signal(String::new);
-    let mut date = use_signal(|| today());
+    let mut date = use_signal(today);
     let mut time = use_signal(|| "7:00 PM".to_string());
     let mut weekly = use_signal(|| false);
     let mut days: Vec<String> = events.iter().map(|e| e.date.clone()).collect();

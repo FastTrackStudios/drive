@@ -8,6 +8,9 @@ use drive_files::{projects, space};
 
 use crate::browser::{Place, app_label, get, human, icon, online, project_icon, use_nav};
 
+/// One org's share of an app's documents: (org, how many, their bytes).
+type OrgDocs = (String, usize, u64);
+
 #[component]
 pub fn AllOrgs(here: String) -> Element {
     let orgs = use_resource(|| async {
@@ -22,7 +25,7 @@ pub fn AllOrgs(here: String) -> Element {
     let docs = use_docs_everywhere("");
     let list = orgs().unwrap_or_default();
     // Every app's documents, by app, then by org.
-    let mut apps: Vec<(String, Vec<(String, usize, u64)>)> = Vec::new();
+    let mut apps: Vec<(String, Vec<OrgDocs>)> = Vec::new();
     for d in docs().iter() {
         let Some((org, rest)) = d.id.split_once('/') else {
             continue;
