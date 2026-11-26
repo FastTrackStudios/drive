@@ -304,7 +304,17 @@ async fn node_link(rooms: Arc<Rooms>, url: String, hello: Hello) {
     let mut wait = Duration::from_millis(500);
     loop {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        match tokio_tungstenite::connect_async(url.as_str()).await {
+        match tokio_tungstenite::connect_async_with_config(
+            url.as_str(),
+            Some(
+                tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                    .max_message_size(Some(drive_proto::MAX_MESSAGE))
+                    .max_frame_size(Some(drive_proto::MAX_MESSAGE)),
+            ),
+            false,
+        )
+        .await
+        {
             Ok((ws, _)) => {
                 wait = Duration::from_millis(500);
                 let (mut sink, stream) = ws.split();

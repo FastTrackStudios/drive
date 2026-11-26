@@ -17,6 +17,13 @@ use serde::{Deserialize, Serialize};
 /// The protocol's version; a node refuses a client that speaks another.
 pub const VERSION: u32 = 2;
 
+/// The biggest websocket message (and frame) a node or a native client
+/// takes. A document's join is answered with one message holding all of
+/// it the joiner lacks, and websockets refuse frames over 16 MiB by
+/// default: a device whose copy fell 52 MiB behind could never catch up,
+/// and reconnected about once a second (drive#172). Both ends use this.
+pub const MAX_MESSAGE: usize = 256 << 20;
+
 /// A document's id: an app's namespace and a name (`canvas:board-1`).
 pub type DocId = String;
 

@@ -565,47 +565,153 @@ pub async fn serve(rooms: Arc<Rooms>, socket: WebSocket, local: bool) {
             }
         }
     });
+    // The socket's own end (a read error, a close frame) is kept for the
+    // connection's event: a message too big used to end it with no word.
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<String>();
     let incoming = stream
-        .take_while(|frame| std::future::ready(frame.is_ok()))
+        .scan(closed_tx, |closed, frame| {
+            std::future::ready(match frame {
+                Ok(Message::Close(c)) => {
+                    let why = c.map_or("1005".into(), |c| format!("{} {}", c.code, c.reason));
+                    let _ = closed.send(format!("client closed: {why}"));
+                    None
+                }
+                Ok(m) => Some(m),
+                Err(e) => {
+                    let _ = closed.send(format!("read failed: {e}"));
+                    None
+                }
+            })
+        })
         .filter_map(|frame| {
             std::future::ready(match frame {
-                Ok(Message::Binary(bytes)) => match drive_proto::decode::<ToNode>(&bytes) {
+                Message::Binary(bytes) => match drive_proto::decode::<ToNode>(&bytes) {
                     Ok(m) => Some(m),
                     Err(e) => {
-                        tracing::warn!(error = %e, "a message did not decode");
+                        tracing::warn!(error = %e, conn.bytes = bytes.len(), "a message did not decode");
                         None
                     }
                 },
                 _ => None,
             })
         });
-    session(rooms, std::pin::pin!(incoming), out, local, RECHECK).await;
+    let mut end = session(rooms, std::pin::pin!(incoming), out, local, RECHECK).await;
+    if let (Ended::Hangup, Ok(why)) = (&end.ended, closed_rx.try_recv()) {
+        end.ended = Ended::Socket(why);
+    }
+    end.log();
     let _ = writer.await;
+}
+
+/// Why the node ended a connection, or saw it end (`conn.end`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The client's messages stopped (it went, or the socket closed).
+    Hangup,
+    /// The socket said why: a close frame, a read error.
+    Socket(String),
+    VersionMismatch(u32),
+    SignInRefused,
+    SecondHello,
+    AccessNarrowed,
+    SignInExpired,
+}
+
+impl Ended {
+    fn kind(&self) -> &'static str {
+        match self {
+            Ended::Hangup => "hangup",
+            Ended::Socket(_) => "socket",
+            Ended::VersionMismatch(_) => "version_mismatch",
+            Ended::SignInRefused => "sign_in_refused",
+            Ended::SecondHello => "second_hello",
+            Ended::AccessNarrowed => "access_narrowed",
+            Ended::SignInExpired => "sign_in_expired",
+        }
+    }
+
+    /// The node turned this connection away (worth a warning).
+    fn refused(&self) -> bool {
+        !matches!(self, Ended::Hangup | Ended::Socket(_))
+    }
+}
+
+/// What one connection was and did, logged once when it ends.
+#[derive(Debug)]
+pub(crate) struct ConnectionEnd {
+    pub ended: Ended,
+    pub peer: Peer,
+    pub name: String,
+    pub who: Option<String>,
+    /// The agent this connection said it was: (space, device).
+    pub agent: Option<(String, String)>,
+    pub messages_in: u64,
+    pub lasted: Duration,
+}
+
+impl ConnectionEnd {
+    fn log(&self) {
+        let (space, device) = self
+            .agent
+            .as_ref()
+            .map_or(("", ""), |(s, d)| (s.as_str(), d.as_str()));
+        let detail = match &self.ended {
+            Ended::Socket(why) => why.clone(),
+            Ended::VersionMismatch(v) => format!("client speaks {v}"),
+            _ => String::new(),
+        };
+        macro_rules! event {
+            ($level:ident) => {
+                tracing::$level!(
+                    peer = self.peer,
+                    conn.name = %self.name,
+                    auth.who = self.who.as_deref().unwrap_or(""),
+                    agent.space = space,
+                    agent.device = device,
+                    conn.end = self.ended.kind(),
+                    conn.error = %detail,
+                    conn.messages_in = self.messages_in,
+                    conn.lasted_ms = self.lasted.as_millis() as u64,
+                    "a connection ended"
+                )
+            };
+        }
+        if self.ended.refused()
+            || matches!(self.ended, Ended::Socket(ref w) if w.starts_with("read failed"))
+        {
+            event!(warn);
+        } else {
+            event!(info);
+        }
+    }
 }
 
 /// A connection's messages, whatever carries them: answered on `out`,
 /// its sign-in asked about again every `recheck`, and ended when its
-/// token expires.
+/// token expires. Says why it ended.
 pub(crate) async fn session(
     rooms: Arc<Rooms>,
     mut incoming: impl futures::Stream<Item = ToNode> + Unpin,
     out: Outbox,
     local: bool,
     recheck: Duration,
-) {
+) -> ConnectionEnd {
+    let began = tokio::time::Instant::now();
     let peer = rooms.sync.new_peer(None);
     let mut name = String::from("Guest");
     let mut who: Option<crate::auth::Principal> = None;
     let mut token: Option<String> = None;
     let mut ends: Option<tokio::time::Instant> = None;
+    let mut agent: Option<(String, String)> = None;
+    let mut messages_in = 0u64;
     let mut joined = HashSet::new();
     let mut every = tokio::time::interval_at(tokio::time::Instant::now() + recheck, recheck);
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
+    let ended = loop {
         let msg = tokio::select! {
             m = incoming.next() => match m {
                 Some(m) => m,
-                None => break,
+                None => break Ended::Hangup,
             },
             _ = until(ends) => {
                 let signed = who.as_ref().map(|p| p.who.as_str()).unwrap_or_default();
@@ -613,7 +719,7 @@ pub(crate) async fn session(
                 let _ = out.send(ToClient::Error {
                     message: "sign in".into(),
                 });
-                break;
+                break Ended::SignInExpired;
             }
             _ = every.tick() => {
                 let Some(old) = &who else { continue };
@@ -623,26 +729,25 @@ pub(crate) async fn session(
                         // ends the connection, which may hold its documents.
                         let kept = p.all || (!old.all && old.orgs.iter().all(|o| p.member_of(o)));
                         if !kept {
-                            tracing::info!(auth.outcome = "narrowed", auth.who = %old.who, peer, "a connection's access narrowed; ending it");
                             let _ = out.send(ToClient::Error {
                                 message: "access changed: reconnect".into(),
                             });
-                            break;
+                            break Ended::AccessNarrowed;
                         }
                         who = Some(p);
                     }
                     crate::auth::Recheck::Refused => {
-                        tracing::info!(auth.outcome = "expired", auth.who = %old.who, peer, "a connection's sign-in is no longer accepted; ending it");
                         let _ = out.send(ToClient::Error {
                             message: "sign in".into(),
                         });
-                        break;
+                        break Ended::SignInExpired;
                     }
                     crate::auth::Recheck::Unknown => {}
                 }
                 continue;
             }
         };
+        messages_in += 1;
         if let ToNode::Hello {
             version,
             name: n,
@@ -653,7 +758,7 @@ pub(crate) async fn session(
                 let _ = out.send(ToClient::Error {
                     message: "protocol version mismatch".into(),
                 });
-                break;
+                break Ended::VersionMismatch(*version);
             }
             // One sign-in per connection: a second would change who this is
             // while the documents the first could open stay joined. Clients
@@ -662,8 +767,9 @@ pub(crate) async fn session(
                 let _ = out.send(ToClient::Error {
                     message: "already signed in: reconnect".into(),
                 });
-                break;
+                break Ended::SecondHello;
             }
+            name = n.clone();
             match rooms.auth.principal(t.as_deref(), local).await {
                 Some(p) => {
                     who = Some(p);
@@ -678,21 +784,43 @@ pub(crate) async fn session(
                     let _ = out.send(ToClient::Error {
                         message: "sign in".into(),
                     });
-                    break;
+                    break Ended::SignInRefused;
                 }
             }
-            name = n.clone();
             let _ = out.send(ToClient::Welcome { peer });
             continue;
         }
         let Some(p) = &who else { continue };
+        let says_agent = match &msg {
+            ToNode::Agent { space, device } => Some((space.clone(), device.clone())),
+            _ => None,
+        };
         rooms.handle(peer, &name, p, &out, &mut joined, msg).await;
-    }
+        if let Some(key) = says_agent
+            && rooms
+                .agents
+                .lock()
+                .await
+                .get(&key)
+                .is_some_and(|(p, _)| *p == peer)
+        {
+            agent = Some(key);
+        }
+    };
     for id in joined {
         rooms.leave(peer, &name, &id).await;
     }
     rooms.agents.lock().await.retain(|_, (p, _)| *p != peer);
     rooms.sync.forget_peer(peer);
+    ConnectionEnd {
+        ended,
+        peer,
+        name,
+        who: who.map(|p| p.who),
+        agent,
+        messages_in,
+        lasted: began.elapsed(),
+    }
 }
 
 #[cfg(test)]
