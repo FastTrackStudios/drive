@@ -11,6 +11,7 @@ use drive_spine::tags::{Library, Target};
 use serde_json::{Value, json};
 
 use super::ctx::{Ctx, Thing, human, page};
+use super::summary::{DupCounter, Dups, Row, Summary};
 use super::tools::opt_str;
 
 pub async fn devices(ctx: &Ctx) -> Result<Value, String> {
@@ -472,128 +473,95 @@ pub async fn file_info(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     Ok(v)
 }
 
-/// Rows of a folder: (path relative to the folder's parent root, dir, size, mtime, content).
-struct Row {
-    path: String,
-    dir: bool,
-    size: u64,
-    mtime: i64,
-    content: String,
-}
-
+/// A folder's files and folders added up: kinds, extensions, the largest,
+/// oldest and newest, and its duplicates. A location's folder is read a
+/// page at a time and its duplicates grouped by the index database: no
+/// list of its rows is held (drive#156).
 pub async fn folder_summary(ctx: &Ctx, args: &Value) -> Result<Value, String> {
     let top = args["top"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
-    let (label, rows): (String, Vec<Row>) = if let Some(l) = opt_str(args, "location") {
+    let kinds = Kinds::load(&ctx.a.spine);
+    let mut sum = Summary::new(&kinds, top);
+    if let Some(l) = opt_str(args, "location") {
         let loc = ctx.location(l)?;
         let path = opt_str(args, "path")
             .unwrap_or("")
             .trim_matches('/')
             .to_string();
         ctx.has_index(&loc).await?;
-        let mut rows = Vec::new();
         let mut pages = ctx.a.index_pages(&loc.id, &path);
         while let Some(page) = pages.next().await {
-            rows.extend(page.into_iter().map(|e| Row {
-                path: e.path,
-                dir: e.dir,
-                size: e.size,
-                mtime: e.mtime,
-                content: e.sampled,
-            }));
+            page.into_iter().for_each(|e| sum.add(&Row::from(e)));
         }
-        (format!("{}:{path}", loc.name), rows)
+        let dups = location_dups(ctx, &loc.id, &path, top).await?;
+        Ok(sum.into_json(&format!("{}:{path}", loc.name), dups))
     } else if let Some(dp) = args.get("drive_path").and_then(Value::as_str) {
         let dp = dp.trim_matches('/');
-        let prefix = format!("{dp}/");
-        let mut rows: Vec<Row> = tree::files(&ctx.a.files)
-            .into_iter()
-            .filter(|(p, _)| dp.is_empty() || p.starts_with(&prefix))
-            .map(|(p, e)| Row {
-                path: p,
-                dir: false,
-                size: e.size,
-                mtime: e.mtime,
-                content: e.hash,
-            })
-            .collect();
-        // Folders, from the files' paths.
-        let dirs: HashSet<String> = rows
-            .iter()
-            .filter_map(|r| r.path.rsplit_once('/').map(|(d, _)| d.to_string()))
-            .filter(|d| dp.is_empty() || d.starts_with(&prefix))
-            .collect();
-        rows.extend(dirs.into_iter().map(|d| Row {
-            path: d,
-            dir: true,
-            size: 0,
-            mtime: 0,
-            content: String::new(),
-        }));
-        (format!("drive:{dp}"), rows)
+        let rows = drive_rows(ctx, dp);
+        rows.iter().for_each(|r| sum.add(r));
+        Ok(sum.into_json(&format!("drive:{dp}"), Dups::of_rows(&rows, top)))
     } else {
-        return Err("folder_summary needs a location (and path) or a drive_path".into());
-    };
-    let kinds = Kinds::load(&ctx.a.spine);
-    let files: Vec<&Row> = rows.iter().filter(|r| !r.dir).collect();
-    let mut by_kind: HashMap<String, (u64, u64)> = HashMap::new();
-    let mut by_ext: HashMap<String, (u64, u64)> = HashMap::new();
-    let mut groups: HashMap<&str, Vec<&Row>> = HashMap::new();
-    for f in &files {
-        let name = f.path.rsplit('/').next().unwrap_or(&f.path);
-        let k = kinds.of_file(name, false);
-        let e = by_kind.entry(k.id.clone()).or_default();
-        e.0 += 1;
-        e.1 += f.size;
-        let ext = name
-            .rsplit_once('.')
-            .map(|(_, x)| x.to_ascii_lowercase())
-            .unwrap_or_default();
-        let e = by_ext.entry(ext).or_default();
-        e.0 += 1;
-        e.1 += f.size;
-        if !f.content.is_empty() && f.size > 0 {
-            groups.entry(f.content.as_str()).or_default().push(f);
-        }
+        Err("folder_summary needs a location (and path) or a drive_path".into())
     }
-    let tally = |m: HashMap<String, (u64, u64)>, n: usize| -> Vec<Value> {
-        let mut v: Vec<_> = m.into_iter().collect();
-        v.sort_by_key(|x| std::cmp::Reverse(x.1.1));
-        v.into_iter()
-            .take(n)
-            .map(|(k, (c, b))| json!({ "name": if k.is_empty() { "(none)".to_string() } else { k }, "files": c, "bytes": b, "size": human(b) }))
-            .collect()
-    };
-    let brief = |r: &Row| json!({ "path": r.path, "size": r.size, "mtime": r.mtime });
-    let mut largest = files.clone();
-    largest.sort_by_key(|r| std::cmp::Reverse(r.size));
-    let mut dated: Vec<&Row> = files.iter().copied().filter(|r| r.mtime > 0).collect();
-    dated.sort_by_key(|r| r.mtime);
-    let mut dups: Vec<(u64, Vec<&Row>)> = groups
-        .into_values()
-        .filter(|g| g.len() > 1)
-        .map(|g| (g[0].size * (g.len() as u64 - 1), g))
+}
+
+/// The files under `dp` in the Drive tree, and their folders.
+fn drive_rows(ctx: &Ctx, dp: &str) -> Vec<Row> {
+    let prefix = format!("{dp}/");
+    let mut rows: Vec<Row> = tree::files(&ctx.a.files)
+        .into_iter()
+        .filter(|(p, _)| dp.is_empty() || p.starts_with(&prefix))
+        .map(|(p, e)| Row {
+            path: p,
+            dir: false,
+            size: e.size,
+            mtime: e.mtime,
+            content: e.hash,
+        })
         .collect();
-    dups.sort_by_key(|d| std::cmp::Reverse(d.0));
-    let bytes: u64 = files.iter().map(|f| f.size).sum();
-    Ok(json!({
-        "folder": label,
-        "files": files.len(),
-        "folders": rows.iter().filter(|r| r.dir).count(),
-        "bytes": bytes, "size": human(bytes),
-        "by_kind": tally(by_kind, 20),
-        "by_extension": tally(by_ext, 20),
-        "largest": largest.iter().take(top).map(|r| brief(r)).collect::<Vec<_>>(),
-        "oldest": dated.iter().take(top).map(|r| brief(r)).collect::<Vec<_>>(),
-        "newest": dated.iter().rev().take(top).map(|r| brief(r)).collect::<Vec<_>>(),
-        "duplicates_inside": {
-            "groups": dups.len(),
-            "wasted_bytes": dups.iter().map(|d| d.0).sum::<u64>(),
-            "top": dups.iter().take(top).map(|(w, g)| json!({
-                "wasted": w, "size": g[0].size,
-                "paths": g.iter().map(|r| r.path.clone()).collect::<Vec<_>>()
-            })).collect::<Vec<_>>()
-        }
-    }))
+    // Folders, from the files' paths.
+    let dirs: HashSet<String> = rows
+        .iter()
+        .filter_map(|r| r.path.rsplit_once('/').map(|(d, _)| d.to_string()))
+        .filter(|d| dp.is_empty() || d.starts_with(&prefix))
+        .collect();
+    rows.extend(dirs.into_iter().map(|d| Row {
+        path: d,
+        dir: true,
+        size: 0,
+        mtime: 0,
+        content: String::new(),
+    }));
+    rows
+}
+
+/// The duplicates under `dir` of a location: grouped by the index
+/// database, then the paths of the `top` groups that waste most.
+async fn location_dups(ctx: &Ctx, location: &str, dir: &str, top: usize) -> Result<Dups, String> {
+    let mut counter = DupCounter::new(top);
+    ctx.a
+        .index_db
+        .duplicates_under(location, dir, |sampled, size, count| {
+            counter.add(sampled, size, count)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let (best, mut dups) = counter.finish();
+    let prefix = format!("{dir}/");
+    for (wasted, sampled, size) in best {
+        let copies = ctx
+            .a
+            .index_db
+            .copies(&sampled, Some(size))
+            .await
+            .map_err(|e| e.to_string())?;
+        let paths = copies
+            .into_iter()
+            .filter(|(l, e)| l == location && (dir.is_empty() || e.path.starts_with(&prefix)))
+            .map(|(_, e)| e.path)
+            .collect();
+        dups.top.push((wasted, size, paths));
+    }
+    Ok(dups)
 }
 
 pub async fn duplicates(ctx: &Ctx, args: &Value) -> Result<Value, String> {

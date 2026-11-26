@@ -196,9 +196,11 @@ impl Agent {
     }
 
     /// Move the tags and links of this location's folders that moved since
-    /// the last walk (found by what they hold, `index::moved_folders`) to
-    /// their new paths.
-    async fn carry_folder_keys(&self, location: &str, new: &[drive_files::index::IndexEntry]) -> usize {
+    /// the last walk (found by what they hold, `IndexDb::moved_folders`:
+    /// the last walk is the location's rows, the new one `walk`) to their
+    /// new paths.
+    async fn carry_folder_keys(&self, walk: &crate::index_db::Walk) -> usize {
+        let location = walk.location();
         use drive_spine::tags::Target;
         let space = self.cfg.lock().expect("cfg").space.clone();
         let tags_id = drive_spine::tags::tags_doc(&space);
@@ -221,10 +223,13 @@ impl Agent {
         if wanted.is_empty() {
             return 0;
         }
-        let Some(old) = self.index_db.load(location).await.ok().flatten() else {
-            return 0;
+        let moves = match self.index_db.moved_folders(walk, &wanted).await {
+            Ok(moves) => moves,
+            Err(e) => {
+                tracing::warn!(location.id = %location, error = %e, "moved folders were not looked for");
+                return 0;
+            }
         };
-        let moves = drive_files::index::moved_folders(&old.entries, new, &wanted);
         for (from, to) in &moves {
             let (f, t) = (
                 Target::Folder { location: location.into(), path: from.clone() },
@@ -242,13 +247,16 @@ impl Agent {
 
     /// Walk one of this device's locations, publish its index to the node
     /// and record it in the registry.
+    ///
+    /// The walk goes into the index database as it is found (drive#156),
+    /// is made the location's index there, and the upload is encoded from
+    /// it: the whole index is never held.
     #[tracing::instrument(name = "drive.index", skip_all, fields(location.name = %loc.name, index.files = tracing::field::Empty, process.rss_mb = tracing::field::Empty, folders.moved = tracing::field::Empty))]
     pub async fn index_location(&self, loc: &Location) -> Result<WalkStats, String> {
         if space::is_paused(&self.space, &loc.id) {
             tracing::debug!(location.name = %loc.name, "paused: kept the last index");
             return Ok(WalkStats::default());
         }
-        let previous = self.index_db.meta(&loc.id).await.ok().flatten();
         // A folder this process may not read (macOS privacy protection on a
         // background service, a drive not mounted, permissions) must never
         // publish an empty index over a full one: Drive would show the
@@ -256,40 +264,41 @@ impl Agent {
         if loc.storage.is_empty() {
             unreadable_root(Path::new(&loc.path))?;
         }
+        let walk = self
+            .index_db
+            .begin_walk(&loc.id)
+            .await
+            .map_err(|e| format!("the index database: {e}"))?;
+        let done = self.walk_and_publish(loc, &walk).await;
+        if let Err(e) = self.index_db.discard_walk(walk).await {
+            tracing::debug!(location.id = %loc.id, error = %e, "a walk's table was left for the next start");
+        }
+        done
+    }
+
+    /// Walk `loc` into `walk`, make it the location's index and publish it.
+    async fn walk_and_publish(
+        &self,
+        loc: &Location,
+        walk: &crate::index_db::Walk,
+    ) -> Result<WalkStats, String> {
+        let previous = self.index_db.meta(&loc.id).await.ok().flatten();
         let had = self
             .space_files_of(&loc.id)
             .unwrap_or(0)
             .max(previous.as_ref().map_or(0, |p| (p.files + p.dirs) as usize));
-        let (idx, stats) = if loc.storage.is_empty() {
-            let (id, root) = (loc.id.clone(), PathBuf::from(&loc.path));
-            // The last walk, asked of the index database a folder at a time.
-            let last = previous.is_some().then(|| crate::index_db::Previous {
-                db: self.index_db.clone(),
-                location: loc.id.clone(),
-                rt: tokio::runtime::Handle::current(),
-            });
-            tokio::task::spawn_blocking(move || {
-                index::walk_from(&id, &root, last.as_ref().map(|p| p as &dyn index::Previous))
-            })
-            .await
-            .map_err(|e| e.to_string())?
+        // The last walk, asked of the index database a folder at a time.
+        let last = previous.is_some().then(|| crate::index_db::Previous {
+            db: self.index_db.clone(),
+            location: loc.id.clone(),
+            rt: tokio::runtime::Handle::current(),
+        });
+        let (stats, built) = if loc.storage.is_empty() {
+            self.walk_folder(loc, walk, last).await?
         } else {
-            let own = self
-                .cfg
-                .lock()
-                .expect("cfg")
-                .storages
-                .iter()
-                .find(|s| s.id == loc.storage)
-                .cloned();
-            let own = own.ok_or("this device does not run that location's storage")?;
-            let op = own.config.operator().map_err(|e| e.to_string())?;
-            let last = self.index_db.load(&loc.id).await.ok().flatten();
-            index::walk_storage(&loc.id, &op, &loc.path, last.as_ref())
-                .await
-                .map_err(|e| e.to_string())?
+            self.walk_storage(loc, walk, last.as_ref()).await?
         };
-        if idx.entries.is_empty() && had > 0 {
+        if stats.files + stats.dirs == 0 && had > 0 {
             return Err(format!(
                 "found nothing where {had} entries were before: kept the last index (is the folder readable by this process?)"
             ));
@@ -301,14 +310,14 @@ impl Agent {
         }
         // Tagged or linked folders that moved: their tags and links go with
         // them (this device walks the location, so it alone decides).
-        let moved = self.carry_folder_keys(&loc.id, &idx.entries).await;
+        let moved = self.carry_folder_keys(walk).await;
         if moved > 0 {
             tracing::Span::current().record("folders.moved", moved);
         }
-        // Into the index database: only the rows that changed are written.
-        let written = self
+        // Into the location's rows: only those that changed are written.
+        let (written, _) = self
             .index_db
-            .put(&idx)
+            .commit_walk(walk, &loc.path, built)
             .await
             .map_err(|e| format!("the index database: {e}"))?;
         // Nothing changed since the index the node has: publish nothing.
@@ -324,8 +333,12 @@ impl Agent {
             tracing::debug!(location.name = %loc.name, index.files = stats.files, "unchanged: nothing published");
             return Ok(stats);
         }
-        let bytes = index::encode(&idx);
-        drop(idx);
+        let bytes = self
+            .index_db
+            .encode(&loc.id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("the index database lost the index it was given")?;
         self.unpublished.lock().expect("unpublished").insert(loc.id.clone());
         let (node, space_name) = {
             let c = self.cfg.lock().expect("cfg");
@@ -370,6 +383,61 @@ impl Agent {
         tracing::Span::current().record("index.files", stats.files);
         crate::telemetry::mark_rss();
         Ok(stats)
+    }
+
+    /// Walk a folder on this device into `walk` as it is found: the
+    /// walking threads hand their batches over a short queue, so a walk
+    /// waits for the database rather than piling up in memory. Returns
+    /// what it found and when it finished.
+    async fn walk_folder(
+        &self,
+        loc: &Location,
+        walk: &crate::index_db::Walk,
+        last: Option<crate::index_db::Previous>,
+    ) -> Result<(WalkStats, i64), String> {
+        let root = PathBuf::from(&loc.path);
+        let (found, batches) = tokio::sync::mpsc::channel::<Vec<IndexEntry>>(8);
+        let walking = tokio::task::spawn_blocking(move || {
+            // A refused send (the database failed and stopped taking them)
+            // drops the batch: the walk runs on to its end, kept nowhere.
+            let emit = |batch| drop(found.blocking_send(batch));
+            index::walk_streamed(
+                &root,
+                last.as_ref().map(|p| p as &dyn index::Previous),
+                &emit,
+            )
+        });
+        let filled = self.index_db.fill_walk(walk, batches).await;
+        let stats = walking.await.map_err(|e| e.to_string())?;
+        filled.map_err(|e| format!("the index database: {e}"))?;
+        Ok((stats, drive_files::now_ms()))
+    }
+
+    /// Walk a location in one of this device's storages into `walk`.
+    async fn walk_storage(
+        &self,
+        loc: &Location,
+        walk: &crate::index_db::Walk,
+        last: Option<&crate::index_db::Previous>,
+    ) -> Result<(WalkStats, i64), String> {
+        let own = self
+            .cfg
+            .lock()
+            .expect("cfg")
+            .storages
+            .iter()
+            .find(|s| s.id == loc.storage)
+            .cloned();
+        let own = own.ok_or("this device does not run that location's storage")?;
+        let op = own.config.operator().map_err(|e| e.to_string())?;
+        let (idx, stats) = index::walk_storage(&loc.id, &op, &loc.path, last)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.index_db
+            .walk_put(walk, &idx.entries)
+            .await
+            .map_err(|e| format!("the index database: {e}"))?;
+        Ok((stats, idx.built))
     }
 
     /// A location's entries (under `dir`; `""`: all), a page at a time.
