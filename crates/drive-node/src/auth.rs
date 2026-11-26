@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::http::HeaderMap;
 use tokio::sync::Mutex;
@@ -270,6 +270,26 @@ impl Auth {
     }
 }
 
+/// When `token` stops being good, if it says: the `exp` of a JWT's
+/// payload. Read without checking the signature, which is safe only for
+/// a token the issuer has accepted as it is (a changed `exp` would not
+/// be). `None` for an opaque token, or a JWT without an `exp`.
+pub fn token_expiry(token: &str) -> Option<SystemTime> {
+    use base64::Engine;
+    let mut parts = token.trim().split('.');
+    let (Some(_), Some(payload), Some(_), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let exp = claims["exp"].as_u64()?;
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(exp))
+}
+
 /// Why the issuer gave no principal for a token.
 enum Asked {
     /// It answered no (4xx).
@@ -363,7 +383,7 @@ pub fn is_local(addr: Option<SocketAddr>, headers: &HeaderMap) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -393,6 +413,31 @@ mod tests {
             let mut h = HeaderMap::new();
             h.insert(axum::http::header::HOST, bad.parse().unwrap());
             assert!(!is_local(lo, &h), "{bad} must not be local");
+        }
+    }
+
+    /// A JWT (unsigned: only its payload is read) with these claims.
+    pub(crate) fn jwt(claims: &serde_json::Value) -> String {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        format!(
+            "{}.{}.sig",
+            b64.encode(br#"{"alg":"none"}"#),
+            b64.encode(claims.to_string())
+        )
+    }
+
+    #[test]
+    fn a_jwt_says_when_it_expires_and_an_opaque_token_does_not() {
+        let exp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+        let t = jwt(&serde_json::json!({ "sub": "alice", "exp": 1_900_000_000u64 }));
+        assert_eq!(token_expiry(&t), Some(exp));
+        assert_eq!(
+            token_expiry(&jwt(&serde_json::json!({ "sub": "alice" }))),
+            None
+        );
+        for opaque in ["", "t", "abc.def", "a.b.c.d", "a.!!!.c"] {
+            assert_eq!(token_expiry(opaque), None, "{opaque}");
         }
     }
 

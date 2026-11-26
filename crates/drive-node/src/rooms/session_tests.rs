@@ -8,7 +8,8 @@ use drive_proto::{ToClient, ToNode};
 use tokio::sync::mpsc;
 use tokio_stream_shim::Incoming;
 
-use super::{Rooms, session};
+use super::{Rooms, session, session_end};
+use crate::auth::tests::jwt;
 use crate::auth::{Auth, Principal};
 
 /// A minimal `Stream` over an mpsc receiver (no tokio-stream dependency).
@@ -248,5 +249,51 @@ async fn a_second_sign_in_on_one_connection_ends_it() {
         token: Some("u".into()),
     });
     c.ended("already signed in: reconnect").await;
+    assert_eq!(peers_of(&rooms, "a/notes").await, 0);
+}
+
+/// A JWT that expires `secs` from now (whole seconds, as `exp` is).
+fn expiring_in(secs: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    jwt(&serde_json::json!({ "sub": "alice", "exp": now + secs }))
+}
+
+#[test]
+fn a_session_ends_when_its_token_expires_and_not_before() {
+    let at = tokio::time::Instant::now();
+    let exp = std::time::UNIX_EPOCH + Duration::from_secs(1_900_000_000);
+    let t = jwt(&serde_json::json!({ "exp": 1_900_000_000u64 }));
+    let now = exp - Duration::from_secs(90);
+    assert_eq!(
+        session_end(Some(&t), now, at),
+        Some(at + Duration::from_secs(90))
+    );
+    // Already expired: at once.
+    let late = exp + Duration::from_secs(5);
+    assert_eq!(session_end(Some(&t), late, at), Some(at));
+    // An opaque token, or none, says nothing: only the re-check ends it.
+    assert_eq!(session_end(Some("t"), now, at), None);
+    assert_eq!(session_end(None, now, at), None);
+}
+
+#[tokio::test]
+async fn a_token_that_expires_during_the_session_ends_it_without_waiting_for_the_recheck() {
+    let dir = tempfile::tempdir().unwrap();
+    let rooms = rooms(dir.path(), refusing_issuer().await).await;
+    let token = expiring_in(2);
+    // The issuer's answer is still kept: only the expiry can end it.
+    rooms.auth.remember(&token, person("alice", &["a"])).await;
+    let started = std::time::Instant::now();
+    let mut c = Client::connect(&rooms, &token, Duration::from_secs(3600)).await;
+    c.join("a/notes").await;
+    c.ended("sign in").await;
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(peers_of(&rooms, "a/notes").await, 0);
 }

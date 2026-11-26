@@ -18,6 +18,8 @@ zip = { version = "5", default-features = false }
 zstd = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 blake3 = "1"
+# A sign-in token's `exp`, read from a JWT's payload (auth::token_expiry).
+base64 = "0.22"
 loro.workspace = true
 serde.workspace = true
 serde_json.workspace = true
