@@ -268,7 +268,7 @@ pub fn DriveProvider(children: Element) -> Element {
     // The last boot when it still holds, so the apps draw at once; the
     // node's answer follows and replaces it only when it differs.
     let mut state = use_signal(|| remembered().unwrap_or(Boot::Loading));
-    use_future(move || async move {
+    let mut booting = use_future(move || async move {
         let b = boot().await;
         match &b {
             Boot::Ready { .. } => remember(&b),
@@ -293,7 +293,7 @@ pub fn DriveProvider(children: Element) -> Element {
             Connected { key: "{org}", org, token, who, issuer, {children} }
         },
         Boot::SignIn(i) => rsx! {
-            SignInScreen { issuer: i }
+            SignInScreen { issuer: i, on_signed_in: move |()| booting.restart() }
         },
         Boot::Failed(why) => rsx! {
             BootMessage { why }
@@ -346,13 +346,42 @@ const CARD: &str = "min-height:100vh;display:grid;place-items:center;background:
 const PANEL: &str = "max-width:360px;width:100%;display:flex;flex-direction:column;gap:12px;padding:28px;background:#141417;border:1px solid #2b2b31;border-radius:18px;text-align:center;";
 const BUTTON: &str = "height:44px;border-radius:12px;border:0;background:#f4f4f5;color:#000;font-weight:650;font-size:15px;cursor:pointer;";
 
+/// Asks to sign in. A page goes to the issuer and comes back reloaded; a
+/// native app waits here for the browser (`auth::sign_in`), then
+/// `on_signed_in` boots again with the tokens it kept.
 #[component]
-fn SignInScreen(issuer: auth::Issuer) -> Element {
+fn SignInScreen(issuer: auth::Issuer, on_signed_in: EventHandler<()>) -> Element {
     let host = issuer
         .issuer
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .to_string();
+    let mut waiting = use_signal(|| false);
+    let mut failed = use_signal(|| None::<String>);
+    let start = move |_| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (&mut waiting, &mut failed, &on_signed_in);
+            auth::begin(&issuer);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if waiting() {
+                return;
+            }
+            let issuer = issuer.clone();
+            waiting.set(true);
+            failed.set(None);
+            spawn(async move {
+                let result = auth::sign_in(&issuer).await;
+                waiting.set(false);
+                match result {
+                    Ok(()) => on_signed_in.call(()),
+                    Err(why) => failed.set(Some(why)),
+                }
+            });
+        }
+    };
     rsx! {
         div { style: CARD,
             div { style: PANEL,
@@ -360,7 +389,17 @@ fn SignInScreen(issuer: auth::Issuer) -> Element {
                 span { style: "color:#a1a1aa;font-size:14px;",
                     "This Drive is for its orgs' members. Sign in with your account at {host}."
                 }
-                button { style: BUTTON, onclick: move |_| auth::begin(&issuer), "Continue" }
+                if waiting() {
+                    span { style: "color:#a1a1aa;font-size:14px;",
+                        "Finish signing in in your browser, then come back here."
+                    }
+                }
+                if let Some(why) = failed() {
+                    span { style: "color:#f87171;font-size:14px;", "{why}" }
+                }
+                button { style: BUTTON, disabled: waiting(), onclick: start,
+                    if waiting() { "Waiting for the browser…" } else { "Continue" }
+                }
             }
         }
     }
