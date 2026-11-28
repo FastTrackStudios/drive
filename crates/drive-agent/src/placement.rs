@@ -27,17 +27,10 @@ pub struct Done {
 
 /// Bytes this device may still fill on the disk holding `dir`.
 pub fn room(dir: &Path) -> u64 {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
-        return 0;
-    };
-    disks
-        .iter()
-        .filter(|d| dir.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map_or(0, |d| {
-            d.available_space()
-                .saturating_sub((d.total_space() as f64 * RESERVE) as u64)
-        })
+    crate::disks::holding(dir).map_or(0, |d| {
+        d.available
+            .saturating_sub((d.total as f64 * RESERVE) as u64)
+    })
 }
 
 impl Agent {

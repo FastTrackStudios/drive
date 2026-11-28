@@ -418,17 +418,8 @@ pub fn list_disk(path: &Path) -> Result<Vec<Row>, String> {
 /// Whether a path is inside one of Drive's own mounts (adopting from
 /// there would map Drive into itself).
 fn on_drive_mount(path: &Path) -> bool {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
-        return false;
-    };
-    disks
-        .iter()
-        .filter(|d| path.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
-        .is_some_and(|d| {
-            let fs = d.file_system().to_string_lossy();
-            fs.starts_with("fuse.drive") || d.name().to_string_lossy().starts_with("drive")
-        })
+    crate::disks::holding(path)
+        .is_some_and(|d| d.fs.starts_with("fuse.drive") || d.name.starts_with("drive"))
 }
 
 #[cfg(test)]

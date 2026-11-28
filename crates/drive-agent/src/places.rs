@@ -28,31 +28,27 @@ const SKIP_FS: &[&str] = &[
 
 /// The disks this device has now.
 pub fn volumes(device: &str) -> Vec<Volume> {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
-        return Vec::new();
-    };
     let mut seen = std::collections::HashSet::new();
-    disks
-        .iter()
+    crate::disks::list()
+        .into_iter()
         .filter(|d| {
-            let fs = d.file_system().to_string_lossy();
-            let mount = d.mount_point().to_string_lossy();
-            !SKIP_FS.iter().any(|s| fs.starts_with(s))
+            let mount = d.mount.to_string_lossy();
+            !SKIP_FS.iter().any(|s| d.fs.starts_with(s))
                 && !mount.starts_with("/nix/store")
                 && !mount.starts_with("/boot")
                 && !mount.starts_with("/run/user")
-                && d.total_space() > 0
+                && d.total > 0
         })
         // One volume per device (btrfs subvolumes show once per mount).
-        .filter(|d| seen.insert(d.name().to_os_string()))
+        .filter(|d| seen.insert(d.name.clone()))
         .map(|d| Volume {
             device: device.to_string(),
-            name: d.name().to_string_lossy().into_owned(),
-            mount: d.mount_point().to_string_lossy().into_owned(),
-            fs: d.file_system().to_string_lossy().into_owned(),
-            total: d.total_space() as i64,
-            free: d.available_space() as i64,
-            removable: d.is_removable(),
+            mount: d.mount.to_string_lossy().into_owned(),
+            name: d.name,
+            fs: d.fs,
+            total: d.total as i64,
+            free: d.available as i64,
+            removable: d.removable,
             seen: drive_files::now_ms(),
         })
         .collect()
@@ -61,16 +57,7 @@ pub fn volumes(device: &str) -> Vec<Volume> {
 /// The volume a path is on: the longest mount point containing it, of all
 /// mounts (including the ones `volumes` leaves out, then mapped back).
 pub fn volume_of(path: &Path) -> String {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
-        return "/".into();
-    };
-    disks
-        .iter()
-        .filter(|d| path.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
-        .map_or("/".into(), |d| {
-            d.mount_point().to_string_lossy().into_owned()
-        })
+    crate::disks::holding(path).map_or("/".into(), |d| d.mount.to_string_lossy().into_owned())
 }
 
 /// Folders a location may hold and still be watched live: a recursive
@@ -87,15 +74,8 @@ const UNWATCHABLE_FS: &[&str] = &[
 
 /// Whether a location should be watched live, and if not, why.
 pub fn watch_refusal(path: &Path, dirs: Option<usize>) -> Option<String> {
-    let fs = sysinfo::Disks::new_with_refreshed_list()
-        .ok()
-        .and_then(|disks| {
-            disks
-                .iter()
-                .filter(|d| path.starts_with(d.mount_point()))
-                .max_by_key(|d| d.mount_point().as_os_str().len())
-                .map(|d| d.file_system().to_string_lossy().into_owned())
-        })
+    let fs = crate::disks::holding(path)
+        .map(|d| d.fs)
         .unwrap_or_default();
     if UNWATCHABLE_FS.iter().any(|u| fs.starts_with(u)) {
         return Some(format!("on a {fs} file system"));
