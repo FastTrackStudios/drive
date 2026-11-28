@@ -122,9 +122,12 @@ mod browse;
 mod daemon;
 #[cfg(feature = "mount")]
 mod devices;
+mod disks;
 mod fileprovider;
 #[cfg(feature = "mount")]
 mod fs;
+#[cfg(all(target_os = "linux", feature = "mount"))]
+mod fuse_watch;
 mod graph;
 mod graph_share;
 mod pages;
@@ -708,6 +711,10 @@ async fn run(dir: &Path, args: &[String]) -> Result<(), String> {
                 None => None,
             };
             tracing::info!(mount.at = %at.display(), space.name = %space, "mounted");
+            #[cfg(target_os = "linux")]
+            for m in std::iter::once(&at).chain(alone.as_ref()) {
+                fuse_watch::watch(m.clone());
+            }
             run_until_stopped(daemon::serve(a.clone(), view)).await?;
             drop(others);
             drop(main);
